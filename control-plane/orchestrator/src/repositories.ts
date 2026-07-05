@@ -4,7 +4,7 @@
 // deliberately do not encode business rules (that lives in the services).
 
 import { db as shared } from '@loa/shared';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import type { Db } from './db.js';
 
 const {
@@ -46,6 +46,21 @@ export class AccountRepo {
       .from(accounts)
       .where(eq(accounts.id, id));
     return out;
+  }
+
+  /** Every account. Backs safety rehydration and killAll across the fleet. */
+  async list(): Promise<AccountRow[]> {
+    return this.db.handle.select().from(accounts);
+  }
+
+  /** Patch an account row. Used by admin pause/resume and budget edits. */
+  async update(id: string, patch: Partial<AccountRow>): Promise<AccountRow> {
+    const [out] = await this.db.handle
+      .update(accounts)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(accounts.id, id))
+      .returning();
+    return out!;
   }
 }
 
@@ -154,6 +169,14 @@ export class ActionRepo {
       .returning();
     return out!;
   }
+
+  /** Every action for one account. Backs the weekly-invite counter. */
+  async listByAccount(accountId: string): Promise<ActionRow[]> {
+    return this.db.handle
+      .select()
+      .from(actions)
+      .where(eq(actions.accountId, accountId));
+  }
 }
 
 export class MessageRepo {
@@ -249,6 +272,11 @@ export class EventRepo {
       .from(events)
       .where(and(eq(events.accountId, accountId), eq(events.kind, kind)))
       .orderBy(desc(events.ts));
+  }
+
+  /** Every event, oldest-first. Backs the smoke trace and audit tooling. */
+  async listAll(): Promise<EventRow[]> {
+    return this.db.handle.select().from(events).orderBy(asc(events.ts));
   }
 
   /** Suppression events are account-null; read that bucket for the router. */

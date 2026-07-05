@@ -24,15 +24,10 @@ class PgAccountStore implements AccountStorePort {
     return this.repos.account.findById(id);
   }
   async all(): Promise<shared.AccountRow[]> {
-    // The orchestrator AccountRepo has no list-all; a live deployment adds one.
-    // TODO(p0): add AccountRepo.list() upstream, or a runtime-owned query, to
-    // back killAll across every account under Postgres.
-    throw new Error('PgAccountStore.all is not implemented; add AccountRepo.list upstream');
+    return this.repos.account.list();
   }
-  async update(): Promise<shared.AccountRow> {
-    // AccountRepo exposes no state/budget mutation yet. Admin pause/resume under
-    // Postgres needs an upstream AccountRepo.setState; flagged for P0.
-    throw new Error('PgAccountStore.update is not implemented; add AccountRepo.setState upstream');
+  async update(id: string, patch: Partial<shared.AccountRow>): Promise<shared.AccountRow> {
+    return this.repos.account.update(id, patch);
   }
 }
 
@@ -44,10 +39,8 @@ class PgActionStore implements ActionStorePort {
   async findById(id: string): Promise<shared.ActionRow | undefined> {
     return this.repos.action.findById(id);
   }
-  async listByAccount(): Promise<shared.ActionRow[]> {
-    // ActionRepo has no by-account listing yet; the weekly-invite counter needs
-    // one under Postgres. Flagged for P0.
-    throw new Error('PgActionStore.listByAccount is not implemented; add ActionRepo.listByAccount upstream');
+  async listByAccount(accountId: string): Promise<shared.ActionRow[]> {
+    return this.repos.action.listByAccount(accountId);
   }
 }
 
@@ -63,10 +56,7 @@ class PgEventRead implements EventReadPort {
     return this.repos.event.listByAccount(accountId);
   }
   async listAll(): Promise<shared.EventRow[]> {
-    // The orchestrator EventRepo exposes no unbounded list-all (by design; the
-    // audit spine is read per-account or per-kind). A live deployment adds a
-    // paginated query. Flagged for P0.
-    throw new Error('PgEventRead.listAll is not implemented; add a paginated EventRepo query upstream');
+    return this.repos.event.listAll();
   }
 }
 
