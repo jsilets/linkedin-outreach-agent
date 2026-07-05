@@ -1,0 +1,162 @@
+import { describe, it, expect } from 'vitest';
+import type { Action } from '@loa/shared';
+import type { AllowToken } from '../ports.js';
+import { SELECTORS } from '../selectors.js';
+import { FakePage, noSleep, fixedRng } from '../testing/fakes.js';
+import {
+  connect,
+  message,
+  follow,
+  readInbox,
+  NotAllowedError,
+  checkToken,
+} from './index.js';
+import type { ActionContext } from './actions.js';
+
+const ACCOUNT_ID = 'acct-1';
+const NOW = 1_000_000;
+
+function makeAction(overrides: Partial<Action> = {}): Action {
+  return {
+    id: 'action-1',
+    type: 'connect',
+    scheduledAt: new Date(NOW),
+    executedAt: null,
+    result: 'pending',
+    dedupKey: 'acct-1:target-1:connect',
+    accountId: ACCOUNT_ID,
+    targetId: 'target-1',
+    campaignId: 'camp-1',
+    createdAt: new Date(NOW),
+    updatedAt: new Date(NOW),
+    ...overrides,
+  };
+}
+
+function validToken(action: Action): AllowToken {
+  return {
+    kind: 'allow',
+    actionId: action.id,
+    accountId: ACCOUNT_ID,
+    expiresAt: NOW + 60_000,
+    nonce: 'n1',
+  };
+}
+
+function ctx(page: FakePage, action: Action, token: AllowToken | null): ActionContext {
+  return {
+    page,
+    // deliberately allow null through so the guard is exercised
+    token: token as AllowToken,
+    action,
+    accountId: ACCOUNT_ID,
+    sleep: noSleep,
+    rng: fixedRng(),
+    now: () => NOW,
+  };
+}
+
+describe('allow-token gate', () => {
+  it('checkToken accepts a matching, unexpired allow token', () => {
+    const action = makeAction();
+    expect(checkToken(validToken(action), action, ACCOUNT_ID, NOW)).toBeNull();
+  });
+
+  it('rejects a missing token', () => {
+    const action = makeAction();
+    expect(checkToken(null, action, ACCOUNT_ID, NOW)).toBe('missing');
+  });
+
+  it('rejects a token for the wrong action', () => {
+    const action = makeAction();
+    const t = { ...validToken(action), actionId: 'other' };
+    expect(checkToken(t, action, ACCOUNT_ID, NOW)).toBe('wrong_action');
+  });
+
+  it('rejects a token for the wrong account', () => {
+    const action = makeAction();
+    const t = { ...validToken(action), accountId: 'other' };
+    expect(checkToken(t, action, ACCOUNT_ID, NOW)).toBe('wrong_account');
+  });
+
+  it('rejects an expired token', () => {
+    const action = makeAction();
+    const t = { ...validToken(action), expiresAt: NOW - 1 };
+    expect(checkToken(t, action, ACCOUNT_ID, NOW)).toBe('expired');
+  });
+});
+
+describe('executor refuses without an allow', () => {
+  it('connect throws NotAllowedError and never touches the page', async () => {
+    const page = new FakePage();
+    const action = makeAction();
+    await expect(
+      connect(ctx(page, action, null), { profileUrl: 'https://x/in/p' }),
+    ).rejects.toBeInstanceOf(NotAllowedError);
+    // no navigation, no clicks happened
+    expect(page.gotos).toHaveLength(0);
+    expect(page.clicked(SELECTORS.connectButton)).toBe(false);
+  });
+
+  it('message throws when the token is expired', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'message' });
+    const expired: AllowToken = { ...validToken(action), expiresAt: NOW - 1 };
+    await expect(
+      message(ctx(page, action, expired), { profileUrl: 'https://x', body: 'hi' }),
+    ).rejects.toBeInstanceOf(NotAllowedError);
+    expect(page.gotos).toHaveLength(0);
+  });
+});
+
+describe('executor acts when allowed', () => {
+  it('connect with a note drives the centralized selectors', async () => {
+    const page = new FakePage();
+    const action = makeAction();
+    const res = await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/jane/',
+      note: 'Hi Jane, great to connect.',
+    });
+    expect(res.ok).toBe(true);
+    expect(page.gotos).toContain('https://www.linkedin.com/in/jane/');
+    expect(page.clicked(SELECTORS.connectButton)).toBe(true);
+    expect(page.clicked(SELECTORS.addNoteButton)).toBe(true);
+    expect(page.typedInto(SELECTORS.noteTextarea)).toContain('Hi Jane, great to connect.');
+    expect(page.clicked(SELECTORS.sendInviteButton)).toBe(true);
+  });
+
+  it('connect without a note skips the note selectors', async () => {
+    const page = new FakePage();
+    const action = makeAction();
+    await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/bob/',
+    });
+    expect(page.clicked(SELECTORS.connectButton)).toBe(true);
+    expect(page.clicked(SELECTORS.addNoteButton)).toBe(false);
+  });
+
+  it('message types into the compose box and sends', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'message' });
+    await message(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/jane/',
+      body: 'Thanks for connecting!',
+    });
+    expect(page.typedInto(SELECTORS.messageComposeBox)).toContain('Thanks for connecting!');
+    expect(page.clicked(SELECTORS.messageSendButton)).toBe(true);
+  });
+
+  it('follow clicks the follow button', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'follow' });
+    await follow(ctx(page, action, validToken(action)), 'https://x/in/p');
+    expect(page.clicked(SELECTORS.followButton)).toBe(true);
+  });
+
+  it('readInbox returns the conversation count', async () => {
+    const page = new FakePage({ counts: { [SELECTORS.inboxConversationRow]: 4 } });
+    const action = makeAction({ type: 'message' });
+    const res = await readInbox(ctx(page, action, validToken(action)));
+    expect(res.count).toBe(4);
+  });
+});
