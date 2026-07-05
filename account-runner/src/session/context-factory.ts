@@ -26,7 +26,13 @@ export interface ProxyIdentity {
 export interface LaunchConfigInput {
   /** Persistent profile directory, unique per account. */
   userDataDir: string;
-  identity: ProxyIdentity;
+  /**
+   * Proxy + geo identity for this account. Required for any real LinkedIn work
+   * (a real account must run behind its sticky proxy); optional only so a
+   * no-proxy launch is possible for the leak-test baseline and local spine
+   * checks. Enforcing "proxy required for a live account" is the caller's job.
+   */
+  identity?: ProxyIdentity;
   headless?: boolean;
   /** Browser distribution channel; default "chromium" (new headless). */
   channel?: string;
@@ -38,10 +44,14 @@ export interface ResolvedLaunchConfig {
   options: {
     headless: boolean;
     channel: string;
-    proxy: { server: string; username?: string; password?: string };
-    timezoneId: string;
-    locale: string;
-    geolocation: { latitude: number; longitude: number; accuracy: number };
+    /** Present only when an identity was supplied. */
+    proxy?: { server: string; username?: string; password?: string };
+    /** Present only when an identity was supplied. */
+    timezoneId?: string;
+    /** Present only when an identity was supplied. */
+    locale?: string;
+    /** Present only when an identity was supplied. */
+    geolocation?: { latitude: number; longitude: number; accuracy: number };
     permissions: string[];
     args: string[];
   };
@@ -67,11 +77,22 @@ const LEAK_GUARD_ARGS: readonly string[] = [
  */
 export function buildLaunchConfig(input: LaunchConfigInput): ResolvedLaunchConfig {
   const { userDataDir, identity } = input;
+  const base = {
+    headless: input.headless ?? true,
+    channel: input.channel ?? 'chromium',
+    // Leak-guard flags are always applied: harmless with no proxy, essential
+    // with one.
+    args: [...LEAK_GUARD_ARGS],
+  };
+  if (!identity) {
+    // No-proxy launch: used for the leak-test host-IP baseline and local spine
+    // checks. Never use this for a real account.
+    return { userDataDir, options: { ...base, permissions: [] } };
+  }
   return {
     userDataDir,
     options: {
-      headless: input.headless ?? true,
-      channel: input.channel ?? 'chromium',
+      ...base,
       proxy: {
         server: identity.server,
         ...(identity.username ? { username: identity.username } : {}),
@@ -87,7 +108,6 @@ export function buildLaunchConfig(input: LaunchConfigInput): ResolvedLaunchConfi
       // Granting geolocation keeps the browser from prompting and keeps geo
       // coherent with the proxy city.
       permissions: ['geolocation'],
-      args: [...LEAK_GUARD_ARGS],
     },
   };
 }

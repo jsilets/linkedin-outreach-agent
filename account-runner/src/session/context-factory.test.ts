@@ -55,6 +55,16 @@ describe('buildLaunchConfig', () => {
     });
     expect(cfg.options.proxy).toEqual({ server: 'http://gw.proxy.example:7000' });
   });
+
+  it('omits proxy and geo entirely when no identity is given', () => {
+    const cfg = buildLaunchConfig({ userDataDir: '/profiles/acct-1' });
+    expect(cfg.options.proxy).toBeUndefined();
+    expect(cfg.options.timezoneId).toBeUndefined();
+    expect(cfg.options.geolocation).toBeUndefined();
+    expect(cfg.options.permissions).toEqual([]);
+    // Leak-guard flags still apply with no proxy.
+    expect(cfg.options.args).toContain('--disable-ipv6');
+  });
 });
 
 describe('BrowserContextFactory', () => {

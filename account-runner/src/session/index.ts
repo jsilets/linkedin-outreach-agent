@@ -14,6 +14,8 @@ export {
   BrowserContextFactory,
   buildLaunchConfig,
 } from './context-factory.js';
+export { createPatchrightLauncher } from './patchright-launcher.js';
+export { resolveProxyIdentity, KNOWN_CITIES } from './proxy-identity.js';
 export type {
   ProxyIdentity,
   LaunchConfigInput,
