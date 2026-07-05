@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tsbuildinfo
+
+# drizzle generated migrations output stays, but journal caches do not
+infra/migrations/meta/_journal.tmp
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+logs/
+
+# browser session state / cookie vaults / profiles
+profiles/
+.cache/ms-playwright/
+playwright-report/
+test-results/
+
+# os
+.DS_Store

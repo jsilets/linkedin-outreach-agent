@@ -1,0 +1,37 @@
+{
+  "name": "linkedin-outreach-agent",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Self-hosted, agent-driven LinkedIn outreach framework",
+  "license": "Apache-2.0",
+  "author": "Josh Silets",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "shared",
+    "control-plane/mcp",
+    "control-plane/orchestrator",
+    "control-plane/scheduler",
+    "control-plane/agent",
+    "control-plane/safety",
+    "account-runner",
+    "infra"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "clean": "tsc -b --clean",
+    "test": "vitest run --passWithNoTests",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

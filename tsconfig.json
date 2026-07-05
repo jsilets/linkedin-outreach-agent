@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "files": [],
+  "references": [
+    { "path": "shared" },
+    { "path": "control-plane/mcp" },
+    { "path": "control-plane/orchestrator" },
+    { "path": "control-plane/scheduler" },
+    { "path": "control-plane/agent" },
+    { "path": "control-plane/safety" },
+    { "path": "account-runner" },
+    { "path": "infra" }
+  ]
+}
