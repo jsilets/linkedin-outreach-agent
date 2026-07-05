@@ -3,7 +3,7 @@
 Each account body sends all of its LinkedIn traffic through one sticky
 residential or ISP-static IP. This document is the contract the account-runner's
 `BrowserContextFactory` implements. If the browser context does not match this,
-the host Fly IP leaks and the account looks like a bot.
+the host IP leaks and the account looks like a bot.
 
 ## One sticky IP per account
 
@@ -14,8 +14,8 @@ the host Fly IP leaks and the account looks like a bot.
   compromised.
 - Prefer residential or ISP-static over datacenter IPs.
 
-The proxy is supplied to the Machine as Fly secrets, never baked into the image
-or toml:
+The proxy is supplied to the container as runtime secrets, never baked into the
+image or committed config:
 
     PROXY_URL        e.g. http://gw.provider.com:8000  (or socks5://...)
     PROXY_USERNAME
@@ -52,8 +52,9 @@ with a Los Angeles timezone is a tell. Set all of these to the proxy exit city:
 - Accept-Language header consistent with `locale`.
 
 Resolve the exit city once at provisioning time from the proxy IP and store it
-alongside the account so the values stay stable. Set `primary_region` in the
-account's fly toml to the Fly region nearest that city to keep latency low.
+alongside the account so the values stay stable. Where the host supports region
+pinning, place the account's container in the region nearest that city to keep
+latency low.
 
 ## Leak guard: WebRTC, DNS, IPv6
 
@@ -89,7 +90,7 @@ If the container has IPv6 connectivity and the proxy is IPv4-only, traffic can
 happy-eyeballs onto native IPv6 and bypass the proxy entirely. Force IPv4:
 
 - Launch with `--disable-ipv6` behaviour via `--host-resolver-rules` mapping, or
-  simpler, ensure the Machine has no public IPv6 route for egress and the proxy
+  simpler, ensure the container has no public IPv6 route for egress and the proxy
   endpoint is reached over IPv4.
 - Confirm the exit IP the site sees is the proxy IPv4, not a v6 address.
 
@@ -101,7 +102,7 @@ through the context and assert:
 
 1. Reported public IP == proxy exit IP.
 2. No WebRTC candidate exposes a non-proxy IP.
-3. DNS resolver geo matches the exit city, not the Fly region.
+3. DNS resolver geo matches the exit city, not the host region.
 
 If any check fails, do not run outreach on that account; surface it to the
 control plane instead.

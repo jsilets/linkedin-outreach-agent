@@ -1,0 +1,77 @@
+# Local end-to-end stack: Postgres + the single app container.
+#
+# The app is @loa/runtime: it composes the control-plane brain and an in-process
+# executor, starts the MCP HTTP server, and serves GET /healthz. This is the
+# whole deployable unit today (see infra/README.md).
+#
+# Quickstart:
+#   cp .env.example .env        # then fill in ANTHROPIC_API_KEY, COOKIE_VAULT_KEY
+#   docker compose run --rm migrate    # apply the schema once
+#   docker compose up app              # start the app; healthz on MCP_PORT
+#
+# With no ANTHROPIC_API_KEY the runtime uses a fake LLM; with no real browser
+# run wired yet, the browser stays idle. Both are expected at this P0 stage.
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-loa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-loa}
+      POSTGRES_DB: ${POSTGRES_DB:-loa}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-loa} -d ${POSTGRES_DB:-loa}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published by default; the app reaches it over the compose network.
+    # Uncomment to inspect the DB from the host.
+    # ports:
+    #   - "5432:5432"
+
+  # One-shot: applies infra/migrations to the database, then exits.
+  # Run with: docker compose run --rm migrate
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-loa}:${POSTGRES_PASSWORD:-loa}@postgres:5432/${POSTGRES_DB:-loa}
+    # Override the entrypoint: no Xvfb, no server, just the migrate step.
+    entrypoint: ["node"]
+    command: ["node_modules/drizzle-kit/bin.cjs", "migrate"]
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      dockerfile: infra/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Secrets and tunables come from .env (see .env.example). DATABASE_URL is set
+    # here to point at the compose Postgres; anything in .env still overrides
+    # non-DB values.
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-loa}:${POSTGRES_PASSWORD:-loa}@postgres:5432/${POSTGRES_DB:-loa}
+      MCP_PORT: ${MCP_PORT:-8080}
+      LOA_PROFILE_DIR: /data/profile
+    volumes:
+      # Browser profile: cookies/session survive restarts.
+      - browser_profile:/data/profile
+    ports:
+      - "${MCP_PORT:-8080}:${MCP_PORT:-8080}"
+    # ~2GB once real browser runs land (one headful Chromium). Uncomment to cap.
+    # mem_limit: 2g
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  browser_profile:

@@ -1,129 +1,123 @@
-# @loa/infra — deployment runbook
+# @loa/infra — deployment
 
-Deployment artifacts and helper scripts for the LinkedIn outreach framework.
-This package holds Docker images, Fly Machines templates, the proxy leak-guard
-contract, and the database migrations. It contains no application logic.
+Deployment artifacts for the LinkedIn outreach framework: one portable Docker
+image, a local docker-compose stack, a Railway config, and the database
+migrations. No application logic lives here.
 
-## Shape of the deployment
+## The deployable unit
 
-Two kinds of service:
+The system runs as ONE process. `@loa/runtime` composes the control-plane brain
+and an in-process account executor, starts the MCP HTTP server on `MCP_PORT`,
+and serves `GET /healthz` -> `{"ok":true,...}`. So the whole deployment today is:
 
-- The BRAIN (control plane): one always-on Fly app running the MCP server and
-  orchestrator against Postgres. No browser. App: `loa-control-plane`.
-- The BODIES (account runners): one Fly app PER LinkedIn account. Each is a
-  single Machine with a volume-backed browser profile and one sticky proxy IP,
-  running a headful Chromium under Xvfb. App: `loa-acct-<id>`.
+- one app container (this runtime), plus
+- one Postgres database.
 
-Postgres is a managed database (Fly Managed Postgres or external). Its
-connection string is a secret, not part of any image.
+That is it. A future phase splits the brain and the per-account bodies across
+separate machines, but the network transport for that split is not wired in the
+code yet. Do not deploy a separate always-running "body" service; there is
+nothing for it to talk to. See `examples/fly/NOTE.md` for the archived sketch of
+that future split.
+
+Real browser runs, live LinkedIn traffic, and the real LLM are P0 items: the
+image is built to be correct for them (Xvfb plus a headful Chromium are present,
+the entrypoint starts the virtual display), but nothing exercises the browser
+end to end yet. With no `ANTHROPIC_API_KEY` the runtime uses a fake LLM; with no
+`DATABASE_URL` it uses an in-memory store.
 
 ## Files
 
-- `Dockerfile.control-plane` — brain image (MCP + orchestrator, no browser).
-- `Dockerfile.account-runner` — one account body (headful Chromium under Xvfb).
-- `entrypoint-account-runner.sh` — starts Xvfb, exports DISPLAY, execs runner.
-- `fly.control-plane.toml` — brain Fly template.
-- `fly.account-runner.toml` — per-account Fly template (copy per account).
+- `Dockerfile` — the single app image (builder runs `npm run build`; runtime
+  stage installs Xvfb + a headful Chromium and runs `node runtime/dist/main.js`).
+- `entrypoint.sh` — starts Xvfb, exports `DISPLAY`, execs the runtime.
+- `railway.json` — Railway config-as-code (Dockerfile build, `/healthz` check,
+  pre-deploy migrate, restart policy).
+- `RAILWAY.md` — the Railway deploy runbook.
+- `migrations/` — drizzle-kit SQL output + its README (generate/migrate flow).
 - `PROXY.md` — sticky-IP binding + WebRTC/DNS/IPv6 leak-guard contract.
-- `migrations/` — drizzle-kit output + its README (generate/migrate flow).
+- `examples/fly/` — an unmaintained Fly example (see its `NOTE.md`).
 
-## Env vars
+The root `docker-compose.yml` and `.dockerignore` complete the set.
 
-All sensitive values come from Fly secrets at runtime. Never bake them into an
-image or a toml file. Cross-reference `.env.example` at the repo root.
+## Try it end to end (local)
 
-Brain (`loa-control-plane`):
+Requires Docker with Compose.
 
-- `DATABASE_URL` — Postgres connection string.
-- `ANTHROPIC_API_KEY` — LLM provider key.
-- `COOKIE_VAULT_KEY` — symmetric key for the cookie vault (openssl rand -base64 32).
-- `MCP_PORT` — port the MCP server listens on (default 8787).
+    cp .env.example .env
+    # fill in ANTHROPIC_API_KEY and COOKIE_VAULT_KEY (openssl rand -base64 32);
+    # DATABASE_URL is set for you by compose to point at the compose Postgres.
 
-Each account body (`loa-acct-<id>`):
+    docker compose run --rm migrate    # apply the schema once
+    docker compose up app              # start the app
 
-- `DATABASE_URL` — same database as the brain.
-- `ANTHROPIC_API_KEY` — LLM provider key.
-- `COOKIE_VAULT_KEY` — same vault key as the brain (so it can open sealed cookies).
-- `PROXY_URL`, `PROXY_USERNAME`, `PROXY_PASSWORD` — the account's sticky proxy.
-- `LOA_ACCOUNT_ID` — which account row this body drives.
-- `LOA_PROFILE_DIR` — browser profile path on the volume (defaults to
-  `/data/profile`, set in the image and toml).
+Then hit health on `MCP_PORT` (default 8080):
 
-## Bring-up order
+    curl localhost:8080/healthz        # -> {"ok":true,...}
 
-Bring the layers up bottom to top:
+Compose brings up Postgres (named volume `postgres_data`), a named volume for
+the browser profile (`browser_profile` at `/data/profile`), and the app. The
+`migrate` service is one-shot: it runs `drizzle-kit migrate` against the compose
+database and exits.
 
-1. Postgres. Provision the managed database, capture its connection string.
-2. Brain. Set the brain's secrets, deploy `loa-control-plane`. Its Fly release
-   command runs `db:migrate`, so the schema is applied here, once.
-3. Account bodies. For each account, provision its app, volume, proxy, and
-   secrets, then deploy. Bodies need the schema already applied by step 2.
+## Deploy to Railway
 
-## One-account-first (P0 path)
+Railway is the documented hosting target: flat-rate, no idle suspend, one-click
+Postgres, per-service volumes. Full runbook in `RAILWAY.md`. In short:
 
-Prove the whole loop with a single account before scaling:
+1. `railway init` + `railway link`.
+2. Add the Postgres plugin (provides `DATABASE_URL`).
+3. Add the app service from this repo; Railway builds `infra/Dockerfile` per
+   `railway.json`.
+4. Set secrets (`ANTHROPIC_API_KEY`, `COOKIE_VAULT_KEY`, `MCP_PORT`,
+   `LOA_LLM_MODEL`, and later `PROXY_*`).
+5. Attach a volume at `/data/profile`.
+6. Migrations run automatically before each release (`preDeployCommand`).
+7. `railway up`, then check `/healthz`.
 
-1. Stand up Postgres and deploy the brain (`loa-control-plane`).
-2. Confirm migrations applied (the release command succeeded; the `accounts`,
-   `campaigns`, `actions` tables exist).
-3. Provision ONE account body per the steps below and deploy it.
-4. Boot it, let it validate the proxy (see `PROXY.md`: reported IP == exit IP,
-   no WebRTC/DNS/IPv6 leak), then run a small supervised outreach window.
-5. Only after that loop is clean, provision a second account.
+## Environment variables
 
-## Provisioning an account body
+All secrets arrive at runtime; never bake them into an image or a config file.
+Cross-reference the repo-root `.env.example`.
 
-Naming is a convention, not a secret: app `loa-acct-<id>`, volume
-`profile_<id>`. For account `7f3a`:
+| Var                | Required        | Purpose |
+|--------------------|-----------------|---------|
+| `DATABASE_URL`     | for Postgres    | Postgres connection string. Unset -> in-memory store (dev only). |
+| `ANTHROPIC_API_KEY`| for real LLM    | LLM provider key. Unset -> fake LLM. |
+| `LOA_LLM_MODEL`    | no              | LLM model id (default `claude-fable-5`). |
+| `COOKIE_VAULT_KEY` | for real runs   | Symmetric key for the cookie vault. `openssl rand -base64 32`. |
+| `MCP_PORT`         | no              | Port the MCP server binds (default 8080). |
+| `PROXY_URL`        | for real runs   | Sticky egress proxy URL. See `PROXY.md`. |
+| `PROXY_USERNAME`   | for real runs   | Proxy auth. |
+| `PROXY_PASSWORD`   | for real runs   | Proxy auth. |
+| `LOA_PROFILE_DIR`  | no              | Browser profile path (image sets `/data/profile`). |
 
-    # 1. Copy the template and set the app name inside it.
-    cp infra/fly.account-runner.toml infra/fly.acct-7f3a.toml
-    #    edit: app = "loa-acct-7f3a", mounts.source = "profile_7f3a",
-    #          primary_region = <region nearest the proxy exit city>
+## Migrations
 
-    # 2. Create the app and its profile volume.
-    fly apps create loa-acct-7f3a
-    fly volumes create profile_7f3a --size 3 --region <region> -a loa-acct-7f3a
+The Drizzle schema in `@loa/shared` is the source of truth; `infra/migrations/`
+holds the generated SQL (committed). Two root scripts:
 
-    # 3. Set secrets (proxy is unique per account; never reuse an exit IP).
-    fly secrets set -a loa-acct-7f3a \
-        DATABASE_URL=... ANTHROPIC_API_KEY=... COOKIE_VAULT_KEY=... \
-        PROXY_URL=... PROXY_USERNAME=... PROXY_PASSWORD=... LOA_ACCOUNT_ID=7f3a
+- `npm run db:generate` — diff the schema and emit a new SQL file. Run after any
+  change to `shared/src/db/schema.ts`, review, commit.
+- `npm run db:migrate` — apply pending files to `DATABASE_URL`. Idempotent.
 
-    # 4. Deploy.
-    fly deploy -a loa-acct-7f3a -c infra/fly.acct-7f3a.toml \
-        --dockerfile infra/Dockerfile.account-runner
+In containers the migrate step runs `drizzle-kit` directly
+(`node node_modules/drizzle-kit/bin.cjs migrate`): compose runs it as the
+one-shot `migrate` service, Railway runs it as `preDeployCommand`. Details in
+`migrations/README.md`.
 
-To add a SECOND account, repeat every step with a new id: new app name, new
-volume, a NEW sticky proxy. Accounts never share a Machine, a profile, or an IP.
+## Cost note (Railway)
 
-### Lifecycle
+Railway bills flat-rate for what runs, with no idle suspend: a small always-on
+service plus a Postgres plugin is roughly a low-tens-of-dollars-per-month
+baseline, and it does not sleep between outreach windows. Budget ~2GB of memory
+per service once real browser runs land (one headful Chromium). A sticky
+residential or ISP-static proxy IP adds ~$2-6/account/month from the proxy
+provider (see `PROXY.md`); that cost is per account and is not Railway's.
 
-An account only needs to be awake during its daily outreach window. Drive the
-Machine from the orchestrator/scheduler: `fly machine start` before the window,
-`fly machine suspend` when it closes (RAM state is preserved and resumes fast,
-and you stop paying for idle CPU). Keep exactly one Machine per account app.
+## Caveats
 
-## Cost note
-
-Rough monthly cost per account:
-
-- Fly performance-1x (1 vCPU, 2GB): ~$32/account/month if left running. Less if
-  you suspend the Machine outside the account's outreach window.
-- Sticky residential/ISP-static IP: ~$2-6/account/month depending on provider.
-
-The brain is one small always-on `shared-cpu-1x` (512MB) app plus the Postgres
-database, shared across all accounts. Cost scales with the number of account
-bodies, which is why the profile, proxy, and Machine are all per-account.
-
-## Assumptions to confirm
-
-- Base image `node:24-bookworm-slim` and `playwright install --with-deps
-  chromium` for the browser + OS deps. Swap to a patchright-provided base if the
-  runner requires patchright's patched Chromium specifically.
-- Xvfb display `:99` at `1920x1080x24`. Override via `DISPLAY_NUM` /
-  `SCREEN_GEOMETRY` env if a different geometry is wanted.
-- Fly size performance-1x / 2GB for a body; shared-cpu-1x / 512MB for the brain.
-  Watch the first real run's memory and adjust if Chromium needs more headroom.
-- The runner reads `LOA_PROFILE_DIR`, `LOA_ACCOUNT_ID`, and the `PROXY_*` vars as
-  named here; align these with the account-runner's actual env contract.
+- Browser, LinkedIn, and real-LLM paths are P0 and not exercised end to end yet.
+  The image is structurally ready (Xvfb + headful Chromium), but prove the loop
+  with one account before scaling.
+- The brain/body split is future work; the callback transport does not exist in
+  the code. Today it is one process in one container.

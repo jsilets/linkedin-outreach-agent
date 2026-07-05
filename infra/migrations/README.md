@@ -24,11 +24,11 @@ Two root scripts drive it:
 
 ## Where migrations run
 
-The control-plane image ships this directory and `drizzle.config.ts`. The Fly
-release runs `db:migrate` before new Machines take traffic (see the
-`release_command` in `infra/fly.control-plane.toml`), so the schema is current
-before the brain starts. `DATABASE_URL` comes from a Fly secret, never from a
-committed file.
+The app image ships this directory and `drizzle.config.ts`. The migrate step
+runs `drizzle-kit migrate` before the app takes traffic: docker-compose runs it
+as the one-shot `migrate` service, and Railway runs it as the `preDeployCommand`
+in `infra/railway.json`, so the schema is current before the app starts.
+`DATABASE_URL` comes from an environment secret, never from a committed file.
 
 Locally, apply against your dev database with:
 

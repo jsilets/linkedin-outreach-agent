@@ -1,0 +1,40 @@
+# Dependencies: reinstalled inside the image from the lockfile.
+node_modules
+**/node_modules
+
+# Build output: rebuilt inside the image by `npm run build`.
+dist
+**/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Git metadata.
+.git
+.gitignore
+
+# Env & secrets: never copy these into an image.
+.env
+.env.*
+!.env.example
+
+# Browser session state / cookie vaults / profiles.
+profiles
+**/profiles
+.cache/ms-playwright
+playwright-report
+test-results
+
+# Logs.
+*.log
+logs
+
+# Docker + local infra artifacts.
+Dockerfile
+**/Dockerfile
+docker-compose.yml
+.dockerignore
+
+# OS / editor cruft.
+.DS_Store
+.vscode
+.idea
