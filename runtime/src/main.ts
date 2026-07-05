@@ -13,7 +13,7 @@ async function main(): Promise<void> {
 
   const store = config.databaseUrl ? 'postgres' : 'in-memory';
   console.log(
-    `[@loa/runtime] composed: store=${store} llm=${runtime.llmProvider} executor=fake`,
+    `[@loa/runtime] composed: store=${store} llm=${runtime.llmProvider} executor=${runtime.executorMode}`,
   );
 
   const server = startServer(runtime.ports);

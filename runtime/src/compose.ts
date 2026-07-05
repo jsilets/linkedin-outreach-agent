@@ -51,7 +51,12 @@ import {
 } from './adapters/mcp-ports.js';
 import { PersistenceAdapter } from './adapters/persistence.js';
 import { FakeExecutor } from './executor/fake-executor.js';
+import { resolveProxyIdentity } from '@loa/account-runner';
+import { AccountRunnerExecutor } from './executor/account-runner-executor.js';
+import { LiveSessionProvider } from './executor/session-provider.js';
 import { FakeLLMProvider } from './llm/fake-llm-provider.js';
+import type { ExecutorPort as McpExecutorPort } from '@loa/mcp';
+import type { ExecutorPort as AgentExecutorPort } from '@loa/agent';
 
 /** Everything compose() hands back. */
 export interface Runtime {
@@ -61,7 +66,11 @@ export interface Runtime {
   weekly: StoreBackedWeeklyInviteCounter;
   scheduler: SchedulerService;
   orchestrator: OrchestratorServices;
+  /** The fake executor instance; smoke feeds inbound through it. In real mode
+   * the wired executor is the AccountRunnerExecutor, exposed via ports. */
   executor: FakeExecutor;
+  /** Which executor drives actions: 'fake' | 'real'. */
+  executorMode: 'fake' | 'real';
   llm: LLMProvider;
   /** Which LLM provider was selected: 'openrouter' | 'claude' | 'fake'. */
   llmProvider: LlmProviderName;
@@ -137,8 +146,27 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
   // ONE orchestrator over the store, with the scheduler's follow-up port.
   const orchestrator = makeOrchestratorServices(store, scheduler.asOrchestratorPort());
 
-  // Executor + LLM.
-  const executor = new FakeExecutor({ store, weekly });
+  // Executor + LLM. The fake executor is always built (smoke drives it via
+  // feedInbound); the wired executor is the real account-runner when
+  // LOA_EXECUTOR=real, else the fake.
+  const fakeExecutor = new FakeExecutor({ store, weekly });
+  let sessionProvider: LiveSessionProvider | undefined;
+  let executor: McpExecutorPort & AgentExecutorPort = fakeExecutor;
+  if (config.executorMode === 'real') {
+    sessionProvider = new LiveSessionProvider({
+      profileDir: config.profileDir,
+      vaultDir: config.vaultDir,
+      allowNoProxy: config.allowNoProxy,
+      // One sticky proxy for the P0 single account, resolved from PROXY_* env.
+      // Returns undefined when no proxy is set (then allowNoProxy must be true).
+      identityFor: () => resolveProxyIdentity(),
+    });
+    executor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session: sessionProvider,
+    });
+  }
   const { llm, name: llmProvider } = chooseLlm(config);
 
   // mcp ports, all backed by the single orchestrator + gate + store + executor.
@@ -167,7 +195,8 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     weekly,
     scheduler,
     orchestrator,
-    executor,
+    executor: fakeExecutor,
+    executorMode: config.executorMode,
     llm,
     llmProvider,
     ports,
@@ -197,6 +226,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
       );
     },
     async close(): Promise<void> {
+      if (sessionProvider) await sessionProvider.close();
       await store.close();
     },
   };
