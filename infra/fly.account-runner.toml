@@ -1,0 +1,66 @@
+# Fly Machines template for ONE account body.
+#
+# One Machine, one attached volume (the browser profile), one sticky proxy IP.
+# There is exactly one of these apps PER LinkedIn account.
+#
+# Naming convention (a convention, NOT a hardcoded secret): name the app
+#   loa-acct-<id>
+# where <id> is the short account id from the accounts table. So account
+# 7f3a becomes app `loa-acct-7f3a` with volume `profile_7f3a`.
+#
+# This file is a TEMPLATE. Copy it per account and set `app` before deploying:
+#   cp fly.account-runner.toml fly.acct-7f3a.toml
+#   # edit app = "loa-acct-7f3a"
+#   fly apps create loa-acct-7f3a
+#   fly volumes create profile_7f3a --size 3 --region <proxy-exit-region> -a loa-acct-7f3a
+#   fly secrets set -a loa-acct-7f3a \
+#       DATABASE_URL=... ANTHROPIC_API_KEY=... COOKIE_VAULT_KEY=... \
+#       PROXY_URL=... PROXY_USERNAME=... PROXY_PASSWORD=... LOA_ACCOUNT_ID=7f3a
+#   fly deploy -a loa-acct-7f3a -c fly.acct-7f3a.toml \
+#       --dockerfile infra/Dockerfile.account-runner
+#
+# To provision a SECOND account, repeat the whole block above with a new app
+# name, a new volume, and a NEW sticky proxy (never share an exit IP between
+# accounts). Each account is fully isolated: its own Machine, profile, IP.
+
+# Replace before deploy. Left as a placeholder on purpose.
+app = "loa-acct-REPLACE"
+primary_region = "iad"   # set to the region closest to the proxy exit city
+
+[build]
+  dockerfile = "infra/Dockerfile.account-runner"
+
+[env]
+  NODE_ENV = "production"
+  # The runner reads this to know which account row it drives.
+  # Set the real value with `fly secrets set LOA_ACCOUNT_ID=...` (not here).
+  LOA_PROFILE_DIR = "/data/profile"
+  # Sticky proxy: the PROXY_URL / PROXY_USERNAME / PROXY_PASSWORD secrets bind
+  # the browser context's egress. See infra/PROXY.md for the leak-guard
+  # contract the BrowserContextFactory implements. Do NOT put proxy creds here;
+  # set them as Fly secrets so they never land in the image or this file.
+
+# The browser profile lives on this volume so cookies and session state survive
+# Machine restarts and suspends. One volume per account.
+[[mounts]]
+  source = "profile"        # rename per account, e.g. profile_7f3a
+  destination = "/data"
+
+# Single Machine, performance-1x, 2GB. One headful Chromium fits here.
+[[vm]]
+  size = "performance-1x"
+  memory = "2gb"
+  cpus = 1
+
+# No public HTTP service. The body pulls work from the brain and reports back;
+# it does not accept inbound traffic. Omitting [http_service] keeps it private.
+#
+# Suspend-when-idle: this body only needs to be awake during its outreach
+# windows. Run it as a single Machine and drive its lifecycle from the
+# orchestrator/scheduler:
+#   fly machine start <id>   before the account's daily window
+#   fly machine suspend <id> when the window closes (RAM state preserved,
+#                            resumes fast, and you stop paying for idle CPU)
+# Keep exactly one Machine per account app; do not autoscale to >1.
+[deploy]
+  strategy = "immediate"

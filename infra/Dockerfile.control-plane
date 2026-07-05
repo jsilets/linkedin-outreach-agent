@@ -1,0 +1,68 @@
+# Image for the BRAIN: the always-on control plane. It runs the MCP server plus
+# the orchestrator against Postgres. No browser, so this image stays small.
+#
+# Exposes MCP_PORT (default 8787). Nothing sensitive is baked in: DATABASE_URL,
+# ANTHROPIC_API_KEY, COOKIE_VAULT_KEY and MCP_PORT arrive at runtime from Fly
+# secrets / env.
+
+# ---- build stage ---------------------------------------------------------
+FROM node:24-bookworm-slim AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY tsconfig.json tsconfig.base.json ./
+COPY shared/package.json shared/
+COPY account-runner/package.json account-runner/
+COPY infra/package.json infra/
+COPY control-plane/mcp/package.json control-plane/mcp/
+COPY control-plane/orchestrator/package.json control-plane/orchestrator/
+COPY control-plane/scheduler/package.json control-plane/scheduler/
+COPY control-plane/agent/package.json control-plane/agent/
+COPY control-plane/safety/package.json control-plane/safety/
+
+# No browser download needed for the brain.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN npm ci
+
+# Build shared plus the control-plane packages the brain runs.
+COPY shared/ shared/
+COPY control-plane/ control-plane/
+RUN npm run build --workspace @loa/shared \
+ && npm run build --workspace @loa/mcp \
+ && npm run build --workspace @loa/orchestrator \
+ && npm run build --workspace @loa/scheduler \
+ && npm run build --workspace @loa/agent \
+ && npm run build --workspace @loa/safety
+
+# ---- runtime stage -------------------------------------------------------
+FROM node:24-bookworm-slim AS runtime
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      dumb-init \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/shared/dist ./shared/dist
+COPY --from=build /app/shared/package.json ./shared/package.json
+COPY --from=build /app/control-plane ./control-plane
+
+# Migrations ship with the image so the brain can apply them on release.
+# `npm run db:migrate` (drizzle-kit) reads DATABASE_URL and applies these.
+COPY --from=build /app/infra/migrations ./infra/migrations
+COPY drizzle.config.ts ./drizzle.config.ts
+
+# The MCP server listens here. Fly maps its public/internal port to this.
+ENV MCP_PORT=8787
+EXPOSE 8787
+
+USER node
+
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "/app/control-plane/mcp/dist/index.js"]

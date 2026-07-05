@@ -1,0 +1,91 @@
+# Image for ONE account body: a headful Chromium under a virtual display (Xvfb),
+# driven by @loa/account-runner. One of these runs per LinkedIn account, on its
+# own Fly Machine, with a volume-backed browser profile and one sticky proxy IP.
+#
+# RAM expectation: ~2GB. A single headful Chromium plus the runner fits in the
+# Fly performance-1x size (1 shared/perf vCPU, 2GB). Do not pack two accounts
+# into one Machine; the profile and proxy are per-account by design.
+#
+# Nothing sensitive is baked in. DATABASE_URL, ANTHROPIC_API_KEY, COOKIE_VAULT_KEY
+# and the PROXY_* vars all arrive at runtime from Fly secrets / env.
+
+# ---- build stage ---------------------------------------------------------
+# Build the workspace once, then copy only what the runner needs into the
+# runtime image. Node 24 to match "engines": { "node": ">=24" }.
+FROM node:24-bookworm-slim AS build
+
+WORKDIR /app
+
+# Install workspace deps against the lockfile for a reproducible build.
+COPY package.json package-lock.json ./
+COPY tsconfig.json tsconfig.base.json ./
+COPY shared/package.json shared/
+COPY account-runner/package.json account-runner/
+COPY infra/package.json infra/
+COPY control-plane/mcp/package.json control-plane/mcp/
+COPY control-plane/orchestrator/package.json control-plane/orchestrator/
+COPY control-plane/scheduler/package.json control-plane/scheduler/
+COPY control-plane/agent/package.json control-plane/agent/
+COPY control-plane/safety/package.json control-plane/safety/
+
+# Skip Playwright's own browser download here; the runtime stage installs the
+# system Chromium and browser deps via `playwright install --with-deps`.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN npm ci
+
+# Copy sources and build the shared lib + runner (tsc -b resolves references).
+COPY shared/ shared/
+COPY account-runner/ account-runner/
+RUN npm run build --workspace @loa/shared \
+ && npm run build --workspace @loa/account-runner
+
+# ---- runtime stage -------------------------------------------------------
+FROM node:24-bookworm-slim AS runtime
+
+# Xvfb + xdpyinfo give us the virtual display; the rest are Chromium's runtime
+# libraries, pulled in below by `playwright install --with-deps chromium`.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      xvfb \
+      x11-utils \
+      dumb-init \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+# Bring in the built workspace and production node_modules from the build stage.
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/shared/dist ./shared/dist
+COPY --from=build /app/shared/package.json ./shared/package.json
+COPY --from=build /app/account-runner/dist ./account-runner/dist
+COPY --from=build /app/account-runner/package.json ./account-runner/package.json
+
+# Install the Chromium build patchright/playwright drive, plus its OS deps.
+# Store browsers in a system path so the non-root user can read them.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN npx --yes playwright install --with-deps chromium \
+ && rm -rf /var/lib/apt/lists/*
+
+# Entrypoint starts Xvfb, then execs the runner.
+COPY infra/entrypoint-account-runner.sh /app/entrypoint-account-runner.sh
+RUN chmod +x /app/entrypoint-account-runner.sh
+
+# Non-root user. The mounted profile volume is chowned to this uid at runtime by
+# Fly; we also create the mount point so a first boot without data still works.
+RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 runner \
+ && mkdir -p /data/profile \
+ && chown -R runner:runner /data /opt/playwright-browsers
+USER runner
+
+# Browser profile lives on the mounted volume so cookies/session survive
+# restarts. The runner reads this path (LOA_PROFILE_DIR) when it opens the
+# persistent browser context.
+ENV LOA_PROFILE_DIR=/data/profile
+
+# dumb-init reaps zombies (Chromium spawns many child processes) and forwards
+# signals to the entrypoint so Fly stop/suspend is clean.
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["/app/entrypoint-account-runner.sh"]

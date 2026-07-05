@@ -1,0 +1,53 @@
+# Fly template for the BRAIN: the always-on control plane.
+#
+# Runs the MCP server + orchestrator. Small, always up, no browser, no volume.
+# One app for the whole deployment (all account bodies talk to this one brain).
+#
+# App name convention: loa-control-plane
+#
+# First deploy:
+#   fly apps create loa-control-plane
+#   fly secrets set -a loa-control-plane \
+#       DATABASE_URL=... ANTHROPIC_API_KEY=... COOKIE_VAULT_KEY=... MCP_PORT=8787
+#   fly deploy -a loa-control-plane -c fly.control-plane.toml \
+#       --dockerfile infra/Dockerfile.control-plane
+#
+# Postgres: use Fly Managed Postgres or an external provider, and put its
+# connection string in the DATABASE_URL secret. Nothing sensitive lives in
+# this file.
+
+app = "loa-control-plane"
+primary_region = "iad"
+
+[build]
+  dockerfile = "infra/Dockerfile.control-plane"
+
+[env]
+  NODE_ENV = "production"
+  MCP_PORT = "8787"
+
+# The MCP server. internal_port must match MCP_PORT above.
+[http_service]
+  internal_port = 8787
+  force_https = true
+  # Keep at least one Machine warm; the brain is always-on.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+# Small is enough for the brain: MCP + orchestrator + Postgres client.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  cpus = 1
+
+# Migrations run once per release, before the new Machines take traffic.
+# db:migrate reads DATABASE_URL and applies infra/migrations.
+[deploy]
+  release_command = "npm run db:migrate"
+  strategy = "rolling"
