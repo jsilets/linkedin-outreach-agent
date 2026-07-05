@@ -6,6 +6,25 @@ Status: scaffold. This repo currently holds the foundation only. Domain types, t
 
 A self-hosted, agent-driven framework for running LinkedIn outreach across multiple accounts. A control plane plans campaigns and enforces safety; per-account runners drive a real browser to carry out actions. An LLM personalizes messages and classifies replies. Everything an account does is written to an append-only audit log.
 
+## How it's driven (bring your own agent)
+
+The framework is an MCP server. It is the hands plus a server-side safety gate, not the brain. The brain can come from two places:
+
+- **Driven mode (primary):** an external agent, Claude Code or Codex running on your own model subscription, connects to the MCP server as the client. It calls the Observe tools, writes the copy itself, and calls the gated Act tools. No LLM key and no per-token cost on the framework side.
+- **Autonomous mode (fallback):** with no external agent attached, the framework runs its own loop and calls an LLM through a key. The internal LLM is optional and selected by which key is set (OpenRouter, else Anthropic, else an offline fake), and used only in this mode.
+
+Both are safe the same way: the autonomy and approval gate is enforced server-side regardless of which brain drives. Under `supervised` autonomy every send and reply queues to human approval.
+
+See [`docs/DRIVING.md`](./docs/DRIVING.md) for the topology and the driver playbook, and [`docs/SCHEDULING.md`](./docs/SCHEDULING.md) to run driven mode on a schedule.
+
+## Docs
+
+- [`docs/DRIVING.md`](./docs/DRIVING.md): driven vs autonomous mode, capability headers, the per-cycle driver playbook.
+- [`docs/SCHEDULING.md`](./docs/SCHEDULING.md): running driven mode on a cron cadence with Claude Code and Codex.
+- [`docs/P0-RUNBOOK.md`](./docs/P0-RUNBOOK.md): first supervised run, one account, end to end.
+- [`examples/driver/`](./examples/driver/): a copy-paste driver prompt for Claude Code or Codex.
+- [`infra/RAILWAY.md`](./infra/RAILWAY.md), [`infra/PROXY.md`](./infra/PROXY.md): deployment and proxy leak guard.
+
 ## Repo shape
 
 This is an npm workspaces monorepo. Packages are scoped `@loa/*`.
