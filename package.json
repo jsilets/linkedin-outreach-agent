@@ -28,6 +28,9 @@
     "dev": "node --env-file-if-exists=.env --import tsx runtime/src/main.ts",
     "start": "node --env-file-if-exists=.env --import tsx runtime/src/main.ts",
     "smoke": "node --import tsx runtime/src/smoke.ts",
+    "login": "node --env-file-if-exists=.env --import tsx runtime/src/login.ts",
+    "leak-test": "node --env-file-if-exists=.env --import tsx runtime/src/tools/leak-test.ts",
+    "selector-scan": "node --env-file-if-exists=.env --import tsx runtime/src/tools/selector-scan.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
