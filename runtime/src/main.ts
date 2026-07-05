@@ -12,8 +12,9 @@ async function main(): Promise<void> {
   await runtime.rehydrateSafety();
 
   const store = config.databaseUrl ? 'postgres' : 'in-memory';
-  const llm = config.anthropicApiKey ? 'claude' : 'fake';
-  console.log(`[@loa/runtime] composed: store=${store} llm=${llm} executor=fake`);
+  console.log(
+    `[@loa/runtime] composed: store=${store} llm=${runtime.llmProvider} executor=fake`,
+  );
 
   const server = startServer(runtime.ports);
 

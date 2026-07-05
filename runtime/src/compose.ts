@@ -5,13 +5,18 @@
 // the orchestrator services, and a runLoopOnce helper.
 //
 // Store selection: Postgres when DATABASE_URL is set, else in-memory.
-// LLM selection: ClaudeLLMProvider when ANTHROPIC_API_KEY is set, else the
-// deterministic FakeLLMProvider. Executor: FakeExecutor for dev/smoke (no
-// browser); AccountRunnerExecutor is available for P0 once a live session exists.
+// LLM selection: the internal LLM is OPTIONAL. In the primary mode an external
+// agent drives the framework over MCP and supplies the intelligence, so no key
+// is needed. For autonomous runs the fallback API path is selected by precedence:
+//   OPENROUTER_API_KEY -> OpenRouterLLMProvider
+//   else ANTHROPIC_API_KEY -> ClaudeLLMProvider
+//   else -> deterministic FakeLLMProvider (offline).
+// Executor: FakeExecutor for dev/smoke (no browser); AccountRunnerExecutor is
+// available for P0 once a live session exists.
 
 import type { Account, Campaign, LLMProvider, Target } from '@loa/shared';
 import { DefaultSafetyGate } from '@loa/safety';
-import { ClaudeLLMProvider } from '@loa/agent';
+import { ClaudeLLMProvider, OpenRouterLLMProvider } from '@loa/agent';
 import {
   initialState,
   runToStop,
@@ -58,6 +63,8 @@ export interface Runtime {
   orchestrator: OrchestratorServices;
   executor: FakeExecutor;
   llm: LLMProvider;
+  /** Which LLM provider was selected: 'openrouter' | 'claude' | 'fake'. */
+  llmProvider: LlmProviderName;
   ports: Ports;
   approvals: ApprovalAdapter;
   admin: AccountAdminAdapter;
@@ -77,15 +84,44 @@ function chooseStore(config: RuntimeConfig): RuntimeStore {
   return makeInMemoryStore();
 }
 
-function chooseLlm(config: RuntimeConfig): LLMProvider {
-  if (config.anthropicApiKey) {
-    return new ClaudeLLMProvider(
-      config.llmModel
-        ? { apiKey: config.anthropicApiKey, model: config.llmModel }
-        : { apiKey: config.anthropicApiKey },
-    );
+/** The provider label selected by chooseLlm, for startup logging. */
+export type LlmProviderName = 'openrouter' | 'claude' | 'fake';
+
+/**
+ * Selection precedence, most explicit first:
+ *   OPENROUTER_API_KEY -> OpenRouter, else ANTHROPIC_API_KEY -> Claude,
+ *   else the offline Fake. Driven mode over MCP needs no key at all.
+ */
+export function selectLlmProvider(config: RuntimeConfig): LlmProviderName {
+  if (config.openRouterApiKey) return 'openrouter';
+  if (config.anthropicApiKey) return 'claude';
+  return 'fake';
+}
+
+function chooseLlm(config: RuntimeConfig): { llm: LLMProvider; name: LlmProviderName } {
+  const name = selectLlmProvider(config);
+  if (name === 'openrouter') {
+    return {
+      llm: new OpenRouterLLMProvider({
+        apiKey: config.openRouterApiKey,
+        ...(config.openRouterModel ? { model: config.openRouterModel } : {}),
+        ...(config.openRouterSiteUrl ? { siteUrl: config.openRouterSiteUrl } : {}),
+        ...(config.openRouterAppTitle ? { appTitle: config.openRouterAppTitle } : {}),
+      }),
+      name,
+    };
   }
-  return new FakeLLMProvider();
+  if (name === 'claude') {
+    return {
+      llm: new ClaudeLLMProvider(
+        config.llmModel
+          ? { apiKey: config.anthropicApiKey, model: config.llmModel }
+          : { apiKey: config.anthropicApiKey },
+      ),
+      name,
+    };
+  }
+  return { llm: new FakeLLMProvider(), name };
 }
 
 export function compose(config: RuntimeConfig = loadConfig()): Runtime {
@@ -103,7 +139,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
 
   // Executor + LLM.
   const executor = new FakeExecutor({ store, weekly });
-  const llm = chooseLlm(config);
+  const { llm, name: llmProvider } = chooseLlm(config);
 
   // mcp ports, all backed by the single orchestrator + gate + store + executor.
   const approvals = new ApprovalAdapter(orchestrator, executor);
@@ -133,6 +169,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     orchestrator,
     executor,
     llm,
+    llmProvider,
     ports,
     approvals,
     admin,

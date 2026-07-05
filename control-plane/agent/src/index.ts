@@ -2,13 +2,18 @@
 //
 // Public API:
 //   ClaudeLLMProvider          LLMProvider backed by @anthropic-ai/sdk (Fable 5).
+//   OpenRouterLLMProvider      LLMProvider over OpenRouter's OpenAI-compatible API.
 //   AnthropicClientSeam        real seam over the SDK; inject a fake for tests.
+//   OpenRouterClientSeam       real seam over fetch; inject a fake for tests.
 //   control loop               observe -> personalize -> pace -> act -> ingest
 //                              -> classify -> draft, stepwise and resumable.
 //   PORT interfaces            the integration contract with the other packages.
 
 export { ClaudeLLMProvider } from './llm-provider.js';
 export type { ClaudeLLMProviderOptions } from './llm-provider.js';
+
+export { OpenRouterLLMProvider } from './openrouter-llm-provider.js';
+export type { OpenRouterLLMProviderOptions } from './openrouter-llm-provider.js';
 
 export { AnthropicClientSeam } from './anthropic-seam.js';
 export type {
@@ -18,6 +23,13 @@ export type {
   SeamTool,
   SeamToolUse,
 } from './anthropic-seam.js';
+
+export { OpenRouterClientSeam } from './openrouter-seam.js';
+export type {
+  OpenRouterSeam,
+  OpenRouterClientSeamOptions,
+  FetchLike,
+} from './openrouter-seam.js';
 
 export {
   initialState,
