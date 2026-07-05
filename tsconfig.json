@@ -9,6 +9,7 @@
     { "path": "control-plane/agent" },
     { "path": "control-plane/safety" },
     { "path": "account-runner" },
+    { "path": "runtime" },
     { "path": "infra" }
   ]
 }

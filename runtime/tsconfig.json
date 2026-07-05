@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "types": ["node"]
+  },
+  "references": [
+    { "path": "../shared" },
+    { "path": "../control-plane/safety" },
+    { "path": "../control-plane/scheduler" },
+    { "path": "../control-plane/mcp" },
+    { "path": "../control-plane/agent" },
+    { "path": "../control-plane/orchestrator" },
+    { "path": "../account-runner" }
+  ],
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

@@ -17,6 +17,7 @@
     "control-plane/agent",
     "control-plane/safety",
     "account-runner",
+    "runtime",
     "infra"
   ],
   "scripts": {
@@ -24,6 +25,9 @@
     "typecheck": "tsc -b",
     "clean": "tsc -b --clean",
     "test": "vitest run --passWithNoTests",
+    "dev": "node --env-file-if-exists=.env --import tsx runtime/src/main.ts",
+    "start": "node --env-file-if-exists=.env --import tsx runtime/src/main.ts",
+    "smoke": "node --import tsx runtime/src/smoke.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

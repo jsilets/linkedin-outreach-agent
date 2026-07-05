@@ -1,0 +1,31 @@
+{
+  "name": "@loa/runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/compose.d.ts",
+      "default": "./dist/compose.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "dev": "node --env-file-if-exists=.env --import tsx src/main.ts",
+    "smoke": "node --import tsx src/smoke.ts"
+  },
+  "dependencies": {
+    "@loa/account-runner": "*",
+    "@loa/agent": "*",
+    "@loa/mcp": "*",
+    "@loa/orchestrator": "*",
+    "@loa/safety": "*",
+    "@loa/scheduler": "*",
+    "@loa/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0"
+  }
+}
