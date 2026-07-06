@@ -92,6 +92,8 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
     expect(url.origin).toBe('https://www.linkedin.com');
     expect(url.pathname).toBe('/search/results/people/');
     expect(url.searchParams.get('keywords')).toBe('growth marketer');
+    // A plain keyword search (no facets) uses the vertical-switch origin.
+    expect(url.searchParams.get('origin')).toBe('SWITCH_SEARCH_VERTICAL');
     expect(url.searchParams.get('page')).toBeNull();
   });
 
@@ -101,21 +103,26 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
     expect(new URL(buildVoyagerSearchUrl(q, 30)).searchParams.get('page')).toBe('4');
   });
 
-  // Focused facet-encoding test: EASY TO UPDATE once one live request is
-  // captured. Everything above this line is stable; this asserts the current
-  // best-effort guess so a diff shows exactly what changed after capture.
-  it('encodes the guessed facet grammar (verify-live)', () => {
+  // Facet encoding, verified against real captured page URLs (2026-07-06):
+  // each facet is its own JSON-array param; title/company free-text fold into
+  // the keyword box (no free-tier facet for those).
+  it('encodes each facet as its own JSON-array param', () => {
     const q: PeopleQuery = {
-      keywords: 'k',
+      keywords: 'ev charging operations lead',
       titleKeywords: ['manager', 'director'],
       companyKeywords: ['Acme'],
+      companyUrns: ['439853', '2685826'],
       geoUrn: '103644278',
       network: ['S', 'O'],
     };
-    const filters = new URL(buildVoyagerSearchUrl(q, 0)).searchParams.get('filters');
-    expect(filters).toBe(
-      'title->List(manager|director),company->List(Acme),geoUrn->List(103644278),network->List(S|O)',
-    );
+    const params = new URL(buildVoyagerSearchUrl(q, 0)).searchParams;
+    expect(params.get('keywords')).toBe('ev charging operations lead manager director Acme');
+    expect(params.get('origin')).toBe('FACETED_SEARCH');
+    expect(params.get('network')).toBe('["S","O"]');
+    expect(params.get('geoUrn')).toBe('["103644278"]');
+    expect(params.get('currentCompany')).toBe('["439853","2685826"]');
+    // The old single `filters` param no longer exists.
+    expect(params.get('filters')).toBeNull();
   });
 });
 
