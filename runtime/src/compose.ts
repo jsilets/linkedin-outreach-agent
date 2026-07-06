@@ -23,7 +23,7 @@ import {
   type LoopPorts,
   type LoopState,
 } from '@loa/agent';
-import type { Ports } from '@loa/mcp';
+import type { Ports, ObservePort } from '@loa/mcp';
 import { rowToAccount, rowToCampaign, rowToTarget } from './mappers.js';
 import { loadConfig, type RuntimeConfig } from './config.js';
 import {
@@ -49,6 +49,8 @@ import {
   CampaignAdapter,
   FakeObserve,
 } from './adapters/mcp-ports.js';
+import { LiveObserve, InMemorySearchBudget } from './adapters/observe-live.js';
+import { makeDispatchTick, type DispatchTick } from './dispatch/index.js';
 import { PersistenceAdapter } from './adapters/persistence.js';
 import { FakeExecutor } from './executor/fake-executor.js';
 import { resolveProxyIdentity } from '@loa/account-runner';
@@ -77,6 +79,10 @@ export interface Runtime {
   ports: Ports;
   approvals: ApprovalAdapter;
   admin: AccountAdminAdapter;
+  /** The campaign sequence engine. Built here but NOT started by compose; a
+   * host starts it with dispatch.start(intervalMs). Routes every action step
+   * through the same gate the MCP Act tools use. */
+  dispatch: DispatchTick;
   /** Drive the agent loop once for one target; returns the terminal state. */
   runLoopOnce(accountId: string, targetId: string): Promise<LoopState>;
   /** Rehydrate safety state (weekly counter + soft-signal streak) from the
@@ -174,8 +180,36 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
   const admin = new AccountAdminAdapter(store, gate, orchestrator);
   const campaign = new CampaignAdapter(orchestrator, store);
   const safety = makeMcpSafetyPort(gate, store);
-  const observe = new FakeObserve();
+  // Observe: reads run open (no gating). With a real session, people-search
+  // goes live (drives the page + intercepts voyagerSearchDashClusters); the
+  // other reads stay on the canned FakeObserve until they get live backends.
+  // Without a real session there is no page to drive, so everything is fake.
+  const fakeObserve = new FakeObserve();
+  let observe: ObservePort = fakeObserve;
+  if (sessionProvider) {
+    const live = new LiveObserve(
+      { pageFor: (id) => sessionProvider!.pageFor(id) },
+      new InMemorySearchBudget(),
+    );
+    observe = {
+      ...fakeObserve,
+      getProfile: fakeObserve.getProfile.bind(fakeObserve),
+      getRecentPosts: fakeObserve.getRecentPosts.bind(fakeObserve),
+      getPostEngagers: fakeObserve.getPostEngagers.bind(fakeObserve),
+      getCompanyJobs: fakeObserve.getCompanyJobs.bind(fakeObserve),
+      getConversation: fakeObserve.getConversation.bind(fakeObserve),
+      searchPeople: (id, q, limit) => live.searchPeople(id, q, limit),
+    };
+  }
   const ports: Ports = { observe, executor, safety, approval: approvals, campaign, admin };
+
+  // The campaign sequence engine reuses the SAME gate chokepoint the Act tools
+  // route through (safety + approval + executor), so a tick-minted step obeys
+  // autonomy, budgets, and the human gate exactly like an agent-driven send.
+  const dispatch = makeDispatchTick({
+    sequence: store.sequence,
+    gate: { safety, approval: approvals, executor },
+  });
 
   // agent loop persistence writes through the same orchestrator + approvals.
   const persistence = new PersistenceAdapter(orchestrator, approvals, store);
@@ -202,6 +236,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     ports,
     approvals,
     admin,
+    dispatch,
     async runLoopOnce(accountId: string, targetId: string): Promise<LoopState> {
       const { account, campaign: camp, target } = await loadLoopContext(
         store,
@@ -226,6 +261,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
       );
     },
     async close(): Promise<void> {
+      dispatch.stop();
       if (sessionProvider) await sessionProvider.close();
       await store.close();
     },

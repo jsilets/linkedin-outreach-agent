@@ -40,6 +40,13 @@ export interface RuntimeConfig {
    * spine checks against neutral pages, never for a real account.
    */
   allowNoProxy: boolean;
+  /**
+   * Poll interval (ms) for the campaign dispatch tick. Unset means the tick
+   * does NOT auto-start: composing the runtime never drives outreach on its
+   * own. Set LOA_DISPATCH_INTERVAL_MS (e.g. 30000) on a host that should run
+   * the sequence engine unattended.
+   */
+  dispatchIntervalMs?: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -60,5 +67,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
   if (env.PROXY_URL) cfg.proxyUrl = env.PROXY_URL;
   if (env.PROXY_USERNAME) cfg.proxyUsername = env.PROXY_USERNAME;
   if (env.PROXY_PASSWORD) cfg.proxyPassword = env.PROXY_PASSWORD;
+  if (env.LOA_DISPATCH_INTERVAL_MS) cfg.dispatchIntervalMs = Number(env.LOA_DISPATCH_INTERVAL_MS);
   return cfg;
 }

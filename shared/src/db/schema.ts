@@ -3,6 +3,8 @@
 // insert, nothing updates or deletes.
 
 import {
+  boolean,
+  index,
   integer,
   jsonb,
   pgEnum,
@@ -82,6 +84,24 @@ export const approvalDecisionEnum = pgEnum('approval_decision', [
   'edited',
 ]);
 
+export const campaignStepTypeEnum = pgEnum('campaign_step_type', [
+  'view_profile',
+  'connect',
+  'message',
+  'follow',
+  'react',
+  'delay',
+]);
+
+export const progressStateEnum = pgEnum('progress_state', [
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'skipped',
+  'replied',
+]);
+
 // --- tables ----------------------------------------------------------------
 
 export const accounts = pgTable('accounts', {
@@ -145,6 +165,62 @@ export const actions = pgTable(
   (table) => [uniqueIndex('actions_dedup_key_idx').on(table.dedupKey)],
 );
 
+// A single ordered step in a campaign's sequence (the sequence template).
+export const campaignSteps = pgTable(
+  'campaign_steps',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    campaignId: uuid('campaign_id')
+      .notNull()
+      .references(() => campaigns.id),
+    stepOrder: integer('step_order').notNull(),
+    stepType: campaignStepTypeEnum('step_type').notNull(),
+    // Wait (seconds) after the previous step before this one becomes due.
+    delaySeconds: integer('delay_seconds').notNull().default(0),
+    // Inline content used per step type: note (connect), body (message),
+    // reaction (react; defaults to LIKE when null).
+    note: text('note'),
+    body: text('body'),
+    reaction: text('reaction'),
+    enabled: boolean('enabled').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('campaign_steps_order_idx').on(table.campaignId, table.stepOrder)],
+);
+
+// Per-target enrollment cursor: where a target sits in its campaign sequence.
+// The dispatch tick selects due rows (state='in_progress' AND next_step_at<=now)
+// and advances current_step; nextStepAt replaces the in-memory follow-up queue.
+export const targetProgress = pgTable(
+  'target_progress',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    campaignId: uuid('campaign_id')
+      .notNull()
+      .references(() => campaigns.id),
+    targetId: uuid('target_id')
+      .notNull()
+      .references(() => targets.id),
+    // The sender account assigned to this target (supports rotation later).
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id),
+    currentStep: integer('current_step').notNull().default(0),
+    state: progressStateEnum('state').notNull().default('pending'),
+    // When due. Null + in_progress means due immediately.
+    nextStepAt: timestamp('next_step_at', { withTimezone: true }),
+    lastStepAt: timestamp('last_step_at', { withTimezone: true }),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('target_progress_target_idx').on(table.targetId),
+    index('target_progress_due_idx').on(table.state, table.nextStepAt),
+  ],
+);
+
 export const messages = pgTable('messages', {
   id: uuid('id').defaultRandom().primaryKey(),
   accountId: uuid('account_id')
@@ -187,6 +263,10 @@ export type CampaignRow = typeof campaigns.$inferSelect;
 export type NewCampaignRow = typeof campaigns.$inferInsert;
 export type TargetRow = typeof targets.$inferSelect;
 export type NewTargetRow = typeof targets.$inferInsert;
+export type CampaignStepRow = typeof campaignSteps.$inferSelect;
+export type NewCampaignStepRow = typeof campaignSteps.$inferInsert;
+export type TargetProgressRow = typeof targetProgress.$inferSelect;
+export type NewTargetProgressRow = typeof targetProgress.$inferInsert;
 export type ActionRow = typeof actions.$inferSelect;
 export type NewActionRow = typeof actions.$inferInsert;
 export type MessageRow = typeof messages.$inferSelect;
@@ -199,7 +279,9 @@ export type NewEventRow = typeof events.$inferInsert;
 export const schema = {
   accounts,
   campaigns,
+  campaignSteps,
   targets,
+  targetProgress,
   actions,
   messages,
   approvals,

@@ -20,6 +20,8 @@ import type {
   ActionStorePort,
   EventReadPort,
   RuntimeStore,
+  SequenceStorePort,
+  TargetProgressPatch,
 } from './index.js';
 
 type AccountRow = shared.AccountRow;
@@ -36,6 +38,9 @@ type ApprovalRow = shared.ApprovalRow;
 type NewApprovalRow = shared.NewApprovalRow;
 type EventRow = shared.EventRow;
 type NewEventRow = shared.NewEventRow;
+type CampaignStepRow = shared.CampaignStepRow;
+type NewCampaignStepRow = shared.NewCampaignStepRow;
+type TargetProgressRow = shared.TargetProgressRow;
 
 let counter = 0;
 function nextId(prefix: string): string {
@@ -257,6 +262,178 @@ class InMemEventRepo implements EventReadPort {
   }
 }
 
+/** In-memory campaign-sequence store: the step template plus per-target
+ * enrollment cursors. Reads target/action rows off the sibling stores for the
+ * count/volume aggregates. */
+class InMemSequenceStore implements SequenceStorePort {
+  readonly steps = new Map<string, CampaignStepRow>();
+  readonly progress = new Map<string, TargetProgressRow>();
+
+  constructor(
+    private readonly targets: InMemTargetRepo,
+    private readonly actions: InMemActionStore,
+  ) {}
+
+  async listCampaignSteps(campaignId: string): Promise<CampaignStepRow[]> {
+    return [...this.steps.values()]
+      .filter((s) => s.campaignId === campaignId)
+      .sort((a, b) => a.stepOrder - b.stepOrder);
+  }
+
+  async upsertCampaignStep(step: NewCampaignStepRow): Promise<CampaignStepRow> {
+    const now = new Date();
+    if (step.id && this.steps.has(step.id)) {
+      const cur = this.steps.get(step.id)!;
+      const next: CampaignStepRow = {
+        ...cur,
+        campaignId: step.campaignId,
+        stepOrder: step.stepOrder,
+        stepType: step.stepType,
+        delaySeconds: step.delaySeconds ?? cur.delaySeconds,
+        note: step.note ?? null,
+        body: step.body ?? null,
+        reaction: step.reaction ?? null,
+        enabled: step.enabled ?? cur.enabled,
+        updatedAt: now,
+      };
+      this.steps.set(next.id, next);
+      return next;
+    }
+    const full: CampaignStepRow = {
+      id: step.id ?? nextId('step'),
+      campaignId: step.campaignId,
+      stepOrder: step.stepOrder,
+      stepType: step.stepType,
+      delaySeconds: step.delaySeconds ?? 0,
+      note: step.note ?? null,
+      body: step.body ?? null,
+      reaction: step.reaction ?? null,
+      enabled: step.enabled ?? true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.steps.set(full.id, full);
+    return full;
+  }
+
+  async deleteCampaignStep(id: string): Promise<void> {
+    this.steps.delete(id);
+  }
+
+  async reorderCampaignSteps(campaignId: string, orderedIds: string[]): Promise<void> {
+    orderedIds.forEach((id, i) => {
+      const cur = this.steps.get(id);
+      if (!cur || cur.campaignId !== campaignId) return;
+      this.steps.set(id, { ...cur, stepOrder: i, updatedAt: new Date() });
+    });
+  }
+
+  async enrollTarget(
+    campaignId: string,
+    targetId: string,
+    accountId: string,
+  ): Promise<TargetProgressRow> {
+    // Idempotent on targetId (unique index): return the existing enrollment.
+    const existing = [...this.progress.values()].find((p) => p.targetId === targetId);
+    if (existing) return existing;
+    const now = new Date();
+    const full: TargetProgressRow = {
+      id: nextId('prog'),
+      campaignId,
+      targetId,
+      accountId,
+      currentStep: 0,
+      state: 'in_progress',
+      nextStepAt: null,
+      lastStepAt: null,
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.progress.set(full.id, full);
+    return full;
+  }
+
+  async listTargetProgress(campaignId: string): Promise<TargetProgressRow[]> {
+    return [...this.progress.values()].filter((p) => p.campaignId === campaignId);
+  }
+
+  async dueTargetProgress(now: Date): Promise<TargetProgressRow[]> {
+    return [...this.progress.values()].filter(
+      (p) =>
+        p.state === 'in_progress' &&
+        (p.nextStepAt === null || p.nextStepAt.getTime() <= now.getTime()),
+    );
+  }
+
+  async advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void> {
+    const cur = this.progress.get(id);
+    if (!cur) throw new Error(`no target progress: ${id}`);
+    const next: TargetProgressRow = {
+      ...cur,
+      ...(patch.currentStep !== undefined ? { currentStep: patch.currentStep } : {}),
+      ...(patch.state !== undefined ? { state: patch.state } : {}),
+      ...(patch.nextStepAt !== undefined ? { nextStepAt: patch.nextStepAt } : {}),
+      ...(patch.lastStepAt !== undefined ? { lastStepAt: patch.lastStepAt } : {}),
+      ...(patch.errorMessage !== undefined ? { errorMessage: patch.errorMessage } : {}),
+      updatedAt: new Date(),
+    };
+    this.progress.set(id, next);
+  }
+
+  async pullTargetFromFunnel(targetId: string, reason: string): Promise<void> {
+    for (const [id, p] of this.progress) {
+      if (p.targetId !== targetId) continue;
+      // Terminal, and only from an active enrollment; leave completed/failed as-is.
+      if (p.state !== 'in_progress' && p.state !== 'pending') continue;
+      this.progress.set(id, {
+        ...p,
+        state: 'replied',
+        nextStepAt: null,
+        errorMessage: reason,
+        updatedAt: new Date(),
+      });
+    }
+  }
+
+  async campaignCounts(campaignId: string): Promise<{
+    targets: number;
+    byStage: Record<string, number>;
+    byProgressState: Record<string, number>;
+  }> {
+    const targets = [...this.targets.rows.values()].filter((t) => t.campaignId === campaignId);
+    const byStage: Record<string, number> = {};
+    for (const t of targets) byStage[t.stage] = (byStage[t.stage] ?? 0) + 1;
+    const byProgressState: Record<string, number> = {};
+    for (const p of this.progress.values()) {
+      if (p.campaignId !== campaignId) continue;
+      byProgressState[p.state] = (byProgressState[p.state] ?? 0) + 1;
+    }
+    return { targets: targets.length, byStage, byProgressState };
+  }
+
+  async actionVolume(
+    accountId: string,
+    sinceDays: number,
+  ): Promise<Array<{ date: string; type: string; count: number }>> {
+    const cutoff = Date.now() - sinceDays * 24 * 60 * 60 * 1000;
+    const counts = new Map<string, { date: string; type: string; count: number }>();
+    for (const a of this.actions.rows.values()) {
+      if (a.accountId !== accountId) continue;
+      const at = a.executedAt ?? a.scheduledAt;
+      if (at.getTime() < cutoff) continue;
+      const date = at.toISOString().slice(0, 10);
+      const key = `${date} ${a.type}`;
+      const cur = counts.get(key);
+      if (cur) cur.count += 1;
+      else counts.set(key, { date, type: a.type, count: 1 });
+    }
+    return [...counts.values()].sort((x, y) =>
+      x.date === y.date ? x.type.localeCompare(y.type) : x.date.localeCompare(y.date),
+    );
+  }
+}
+
 /** The full in-memory store implementing RuntimeStore. */
 export class InMemoryStore implements RuntimeStore {
   readonly account: InMemAccountStore = new InMemAccountStore();
@@ -266,6 +443,7 @@ export class InMemoryStore implements RuntimeStore {
   readonly message: InMemMessageRepo = new InMemMessageRepo();
   readonly approval: InMemApprovalRepo = new InMemApprovalRepo();
   readonly event: InMemEventRepo = new InMemEventRepo();
+  readonly sequence: InMemSequenceStore = new InMemSequenceStore(this.target, this.action);
   async listTargetsByCampaign(campaignId: string): Promise<TargetRow[]> {
     return [...this.target.rows.values()].filter((t) => t.campaignId === campaignId);
   }

@@ -59,7 +59,12 @@ export type {
 export { SuppressionService } from './suppression.js';
 
 export { ReplyRouter } from './reply-router.js';
-export type { RouteInput, RoutingOutcome, SchedulerLikePort } from './reply-router.js';
+export type {
+  RouteInput,
+  RoutingOutcome,
+  SchedulerLikePort,
+  ProgressPulloutPort,
+} from './reply-router.js';
 
 export {
   rowToAccount,

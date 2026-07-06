@@ -58,10 +58,49 @@ export interface ConversationSummary {
   messages: Array<{ direction: string; body: string; at: Date }>;
 }
 
+/**
+ * Structured people-search query for free-tier Voyager. A bare string is still
+ * accepted at the tool boundary and normalized to { keywords }. Seniority
+ * ("manager or above") has no free-tier facet, so it is approximated by the
+ * caller with titleKeywords (manager/senior/director/head/lead). Sales Navigator
+ * facets (real seniority/function) belong to a later salesApiPeopleSearch
+ * backend, not here.
+ */
+export interface PeopleQuery {
+  /** Free-text keywords (the search box). */
+  keywords?: string;
+  /** Title keyword filters; OR-ed. Also the seniority approximation. */
+  titleKeywords?: string[];
+  /** Free-text current-company names; OR-ed. */
+  companyKeywords?: string[];
+  /** Company entity ids for the currentCompany facet (e.g. "1035"); OR-ed. */
+  companyUrns?: string[];
+  /** Geography facet id (e.g. "103644278" for United States). */
+  geoUrn?: string;
+  /** Connection-degree facet: F=1st, S=2nd, O=3rd+. */
+  network?: Array<'F' | 'S' | 'O'>;
+  /** Max results to return across pages; capped at the ~1000 flagship limit. */
+  limit?: number;
+}
+
 export interface PersonSearchResult {
-  linkedinUrn: string;
-  name: string;
-  headline: string;
+  /** Stable identifier. Present for every real result. */
+  entityUrn: string;
+  /** Public vanity id from the profile URL, when the payload carries it. */
+  publicId?: string;
+  name?: string;
+  headline?: string;
+  /** Canonical https://www.linkedin.com/in/... URL. */
+  profileUrl: string;
+  /** "1st" | "2nd" | "3rd" | "OUT_OF_NETWORK" style distance, when present. */
+  degree?: string;
+  location?: string;
+  currentCompany?: string;
+  /**
+   * Kept so callers migrating off the old thin shape (linkedinUrn/name/headline)
+   * still compile. Mirrors entityUrn.
+   */
+  linkedinUrn?: string;
 }
 
 export interface ObservePort {
@@ -70,7 +109,11 @@ export interface ObservePort {
   getPostEngagers(accountId: string, postUrn: string, limit: number): Promise<EngagerSummary[]>;
   getCompanyJobs(accountId: string, companyUrn: string, limit: number): Promise<JobSummary[]>;
   getConversation(accountId: string, threadRef: string): Promise<ConversationSummary>;
-  searchPeople(accountId: string, query: string, limit: number): Promise<PersonSearchResult[]>;
+  searchPeople(
+    accountId: string,
+    query: PeopleQuery,
+    limit: number,
+  ): Promise<PersonSearchResult[]>;
 }
 
 // ---------------------------------------------------------------------------

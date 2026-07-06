@@ -34,6 +34,8 @@ export function makeOrchestratorServices(
     campaigns: new CampaignService(store.campaign, store.target, eventLog),
     approvals: new ApprovalService(store.message, store.approval, eventLog),
     suppression,
-    replyRouter: new ReplyRouter(store.target, suppression, scheduler, eventLog),
+    // Pass the sequence store so any inbound reply pulls the target out of its
+    // campaign funnel (terminal 'replied' progress state).
+    replyRouter: new ReplyRouter(store.target, suppression, scheduler, eventLog, store.sequence),
   };
 }

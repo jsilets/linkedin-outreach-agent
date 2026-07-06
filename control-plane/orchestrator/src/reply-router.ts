@@ -28,6 +28,14 @@ export interface SchedulerLikePort {
   }): Promise<void>;
 }
 
+/** The slice of the sequence store the router uses to stop the funnel. Any
+ * inbound reply pulls the target out of its campaign sequence so it stops
+ * receiving further steps and surfaces for manual handling. Optional so the
+ * router still works where no sequence engine is wired (e.g. legacy tests). */
+export interface ProgressPulloutPort {
+  pullTargetFromFunnel(targetId: string, reason: string): Promise<void>;
+}
+
 /** What the router decided, returned for the caller and for tests. */
 export interface RoutingOutcome {
   intent: Intent;
@@ -58,12 +66,21 @@ export class ReplyRouter {
     private readonly suppression: SuppressionService,
     private readonly scheduler: SchedulerLikePort,
     private readonly log: EventLog,
+    /** Optional: pulls the target out of its campaign sequence on any reply. */
+    private readonly pullout?: ProgressPulloutPort,
   ) {}
 
   async route(input: RouteInput): Promise<RoutingOutcome> {
     const { targetId, campaignId, intent } = input;
     const now = input.now ?? new Date();
     const delay = input.followUpDelayMs ?? THREE_DAYS_MS;
+
+    // Any inbound reply stops the automated funnel: the conversation is now live
+    // and the target is handled manually (or by a re-enroll). Terminal, before
+    // per-intent routing so even a Stop still cleanly leaves the sequence.
+    if (this.pullout) {
+      await this.pullout.pullTargetFromFunnel(targetId, 'reply');
+    }
 
     const outcome: RoutingOutcome = {
       intent,

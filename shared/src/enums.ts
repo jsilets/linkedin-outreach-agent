@@ -89,3 +89,28 @@ export const APPROVAL_DECISIONS = [
   'edited',
 ] as const;
 export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
+
+// Campaign sequence step kinds. The action-bearing ones map 1:1 to ActionType
+// (react = like); 'delay' is a pure wait step that only advances the cursor.
+export const CAMPAIGN_STEP_TYPES = [
+  'view_profile',
+  'connect',
+  'message',
+  'follow',
+  'react',
+  'delay',
+] as const;
+export type CampaignStepType = (typeof CAMPAIGN_STEP_TYPES)[number];
+
+// Per-target enrollment cursor state as it moves through a campaign sequence.
+// 'replied' is terminal: an inbound reply pulls the target out of the funnel for
+// manual handling and stops any further steps.
+export const PROGRESS_STATES = [
+  'pending',
+  'in_progress',
+  'completed',
+  'failed',
+  'skipped',
+  'replied',
+] as const;
+export type ProgressState = (typeof PROGRESS_STATES)[number];

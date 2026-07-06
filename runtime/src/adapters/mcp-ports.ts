@@ -314,7 +314,11 @@ export class FakeObserve implements ObservePort {
   async getConversation(_accountId: string, threadRef: string): Promise<ConversationSummary> {
     return { threadRef, messages: [] };
   }
-  async searchPeople(): Promise<PersonSearchResult[]> {
+  async searchPeople(
+    _accountId: string,
+    _query: import('@loa/mcp').PeopleQuery,
+    _limit: number,
+  ): Promise<PersonSearchResult[]> {
     return [];
   }
 }
