@@ -26,6 +26,10 @@ import type {
   EnrollResult,
   ExecutorPort,
   HealthReport,
+  InsertMembersResult,
+  LeadListPort,
+  ListDetail,
+  ListSummary,
   Metrics,
   ObservePort,
   PendingItem,
@@ -332,6 +336,81 @@ export class CampaignAdapter implements CampaignPort {
     }
     return { campaignId, accountId, enrolled: progressIds.length, progressIds };
   }
+}
+
+/** mcp LeadListPort over the store's lead-list surface. Maps a PersonSearchResult
+ * onto a lead_list_members row the same way the source-to-list CLI does, so a
+ * list filled over MCP is indistinguishable from one filled by the script and
+ * shows up in the web UI's ListsView. */
+export class LeadListAdapter implements LeadListPort {
+  constructor(private readonly store: RuntimeStore) {}
+
+  async createList(input: { name: string; description?: string }): Promise<{ id: string; name: string }> {
+    const row = await this.store.leadList.createList(input);
+    return { id: row.id, name: row.name };
+  }
+
+  async listLists(): Promise<ListSummary[]> {
+    const rows = await this.store.leadList.listWithCounts();
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      memberCount: r.memberCount,
+    }));
+  }
+
+  async getList(listId: string): Promise<ListDetail | null> {
+    const list = await this.store.leadList.findById(listId);
+    if (!list) return null;
+    const members = await this.store.leadList.listMembers(listId);
+    return {
+      id: list.id,
+      name: list.name,
+      description: list.description,
+      members: members.map((m) => ({
+        id: m.id,
+        linkedinUrn: m.linkedinUrn,
+        name: m.name,
+        headline: m.headline,
+        profileUrl: m.profileUrl,
+        degree: m.degree,
+        location: m.location,
+        currentCompany: m.currentCompany,
+      })),
+    };
+  }
+
+  async insertMembers(
+    listId: string,
+    people: PersonSearchResult[],
+  ): Promise<InsertMembersResult> {
+    const rows = people
+      .map((p) => memberRowFromPerson(listId, p))
+      .filter((r): r is shared.NewLeadListMemberRow => !!r.linkedinUrn);
+    const { inserted } = await this.store.leadList.insertMembers(rows);
+    // Everything we tried to write minus what was newly inserted is a dup (or a
+    // person dropped for lacking a stable urn); report against the write count.
+    return { inserted, duplicates: rows.length - inserted };
+  }
+}
+
+/** Map a search result onto a lead_list_members insert row. Mirrors the
+ * source-to-list CLI's toMemberRow; linkedinUrn is the stable dedup identity. */
+function memberRowFromPerson(
+  listId: string,
+  p: PersonSearchResult,
+): shared.NewLeadListMemberRow {
+  return {
+    listId,
+    linkedinUrn: p.entityUrn || p.linkedinUrn || p.profileUrl,
+    name: p.name ?? null,
+    headline: p.headline ?? null,
+    profileUrl: p.profileUrl ?? null,
+    degree: p.degree ?? null,
+    location: p.location ?? null,
+    currentCompany: p.currentCompany ?? null,
+  };
 }
 
 /** mcp AccountAdminPort: privileged safety controls over the store + gate. The

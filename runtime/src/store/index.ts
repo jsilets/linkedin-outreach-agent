@@ -92,6 +92,21 @@ export interface SequenceStorePort {
   ): Promise<Array<{ date: string; type: string; count: number }>>;
 }
 
+/** Lead-list read/write surface: named lists of sourced leads and their
+ * members. These write the SAME lead_lists / lead_list_members tables the web
+ * UI's ListsView reads, so a list sourced over MCP shows up in the UI. Member
+ * writes are idempotent on (listId, linkedinUrn). */
+export interface LeadListStorePort {
+  createList(input: { name: string; description?: string }): Promise<shared.LeadListRow>;
+  /** All lists with a per-list member count (empty lists included, count 0). */
+  listWithCounts(): Promise<Array<shared.LeadListRow & { memberCount: number }>>;
+  findById(id: string): Promise<shared.LeadListRow | undefined>;
+  listMembers(listId: string): Promise<shared.LeadListMemberRow[]>;
+  /** Insert members, skipping any already present (unique on listId +
+   * linkedinUrn). Returns how many rows were newly inserted. */
+  insertMembers(rows: shared.NewLeadListMemberRow[]): Promise<{ inserted: number }>;
+}
+
 /** The composed store shape the runtime adapters depend on. */
 export interface RuntimeStore {
   account: AccountStorePort;
@@ -103,6 +118,8 @@ export interface RuntimeStore {
   event: EventReadPort;
   /** Campaign sequence templates + per-target enrollment cursors. */
   sequence: SequenceStorePort;
+  /** Lead lists + members (lead gen, read by the web UI's ListsView). */
+  leadList: LeadListStorePort;
   /** All targets for a campaign, for funnel metrics. */
   listTargetsByCampaign(campaignId: string): Promise<shared.TargetRow[]>;
   /** Release any underlying resources (Postgres pool). No-op in memory. */

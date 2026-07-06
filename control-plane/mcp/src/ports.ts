@@ -286,6 +286,61 @@ export interface CampaignPort {
 }
 
 // ---------------------------------------------------------------------------
+// Lead-list port: named lists of sourced leads, independent of any campaign.
+// Lead gen (people-search) populates a list; the web UI's ListsView reads the
+// SAME lead_lists / lead_list_members tables these methods write, so a list made
+// or filled over MCP shows up in the UI with no UI change. Runs open (no gating):
+// creating/reading a list and writing sourced people is not a LinkedIn Act.
+// ---------------------------------------------------------------------------
+
+/** A lead list with its current member count (list index row). */
+export interface ListSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  memberCount: number;
+}
+
+/** One person in a lead list. Mirrors a PersonSearchResult, flattened. */
+export interface ListMember {
+  id: string;
+  linkedinUrn: string;
+  name: string | null;
+  headline: string | null;
+  profileUrl: string | null;
+  degree: string | null;
+  location: string | null;
+  currentCompany: string | null;
+}
+
+/** A lead list with its members (list detail). */
+export interface ListDetail {
+  id: string;
+  name: string;
+  description: string | null;
+  members: ListMember[];
+}
+
+/** Outcome of writing sourced people into a list: idempotent on
+ * (listId, linkedinUrn), so re-running only adds the new ones. */
+export interface InsertMembersResult {
+  inserted: number;
+  duplicates: number;
+}
+
+export interface LeadListPort {
+  /** Create a lead list. Returns its id + name. */
+  createList(input: { name: string; description?: string }): Promise<{ id: string; name: string }>;
+  /** All lists with per-list member counts. */
+  listLists(): Promise<ListSummary[]>;
+  /** One list with its members. Null when the list does not exist. */
+  getList(listId: string): Promise<ListDetail | null>;
+  /** Write people into a list, skipping anyone already in it (unique on
+   * listId + linkedinUrn). Returns how many were newly inserted vs skipped. */
+  insertMembers(listId: string, people: PersonSearchResult[]): Promise<InsertMembersResult>;
+}
+
+// ---------------------------------------------------------------------------
 // Account admin port: privileged safety controls. pause_account and kill_all
 // must stay callable even if the scheduler is wedged, so they live here and are
 // invoked directly, never routed through the gate/scheduler path.
@@ -326,5 +381,6 @@ export interface Ports {
   safety: SafetyPort;
   approval: ApprovalPort;
   campaign: CampaignPort;
+  lists: LeadListPort;
   admin: AccountAdminPort;
 }

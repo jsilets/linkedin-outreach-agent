@@ -19,6 +19,7 @@ import type {
   AccountStorePort,
   ActionStorePort,
   EventReadPort,
+  LeadListStorePort,
   RuntimeStore,
   SequenceStorePort,
   TargetProgressPatch,
@@ -41,6 +42,9 @@ type NewEventRow = shared.NewEventRow;
 type CampaignStepRow = shared.CampaignStepRow;
 type NewCampaignStepRow = shared.NewCampaignStepRow;
 type TargetProgressRow = shared.TargetProgressRow;
+type LeadListRow = shared.LeadListRow;
+type NewLeadListMemberRow = shared.NewLeadListMemberRow;
+type LeadListMemberRow = shared.LeadListMemberRow;
 
 let counter = 0;
 function nextId(prefix: string): string {
@@ -440,6 +444,72 @@ class InMemSequenceStore implements SequenceStorePort {
   }
 }
 
+/** In-memory lead-list store: named lists plus their members. Member inserts
+ * dedup on (listId, linkedinUrn), mirroring the Postgres unique index. */
+class InMemLeadListStore implements LeadListStorePort {
+  readonly lists = new Map<string, LeadListRow>();
+  readonly members = new Map<string, LeadListMemberRow>();
+
+  async createList(input: { name: string; description?: string }): Promise<LeadListRow> {
+    const now = new Date();
+    const full: LeadListRow = {
+      id: nextId('list'),
+      name: input.name,
+      description: input.description ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.lists.set(full.id, full);
+    return full;
+  }
+
+  async listWithCounts(): Promise<Array<LeadListRow & { memberCount: number }>> {
+    return [...this.lists.values()]
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .map((l) => ({
+        ...l,
+        memberCount: [...this.members.values()].filter((m) => m.listId === l.id).length,
+      }));
+  }
+
+  async findById(id: string): Promise<LeadListRow | undefined> {
+    return this.lists.get(id);
+  }
+
+  async listMembers(listId: string): Promise<LeadListMemberRow[]> {
+    return [...this.members.values()]
+      .filter((m) => m.listId === listId)
+      .sort((a, b) => a.addedAt.getTime() - b.addedAt.getTime());
+  }
+
+  async insertMembers(rows: NewLeadListMemberRow[]): Promise<{ inserted: number }> {
+    let inserted = 0;
+    for (const row of rows) {
+      // Skip anyone already in the list (unique on listId + linkedinUrn).
+      const dup = [...this.members.values()].some(
+        (m) => m.listId === row.listId && m.linkedinUrn === row.linkedinUrn,
+      );
+      if (dup) continue;
+      const full: LeadListMemberRow = {
+        id: nextId('member'),
+        listId: row.listId,
+        linkedinUrn: row.linkedinUrn,
+        name: row.name ?? null,
+        headline: row.headline ?? null,
+        profileUrl: row.profileUrl ?? null,
+        degree: row.degree ?? null,
+        location: row.location ?? null,
+        currentCompany: row.currentCompany ?? null,
+        externalContext: row.externalContext ?? {},
+        addedAt: new Date(),
+      };
+      this.members.set(full.id, full);
+      inserted += 1;
+    }
+    return { inserted };
+  }
+}
+
 /** The full in-memory store implementing RuntimeStore. */
 export class InMemoryStore implements RuntimeStore {
   readonly account: InMemAccountStore = new InMemAccountStore();
@@ -450,6 +520,7 @@ export class InMemoryStore implements RuntimeStore {
   readonly approval: InMemApprovalRepo = new InMemApprovalRepo();
   readonly event: InMemEventRepo = new InMemEventRepo();
   readonly sequence: InMemSequenceStore = new InMemSequenceStore(this.target, this.action);
+  readonly leadList: InMemLeadListStore = new InMemLeadListStore();
   async listTargetsByCampaign(campaignId: string): Promise<TargetRow[]> {
     return [...this.target.rows.values()].filter((t) => t.campaignId === campaignId);
   }

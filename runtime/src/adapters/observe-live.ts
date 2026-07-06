@@ -211,6 +211,140 @@ async function ensureOnLinkedIn(page: PagePort): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Inbox reading — recent inbound replies, for the reply-detection loop.
+// ---------------------------------------------------------------------------
+
+/**
+ * One inbound message as the reply loop needs it: the thread it belongs to, the
+ * sender's identity (urn + a /in/ profile url when derivable), the text, and
+ * when it arrived. Only counterparty (inbound) messages are surfaced; the
+ * account's own outbound sends are dropped by the reader.
+ */
+export interface InboundMessage {
+  /** urn:li:msg_conversation:(...) — the thread key. */
+  threadUrn: string;
+  /** The sender's profile urn (urn:li:fsd_profile:... / urn:li:member:...). */
+  senderUrn: string;
+  /** https://www.linkedin.com/in/<publicId>/ when the payload carries one. */
+  profileUrl?: string;
+  /** The message body text. */
+  text: string;
+  /** When LinkedIn timestamps the message (deliveredAt). */
+  receivedAt: Date;
+}
+
+/** The slice of the inbox the reply-detection loop drives per account. */
+export interface InboxReaderPort {
+  readInbox(accountId: string, limit: number): Promise<InboundMessage[]>;
+}
+
+/** Voyager messaging conversations endpoint. Returns the most recent threads
+ * with their last events inlined; free on a normal session. The count caps how
+ * many threads come back (not messages). */
+function messagingPath(count: number): string {
+  return (
+    `/voyager/api/messaging/conversations` +
+    `?keyVersion=LEGACY_INBOX&q=syncToken&count=${count}`
+  );
+}
+
+/**
+ * LiveInboxReader: read recent inbound messages for an account by issuing a
+ * direct authenticated GET to the Voyager messaging endpoint from the account's
+ * own logged-in page (page.voyagerGet), the SAME same-origin primitive
+ * searchPeople uses.
+ *
+ * Why not the DOM readInbox()/getConversation() actions: those exist and are
+ * live-verified for their own jobs, but the runner's LocatorPort surface is
+ * click/type/read-text only — it cannot read a row's profile anchor href, so it
+ * cannot recover the sender urn a reply must map to. The messaging graphql
+ * payload carries thread + participant urns + message text + deliveredAt
+ * directly, which is what the loop needs. The response parsing below is
+ * defensive (every field optional) because the payload is large and versioned.
+ *
+ * STILL TO VERIFY LIVE: the exact field names against a real messaging payload
+ * (events[].deliveredAt, from.*.miniProfile.entityUrn, the account's own urn to
+ * tell inbound from outbound). normalizeInboxResponse is exported so the ops
+ * shakeout can run the real normalizer over a captured body and adjust names.
+ */
+export class LiveInboxReader implements InboxReaderPort {
+  constructor(private readonly pages: PageProvider) {}
+
+  async readInbox(accountId: string, limit: number): Promise<InboundMessage[]> {
+    const page = await this.pages.pageFor(accountId);
+    await ensureOnLinkedIn(page);
+    const { status, body } = await page.voyagerGet(messagingPath(limit), {
+      accept: 'application/json',
+    });
+    if (status !== 200) {
+      throw new Error(
+        `voyager messaging returned HTTP ${status}; the session may be invalid`,
+      );
+    }
+    return normalizeInboxResponse(body).slice(0, limit);
+  }
+}
+
+/**
+ * Walk a Voyager messaging conversations response into InboundMessage[]. Reads
+ * both the decorated (`elements[]`) and normalized (`included[]`) shapes, keeps
+ * only counterparty messages (a message whose sender is a participant, not the
+ * viewer), and drops anything missing a thread urn, sender urn, or text.
+ * Exported for the ops shakeout to run over a captured raw payload.
+ */
+export function normalizeInboxResponse(body: unknown): InboundMessage[] {
+  const root = body as VoyagerMessagingResponse | undefined;
+  const conversations =
+    root?.elements ?? root?.data?.elements ?? asConversations(root?.included);
+
+  const out: InboundMessage[] = [];
+  for (const conv of conversations ?? []) {
+    const threadUrn = conv?.entityUrn ?? conv?.backendUrn;
+    if (!threadUrn) continue;
+    for (const event of conv?.events ?? []) {
+      const msg = normalizeEvent(threadUrn, event);
+      if (msg) out.push(msg);
+    }
+  }
+  // Most recent first, so a per-thread dedupe upstream keeps the latest reply.
+  out.sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
+  return out;
+}
+
+/** Pull EVENT/CONVERSATION entities out of a normalized `included[]` list. */
+function asConversations(included: MessagingEntity[] | undefined): Conversation[] | undefined {
+  if (!Array.isArray(included)) return undefined;
+  return included.filter((el) => Array.isArray(el?.events));
+}
+
+function normalizeEvent(threadUrn: string, event: MessagingEvent | undefined): InboundMessage | null {
+  if (!event) return null;
+  const attributed = event.eventContent?.attributedBody?.text ?? event.subject;
+  const text = attributed?.trim();
+  if (!text) return null; // non-text events (shares, reactions) carry no body.
+
+  const sender = event.from?.messagingMember?.miniProfile ?? event.from?.miniProfile;
+  const senderUrn = sender?.entityUrn ?? event.from?.entityUrn;
+  if (!senderUrn) return null;
+
+  // A message the account itself sent is outbound; skip it. LinkedIn flags the
+  // viewer's own events, but the exact flag varies by shape, so we defensively
+  // treat an explicit `outbound`/`fromViewer` marker as outbound and keep the
+  // rest. // GUESS: verify against a real payload.
+  if (event.outbound === true || event.from?.fromViewer === true) return null;
+
+  const publicId = sender?.publicIdentifier;
+  const deliveredAt = event.deliveredAt ?? event.createdAt;
+  return {
+    threadUrn,
+    senderUrn,
+    ...(publicId ? { profileUrl: `https://www.linkedin.com/in/${publicId}/` } : {}),
+    text,
+    receivedAt: typeof deliveredAt === 'number' ? new Date(deliveredAt) : new Date(),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // LiveObserve
 // ---------------------------------------------------------------------------
 
@@ -429,6 +563,45 @@ interface EntityResult {
   entityCustomTrackingInfo?: { memberDistance?: string };
 }
 
+// --- messaging conversations response (inbox reader) ----------------------
+
+interface VoyagerMessagingResponse {
+  elements?: Conversation[];
+  data?: { elements?: Conversation[] };
+  /** Flat entity list in the normalized response shape. */
+  included?: MessagingEntity[];
+}
+
+interface Conversation {
+  entityUrn?: string;
+  backendUrn?: string;
+  events?: MessagingEvent[];
+}
+
+interface MessagingMiniProfile {
+  entityUrn?: string;
+  publicIdentifier?: string;
+}
+
+interface MessagingEvent {
+  entityUrn?: string;
+  createdAt?: number;
+  deliveredAt?: number;
+  /** LinkedIn's own marker for a message the viewer sent. */
+  outbound?: boolean;
+  subject?: string;
+  from?: {
+    entityUrn?: string;
+    fromViewer?: boolean;
+    miniProfile?: MessagingMiniProfile;
+    messagingMember?: { miniProfile?: MessagingMiniProfile };
+  };
+  eventContent?: { attributedBody?: { text?: string } };
+}
+
+/** Any entity in the normalized `included[]`; only conversations carry events. */
+type MessagingEntity = Conversation & Record<string, unknown>;
+
 // ---------------------------------------------------------------------------
 // STILL TO VERIFY LIVE
 // ---------------------------------------------------------------------------
@@ -439,3 +612,10 @@ interface EntityResult {
 //   - The entityResult field names (title / primarySubtitle / navigationUrl /
 //     memberDistance) against a real payload. The shakeout dumps the raw body so
 //     these can be checked and adjusted if LinkedIn renamed them.
+//
+// The inbox reader (readInbox / normalizeInboxResponse) is grounded in the same
+// prior art but UNPROVEN against a live messaging payload: the conversations
+// endpoint path, the event field names (eventContent.attributedBody.text,
+// from.*.miniProfile.entityUrn, deliveredAt), and the inbound/outbound marker
+// all need one real run to confirm. normalizeInboxResponse is exported so the
+// ops shakeout can dump a raw body and adjust the names.

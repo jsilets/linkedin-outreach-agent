@@ -12,15 +12,47 @@
 // --network S,O  --limit N. Re-running is safe: a person already in the list is
 // skipped (unique on list_id + linkedin_urn).
 
-import { PostgresDb } from '@loa/orchestrator';
-import { db as shared } from '@loa/shared';
 import { resolveProxyIdentity, resolveVaultKey } from '@loa/account-runner';
-import type { PeopleQuery, PersonSearchResult } from '@loa/mcp';
+import type { LeadListPort, ObservePort, PeopleQuery } from '@loa/mcp';
 import { loadConfig } from '../config.js';
+import { makePostgresStore } from '../store/index.js';
+import { LeadListAdapter } from '../adapters/mcp-ports.js';
 import { LiveSessionProvider } from '../executor/session-provider.js';
 import { LiveObserve, InMemorySearchBudget } from '../adapters/observe-live.js';
 
-const { leadLists, leadListMembers } = shared.schema;
+/** Result of a source-to-list run: how many were found and how many landed. */
+export interface SourceToListResult {
+  listId: string;
+  found: number;
+  inserted: number;
+  duplicates: number;
+}
+
+/**
+ * Core search -> dedup -> write, shared by the CLI entrypoint below and the
+ * source_to_list MCP tool. Resolves the target list (creates one when only a
+ * name is given), runs a live people search, and writes the matches into the
+ * list; the write is idempotent on (listId, linkedinUrn), so re-running is safe.
+ * Both deps are the mcp ports, so this stays agnostic to which store/observe
+ * backs them.
+ */
+export async function sourceToList(
+  deps: { observe: Pick<ObservePort, 'searchPeople'>; lists: LeadListPort },
+  params: { accountId: string; listId?: string; listName?: string; query: PeopleQuery },
+): Promise<SourceToListResult> {
+  const { accountId, listId: listIdArg, listName, query } = params;
+  if (!listIdArg && !listName) {
+    throw new Error('source-to-list: provide either a listId or a listName');
+  }
+
+  const listId = listIdArg ?? (await deps.lists.createList({ name: listName! })).id;
+  const people = await deps.observe.searchPeople(accountId, query, query.limit ?? 25);
+  if (people.length === 0) {
+    return { listId, found: 0, inserted: 0, duplicates: 0 };
+  }
+  const { inserted, duplicates } = await deps.lists.insertMembers(listId, people);
+  return { listId, found: people.length, inserted, duplicates };
+}
 
 function csv(v: string | undefined): string[] {
   return (v ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
@@ -67,19 +99,6 @@ function parseArgs(argv: string[]): {
   };
 }
 
-function toMemberRow(listId: string, p: PersonSearchResult) {
-  return {
-    listId,
-    linkedinUrn: p.entityUrn || p.linkedinUrn || p.profileUrl,
-    name: p.name ?? null,
-    headline: p.headline ?? null,
-    profileUrl: p.profileUrl ?? null,
-    degree: p.degree ?? null,
-    location: p.location ?? null,
-    currentCompany: p.currentCompany ?? null,
-  };
-}
-
 async function main(): Promise<void> {
   const { accountId, listId: listIdArg, listName, query } = parseArgs(process.argv.slice(2));
   if (!accountId || (!listIdArg && !listName)) {
@@ -109,47 +128,46 @@ async function main(): Promise<void> {
     allowNoProxy: config.allowNoProxy,
     ...(identity ? { identityFor: () => identity } : {}),
   });
-  const pdb = new PostgresDb({ url: config.databaseUrl });
+  // Reuse the SAME store + adapter the MCP source_to_list tool uses, so the CLI
+  // and the tool share one search->dedup->write path and one write target.
+  const store = makePostgresStore(config.databaseUrl);
+  const lists = new LeadListAdapter(store);
+  const observe = new LiveObserve(provider, new InMemorySearchBudget());
 
   try {
-    // Resolve the target list (create it when only a name was given).
-    let listId = listIdArg;
-    if (!listId && listName) {
-      const [row] = await pdb.handle
-        .insert(leadLists)
-        .values({ name: listName })
-        .returning({ id: leadLists.id });
-      listId = row?.id;
-      console.log(`[source] created list "${listName}" -> ${listId}`);
-    }
-    if (!listId) throw new Error('could not resolve a list id');
-
     console.log(`[source] account=${accountId} query=${JSON.stringify(query)}`);
-    const observe = new LiveObserve(provider, new InMemorySearchBudget());
-    const people = await observe.searchPeople(accountId, query, query.limit ?? 25);
-    console.log(`[source] search returned ${people.length} people`);
-    if (people.length === 0) {
-      console.log('[source] nothing to add.');
-      return;
+    const result = await sourceToList(
+      { observe, lists },
+      {
+        accountId,
+        ...(listIdArg ? { listId: listIdArg } : {}),
+        ...(listName ? { listName } : {}),
+        query,
+      },
+    );
+    if (listName && !listIdArg) {
+      console.log(`[source] created list "${listName}" -> ${result.listId}`);
     }
-
-    const rows = people.map((p) => toMemberRow(listId!, p)).filter((r) => !!r.linkedinUrn);
-    // Skip anyone already in the list (unique on list_id + linkedin_urn).
-    const inserted = await pdb.handle
-      .insert(leadListMembers)
-      .values(rows)
-      .onConflictDoNothing()
-      .returning({ id: leadListMembers.id });
-
-    console.log(`[source] added ${inserted.length} new leads to list ${listId} (${people.length - inserted.length} already present)`);
-    console.log(`SOURCE_TO_LIST_RESULT ${JSON.stringify({ listId, found: people.length, added: inserted.length })}`);
+    console.log(`[source] search returned ${result.found} people`);
+    console.log(
+      `[source] added ${result.inserted} new leads to list ${result.listId} ` +
+        `(${result.duplicates} already present)`,
+    );
+    console.log(
+      `SOURCE_TO_LIST_RESULT ${JSON.stringify({ listId: result.listId, found: result.found, added: result.inserted })}`,
+    );
   } finally {
     await provider.close().catch(() => {});
-    await pdb.close().catch(() => {});
+    await store.close().catch(() => {});
   }
 }
 
-main().catch((err) => {
-  console.error('[source] fatal:', err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+// Run main() only as a CLI entrypoint. The module is also imported (for
+// sourceToList, reused by the source_to_list MCP tool), and importing it must
+// not kick off a live search or call process.exit.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error('[source] fatal:', err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

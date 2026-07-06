@@ -48,9 +48,11 @@ import {
   ApprovalAdapter,
   CampaignAdapter,
   FakeObserve,
+  LeadListAdapter,
 } from './adapters/mcp-ports.js';
-import { LiveObserve, InMemorySearchBudget } from './adapters/observe-live.js';
+import { LiveObserve, LiveInboxReader, InMemorySearchBudget } from './adapters/observe-live.js';
 import { makeDispatchTick, type DispatchTick } from './dispatch/index.js';
+import { ReplyTick } from './dispatch/reply-tick.js';
 import { PersistenceAdapter } from './adapters/persistence.js';
 import { FakeExecutor } from './executor/fake-executor.js';
 import { resolveProxyIdentity } from '@loa/account-runner';
@@ -83,6 +85,10 @@ export interface Runtime {
    * host starts it with dispatch.start(intervalMs). Routes every action step
    * through the same gate the MCP Act tools use. */
   dispatch: DispatchTick;
+  /** The reply-detection tick. Only built with a real session (it reads live
+   * inboxes); undefined in fake mode. A host starts it with
+   * replyTick.start(intervalMs); compose never starts it. */
+  replyTick?: ReplyTick;
   /** Drive the agent loop once for one target; returns the terminal state. */
   runLoopOnce(accountId: string, targetId: string): Promise<LoopState>;
   /** Rehydrate safety state (weekly counter + soft-signal streak) from the
@@ -201,7 +207,12 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
       searchPeople: (id, q, limit) => live.searchPeople(id, q, limit),
     };
   }
-  const ports: Ports = { observe, executor, safety, approval: approvals, campaign, admin };
+  // --- sourcing-mcp-tools: lead lists over the store (read by the web UI) ----
+  // A LeadListAdapter over store.leadList backs the create_list / list_lists /
+  // get_list / source_to_list tools. It writes the same lead_lists /
+  // lead_list_members tables the web UI's ListsView reads.
+  const lists = new LeadListAdapter(store);
+  const ports: Ports = { observe, executor, safety, approval: approvals, campaign, lists, admin };
 
   // The campaign sequence engine reuses the SAME gate chokepoint the Act tools
   // route through (safety + approval + executor), so a tick-minted step obeys
@@ -210,6 +221,30 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     sequence: store.sequence,
     gate: { safety, approval: approvals, executor },
   });
+
+  // --- reply-detection tick (additive) -------------------------------------
+  // Only meaningful with a real session (it reads live inboxes over the page's
+  // Voyager messaging endpoint). Reuses the SAME orchestrator ReplyRouter as
+  // every other reply path, so a detected reply pulls the target from the funnel
+  // exactly like an agent-routed one. Built here but never started by compose; a
+  // host starts it with replyTick.start(replyPollIntervalMs).
+  let replyTick: ReplyTick | undefined;
+  if (sessionProvider) {
+    const inbox = new LiveInboxReader({ pageFor: (id) => sessionProvider!.pageFor(id) });
+    // Enumerate active enrollments across campaigns. No cross-campaign list
+    // method exists on the store, so read in_progress cursors via the due query
+    // with a far-future clock (it returns every in_progress row regardless of
+    // nextStepAt) — a reply can land while a step is still on its delay.
+    const FAR_FUTURE = new Date(8640000000000000);
+    replyTick = new ReplyTick({
+      inbox,
+      enrollments: { activeEnrollments: () => store.sequence.dueTargetProgress(FAR_FUTURE) },
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm,
+    });
+  }
+  // --- end reply-detection tick --------------------------------------------
 
   // agent loop persistence writes through the same orchestrator + approvals.
   const persistence = new PersistenceAdapter(orchestrator, approvals, store);
@@ -237,6 +272,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     approvals,
     admin,
     dispatch,
+    ...(replyTick ? { replyTick } : {}),
     async runLoopOnce(accountId: string, targetId: string): Promise<LoopState> {
       const { account, campaign: camp, target } = await loadLoopContext(
         store,
@@ -262,6 +298,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     },
     async close(): Promise<void> {
       dispatch.stop();
+      replyTick?.stop();
       if (sessionProvider) await sessionProvider.close();
       await store.close();
     },

@@ -14,9 +14,10 @@ Fill these in before running:
 - Account: `ACCOUNT_ID`
 - Operator name (approval step only): `OPERATOR_NAME`
 
-You connect as the non-privileged agent (no capability headers). The approval
-tools require a separate privileged operator connection that sends
-`x-loa-privileged: true` and `x-loa-operator: OPERATOR_NAME`.
+You connect as the non-privileged agent with `Authorization: Bearer
+LOA_MCP_TOKEN`. The approval tools require a separate privileged operator
+connection that sends `Authorization: Bearer LOA_OPERATOR_TOKEN` (and optionally
+`x-loa-operator: OPERATOR_NAME` as an audit label).
 
 ## Hard rules (safety posture)
 

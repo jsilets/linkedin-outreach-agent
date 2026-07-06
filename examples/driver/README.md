@@ -20,27 +20,34 @@ on a schedule.
 1. Deploy the framework (see `infra/RAILWAY.md`) and note the MCP URL, which ends
    in `/mcp`.
 2. Connect your harness to the MCP server. In Claude Code, add an HTTP MCP server
-   for the driver (no headers, non-privileged), and a second one with the
-   operator headers for approvals:
+   for the driver (the non-privileged agent token), and a second one with the
+   operator token for approvals:
 
    ```json
    {
      "mcpServers": {
        "loa": {
          "type": "http",
-         "url": "https://YOUR-APP.up.railway.app/mcp"
+         "url": "https://YOUR-APP.up.railway.app/mcp",
+         "headers": {
+           "Authorization": "Bearer YOUR_LOA_MCP_TOKEN"
+         }
        },
        "loa-operator": {
          "type": "http",
          "url": "https://YOUR-APP.up.railway.app/mcp",
          "headers": {
-           "x-loa-privileged": "true",
+           "Authorization": "Bearer YOUR_LOA_OPERATOR_TOKEN",
            "x-loa-operator": "YOUR_NAME"
          }
        }
      }
    }
    ```
+
+   The bearer token decides the role: `LOA_MCP_TOKEN` is the non-privileged
+   driver, `LOA_OPERATOR_TOKEN` unlocks approvals and safety. `x-loa-operator` is
+   just an audit label.
 
    In Codex, add the same two HTTP MCP servers in Codex's own config.
 3. Create a campaign and add targets once (either by hand through the tools or in
