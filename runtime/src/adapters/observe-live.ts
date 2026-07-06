@@ -203,11 +203,33 @@ export function buildVoyagerGraphqlPath(
   return `/voyager/api/graphql?variables=${variables}&queryId=${searchQueryId()}`;
 }
 
-/** Navigate to the LinkedIn origin so same-origin voyagerGet carries cookies. */
-async function ensureOnLinkedIn(page: PagePort): Promise<void> {
-  if (!page.url().startsWith('https://www.linkedin.com')) {
-    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded' });
+/**
+ * Navigate to the LinkedIn origin so a same-origin voyagerGet carries cookies.
+ *
+ * The origin nav can fail transiently: LinkedIn sometimes denies a request from a
+ * datacenter IP with a non-renderable status, which the driver surfaces as a
+ * `net::ERR_*` throw (not a checkpoint page we could detect). Retry a few times
+ * with backoff so a blip self-heals, and on a persistent failure throw an
+ * actionable message — the account is likely rate-limited or challenged from this
+ * IP, which is recoverable, not a code fault — instead of the raw driver error.
+ */
+export async function ensureOnLinkedIn(page: PagePort, attempts = 3): Promise<void> {
+  if (page.url().startsWith('https://www.linkedin.com')) return;
+  let lastErr = '';
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded' });
+      return;
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+      if (i < attempts - 1) await page.waitForTimeout(2000 * (i + 1));
+    }
   }
+  throw new Error(
+    `could not reach the LinkedIn origin after ${attempts} attempts: ${lastErr}. The ` +
+      `account is likely rate-limited or challenged from this IP (a recoverable denial, ` +
+      `not a code fault) — wait and retry, or check the account for a security checkpoint.`,
+  );
 }
 
 // ---------------------------------------------------------------------------

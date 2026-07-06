@@ -11,6 +11,7 @@ import {
   normalizeSearchResponse,
   normalizeInboxResponse,
   profileUrnFromEntityUrn,
+  ensureOnLinkedIn,
   LiveInboxReader,
   LiveObserve,
   InMemorySearchBudget,
@@ -232,6 +233,43 @@ describe('normalizeSearchResponse (response shapes)', () => {
     const [person] = normalizeSearchResponse(payload);
     expect(person?.linkedinUrn).toBe('urn:li:fsd_profile:ACoAAF123');
     expect(person?.entityUrn).toBe(wrapped);
+  });
+});
+
+describe('ensureOnLinkedIn (origin navigation resilience)', () => {
+  // Minimal page fake: goto throws for the first `failures` calls, then succeeds.
+  // waitForTimeout is a no-op so the backoff does not slow the test.
+  function fakePage(failures: number, err = 'net::ERR_HTTP_RESPONSE_CODE_FAILURE') {
+    let gotos = 0;
+    let onLinkedIn = false;
+    return {
+      gotos: () => gotos,
+      url: () => (onLinkedIn ? 'https://www.linkedin.com/feed/' : 'about:blank'),
+      goto: async () => {
+        gotos += 1;
+        if (gotos <= failures) throw new Error(err);
+        onLinkedIn = true;
+        return undefined;
+      },
+      waitForTimeout: async () => {},
+    } as unknown as PagePort & { gotos: () => number };
+  }
+
+  it('skips navigation when already on the LinkedIn origin', async () => {
+    const page = { url: () => 'https://www.linkedin.com/feed/' } as unknown as PagePort;
+    await expect(ensureOnLinkedIn(page)).resolves.toBeUndefined();
+  });
+
+  it('recovers when a transient failure clears on retry', async () => {
+    const page = fakePage(2) as PagePort & { gotos: () => number };
+    await expect(ensureOnLinkedIn(page)).resolves.toBeUndefined();
+    expect(page.gotos()).toBe(3); // two throws, third succeeds
+  });
+
+  it('throws an actionable error (not the raw driver error) after persistent failure', async () => {
+    const page = fakePage(99) as PagePort & { gotos: () => number };
+    await expect(ensureOnLinkedIn(page, 3)).rejects.toThrow(/rate-limited or challenged/i);
+    expect(page.gotos()).toBe(3);
   });
 });
 
