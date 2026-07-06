@@ -18,7 +18,8 @@
     "control-plane/safety",
     "account-runner",
     "runtime",
-    "infra"
+    "infra",
+    "web"
   ],
   "scripts": {
     "build": "tsc -b",

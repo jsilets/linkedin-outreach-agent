@@ -1,0 +1,36 @@
+{
+  "name": "@loa/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local campaign-management dashboard and flow editor",
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,green \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "node --env-file-if-exists=../.env --import tsx --watch server/src/main.ts",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "node --env-file-if-exists=../.env --import tsx server/src/main.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@loa/shared": "*",
+    "drizzle-orm": "^0.45.2",
+    "express": "^5.1.0",
+    "postgres": "^3.4.9"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.0.0",
+    "vitest": "^4.1.9"
+  }
+}
