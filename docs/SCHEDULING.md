@@ -60,14 +60,17 @@ Connect Claude Code to the remote MCP server. In `.mcp.json` (or via
   "mcpServers": {
     "loa": {
       "type": "http",
-      "url": "https://YOUR-APP.up.railway.app/mcp"
+      "url": "https://YOUR-APP.up.railway.app/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_LOA_MCP_TOKEN"
+      }
     }
   }
 }
 ```
 
-That plain connection is the non-privileged driver context. For the approval
-step, add a second entry with the capability headers:
+The agent token gives the non-privileged driver context. For the approval step,
+add a second entry that carries the operator token:
 
 ```json
 {
@@ -76,7 +79,7 @@ step, add a second entry with the capability headers:
       "type": "http",
       "url": "https://YOUR-APP.up.railway.app/mcp",
       "headers": {
-        "x-loa-privileged": "true",
+        "Authorization": "Bearer YOUR_LOA_OPERATOR_TOKEN",
         "x-loa-operator": "YOUR_NAME"
       }
     }
@@ -96,8 +99,8 @@ The routine loads the driver prompt, runs one cycle, and exits. It does not loop
 
 Codex can run the same driver on a schedule as a scheduled task. Point Codex at
 the same remote MCP URL (Codex reads MCP servers from its own config;
-add an HTTP MCP server entry with the URL, and a second entry carrying the two
-`x-loa-*` headers for the operator role). The scheduled task prompt is again the
+add an HTTP MCP server entry with the agent bearer token, and a second entry
+carrying the operator bearer token). The scheduled task prompt is again the
 example driver from `examples/driver/` with the URL and campaign id filled in.
 
 Use the same cron cadence, `0 9,12,15 * * 1-5`, so both harnesses respect the

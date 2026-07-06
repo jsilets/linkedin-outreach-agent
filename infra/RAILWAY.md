@@ -5,10 +5,13 @@ idle suspend, a one-click Postgres plugin, and per-service volumes. This runbook
 stands up the single app container plus Postgres and runs the P0 one-account
 loop.
 
-What you are deploying is one service: `@loa/runtime`. It composes the
-control-plane brain and an in-process executor, starts the MCP HTTP server, and
-serves `GET /healthz`. There is no separate "body" service yet (see the scaling
-note at the end).
+What you are deploying is one container that runs two processes: `@loa/runtime`
+(the control-plane brain, the in-process executor, and the MCP HTTP server) and
+the web UI/API. The image ships Xvfb plus a patchright Chromium, so the same
+container can drive a real headful browser once you enable it — there is no
+separate "body" service yet (see the scaling note at the end). Both the MCP
+endpoint and the web UI require auth; set the tokens in step 4 before you expose
+anything to a real account.
 
 The Dockerfile build and the healthcheck are declared in `infra/railway.json`
 (`$schema: https://railway.com/railway.schema.json`), so Railway builds
@@ -57,6 +60,19 @@ service variables. Generate the cookie vault key with `openssl rand -base64 32`.
                        --set "MCP_PORT=8080" \
                        --set "LOA_LLM_MODEL=claude-fable-5"
 
+Auth is required in production and the endpoints fail closed without it. Generate
+each token with `openssl rand -base64 32`:
+
+    railway variables --set "NODE_ENV=production" \
+                       --set "LOA_MCP_TOKEN=..." \
+                       --set "LOA_OPERATOR_TOKEN=..." \
+                       --set "LOA_WEB_USER=you" \
+                       --set "LOA_WEB_PASSWORD=..."
+
+`LOA_MCP_TOKEN` is the driver's bearer; `LOA_OPERATOR_TOKEN` unlocks the
+privileged Safety/Approval tools; `LOA_WEB_USER`/`LOA_WEB_PASSWORD` gate the web
+UI over HTTP Basic. See `docs/DRIVING.md` for how the MCP client sends them.
+
 Proxy vars, once you run a real account (per-account, sticky IP; see
 `PROXY.md`):
 
@@ -100,17 +116,40 @@ Then check health:
     railway open           # opens the service; hit /healthz
     # GET /healthz -> {"ok":true,"server":"..."}
 
-## P0 note: one account first
+## Enable real sending
 
-The brain and the in-process executor run in this one service. Real browser
-runs, live LinkedIn traffic, and the real LLM are P0 items that are not yet
-exercised end to end. Prove the loop with a single account and a single service
-before doing anything else:
+By default `LOA_EXECUTOR` is `fake`: the runtime is up, the MCP surface and web
+UI work, but nothing touches LinkedIn. The real executor path is wired end to
+end but has not yet been proven against live LinkedIn markup — treat the first
+run as a shakeout. To turn it on for one account:
 
-1. Deploy this one service with Postgres attached and migrations applied.
-2. Confirm `/healthz` is green and the `accounts` / `campaigns` / `actions`
-   tables exist.
-3. Add one account's sticky proxy and run a small supervised window.
+    railway variables --set "LOA_EXECUTOR=real" \
+                       --set "LOA_DISPATCH_INTERVAL_MS=30000" \
+                       --set "LOA_REPLY_POLL_INTERVAL_MS=120000"
+
+Preconditions before those flags do anything:
+
+- A linked account: use the web UI (Accounts -> paste `li_at` + `JSESSIONID`),
+  which seals the session to `${LOA_VAULT_DIR}/{accountId}.vault.json`.
+- `COOKIE_VAULT_KEY` set to the key that sealed the vault, and `LOA_PROFILE_DIR`
+  (default `/data/profile`) + the vault dir on a persistent volume (step 5).
+- A per-account sticky proxy (`PROXY_URL` etc.). Without one the browser refuses
+  to launch unless `LOA_ALLOW_NO_PROXY=true`, which is for neutral-page checks
+  only, never a real account.
+
+`LOA_DISPATCH_INTERVAL_MS` starts the campaign dispatch tick (paced sends);
+`LOA_REPLY_POLL_INTERVAL_MS` starts the reply-detection tick (reads the inbox,
+classifies, pulls repliers out of the funnel). Both stay idle when unset.
+
+## Prove one account first
+
+1. Deploy with Postgres attached and migrations applied; confirm `/healthz` is
+   green and the `accounts` / `campaigns` / `actions` tables exist.
+2. Link one account in the UI and run a small supervised window (autonomy
+   `supervised`, so every send queues for your approval).
+3. Watch the logs for selector drift and the reply/inbox parse (the Voyager
+   messaging fields are grounded in prior art but unconfirmed against a live
+   payload).
 4. Only after that loop is clean, consider a second account.
 
 ## Scaling to multiple accounts (future work)

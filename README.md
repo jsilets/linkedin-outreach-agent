@@ -2,7 +2,7 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 
-Status: scaffold. This repo currently holds the foundation only. Domain types, the two locked interfaces, and the database schema are built out; every other package is an empty stub for later work.
+Status: pre-first-live-run. The full stack is built and unit-tested — the campaign engine, sourcing and lead-list tools over MCP, the safety gate, account linking, the web UI, the real-browser executor, and the reply-detection loop. What has not happened yet is a single end-to-end run against live LinkedIn on a real account; the browser-driven paths (DOM selectors, the Voyager inbox parse, session resume) are wired but unproven until that run. Deploy with `LOA_EXECUTOR=fake` to explore the surface safely; see `infra/RAILWAY.md` to enable real sending for one supervised account.
 
 A self-hosted, agent-driven framework for running LinkedIn outreach across multiple accounts. A control plane plans campaigns and enforces safety; per-account runners drive a real browser to carry out actions. An LLM personalizes messages and classifies replies. Everything an account does is written to an append-only audit log.
 

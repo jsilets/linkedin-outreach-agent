@@ -19,7 +19,7 @@ flowchart LR
   A["Claude Code / Codex\n(your subscription = the brain)"] -- MCP over HTTP --> S["@loa/mcp server\n(hands + safety gate)"]
   S --> R["account-runner\n(real browser)"]
   R --> L["LinkedIn"]
-  H["Human operator\n(privileged headers)"] -- approve / pause --> S
+  H["Human operator\n(operator token)"] -- approve / pause --> S
 ```
 
 The driving agent connects with the non-privileged agent context and gets
@@ -41,37 +41,44 @@ server-side regardless of which brain drives. Under the `supervised` autonomy
 level every send and reply queues to human approval. See the autonomy matrix in
 `control-plane/mcp/src/gate.ts`.
 
-## Capability headers
+## Capability tokens
 
-Caller identity is set by two request headers, read in
-`control-plane/mcp/src/server.ts`:
+Caller identity is set by a bearer token, checked in
+`control-plane/mcp/src/server.ts`. Privilege derives from which token you send,
+never from a header the caller can set freely.
 
-| Header | Value | Result |
+| `Authorization` header | Token env var | Result |
 |--------|-------|--------|
-| `x-loa-privileged` | `true` | Privileged (operator) context |
-| `x-loa-operator` | your operator name, non-empty | Operator identity for audit records |
+| `Bearer <LOA_MCP_TOKEN>` | `LOA_MCP_TOKEN` | Driving-agent context: Observe + Act + Campaign |
+| `Bearer <LOA_OPERATOR_TOKEN>` | `LOA_OPERATOR_TOKEN` | Operator context: Approval + Safety, plus everything the agent can call |
 
-Send both to act as the human operator. Send neither (or a blank operator) to
-act as the driving agent. That is the only place caller identity is established.
+A missing or unrecognized bearer is rejected with `401` before any tool runs.
+Set `x-loa-operator` to your operator name if you want it recorded on audit
+entries; it is a label only and grants nothing.
 
-- Driving agent connection: no capability headers. Gets Observe + Act + Campaign.
-- Operator connection: both headers set. Gets Approval + Safety, plus everything
-  the agent can call.
+In production (`NODE_ENV=production`) the endpoint fails closed: with
+`LOA_MCP_TOKEN` unset, `POST /mcp` returns `503`. In local development with no
+token set, all callers are allowed as a labeled operator and the server logs a
+one-time warning, so you can run without secrets on your own machine.
 
-A common setup is two MCP client connections to the same URL: one plain
-connection for the driver, one with the two headers for approvals. The MCP
-endpoint is `POST /mcp`; health is `GET /healthz` on `MCP_PORT` (default 8080).
+A common setup is two MCP client connections to the same URL: one with the agent
+token for the driver, one with the operator token for approvals. The MCP
+endpoint is `POST /mcp`; health is `GET /healthz` on `MCP_PORT` (default 8080)
+and stays open for platform health checks.
 
 ## Which tools each role uses
 
 Agent (driver, non-privileged):
 
 - Observe: `get_profile`, `get_recent_posts`, `get_post_engagers`,
-  `get_company_jobs`, `get_conversation`, `search_people`.
+  `get_company_jobs`, `get_conversation`, `search_people`, `source_people`.
 - Act (routed through the gate): `send_connection`, `send_message`,
   `view_profile`, `follow`, `withdraw_invite`, `react_to_post`.
 - Campaign and state: `create_campaign`, `add_targets`,
-  `attach_external_context`, `get_account_state`, `get_queue`, `get_metrics`.
+  `attach_external_context`, `get_account_state`, `get_queue`, `get_metrics`,
+  `define_sequence`, `get_sequence`, `enroll_targets`.
+- Lead lists (results show up in the web UI): `create_list`, `list_lists`,
+  `get_list`, `source_to_list`.
 
 Operator (privileged):
 

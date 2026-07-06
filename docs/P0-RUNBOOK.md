@@ -107,9 +107,10 @@ this step is not optional.
 
 Now run a real cycle, supervised, approving every send by hand.
 
-1. Connect your driving agent (Claude Code or Codex) to the MCP endpoint. Add the
-   plain HTTP MCP server for the driver, and a second one carrying
-   `x-loa-privileged: true` and `x-loa-operator: YOUR_NAME` for approvals. See
+1. Connect your driving agent (Claude Code or Codex) to the MCP endpoint. Add an
+   HTTP MCP server carrying `Authorization: Bearer LOA_MCP_TOKEN` for the driver,
+   and a second one carrying `Authorization: Bearer LOA_OPERATOR_TOKEN` (plus an
+   optional `x-loa-operator: YOUR_NAME` audit label) for approvals. See
    `examples/driver/README.md`.
 2. Create the campaign at `supervised` autonomy and add your first targets:
    - `create_campaign(goal: <goal>, autonomyLevel: "supervised",
