@@ -9,6 +9,8 @@ import {
   buildVoyagerSearchUrl,
   buildVoyagerGraphqlPath,
   normalizeSearchResponse,
+  normalizeInboxResponse,
+  LiveInboxReader,
   LiveObserve,
   InMemorySearchBudget,
   type SearchBudget,
@@ -255,5 +257,87 @@ describe('LiveObserve.searchPeople', () => {
     await expect(observe.searchPeople('acct', { keywords: 'x' }, 5)).rejects.toThrow(
       /search budget exhausted/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbox reader — messaging conversations -> InboundMessage[].
+// ---------------------------------------------------------------------------
+
+/** A trimmed but realistic messaging conversations payload. */
+function inboxPayload(
+  events: Array<{
+    thread: string;
+    sender: string;
+    publicId?: string;
+    text: string;
+    at: number;
+    outbound?: boolean;
+  }>,
+) {
+  return {
+    elements: events.map((e) => ({
+      entityUrn: `urn:li:msg_conversation:${e.thread}`,
+      events: [
+        {
+          deliveredAt: e.at,
+          ...(e.outbound ? { outbound: true } : {}),
+          from: {
+            miniProfile: {
+              entityUrn: `urn:li:fsd_profile:${e.sender}`,
+              ...(e.publicId ? { publicIdentifier: e.publicId } : {}),
+            },
+          },
+          eventContent: { attributedBody: { text: e.text } },
+        },
+      ],
+    })),
+  };
+}
+
+describe('normalizeInboxResponse (messaging shapes)', () => {
+  it('reads thread urn, sender urn, profile url, text, and receivedAt', () => {
+    const body = inboxPayload([
+      { thread: 't1', sender: 'p1', publicId: 'alice-ng', text: 'happy to chat', at: 1_700_000_000_000 },
+    ]);
+    const msgs = normalizeInboxResponse(body);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({
+      threadUrn: 'urn:li:msg_conversation:t1',
+      senderUrn: 'urn:li:fsd_profile:p1',
+      profileUrl: 'https://www.linkedin.com/in/alice-ng/',
+      text: 'happy to chat',
+    });
+    expect(msgs[0]!.receivedAt.getTime()).toBe(1_700_000_000_000);
+  });
+
+  it('drops the account\'s own outbound events', () => {
+    const body = inboxPayload([
+      { thread: 't1', sender: 'me', text: 'my earlier note', at: 1, outbound: true },
+      { thread: 't1', sender: 'p1', text: 'their reply', at: 2 },
+    ]);
+    expect(normalizeInboxResponse(body).map((m) => m.text)).toEqual(['their reply']);
+  });
+
+  it('sorts most-recent-first and skips empty-text events', () => {
+    const body = inboxPayload([
+      { thread: 't1', sender: 'p1', text: 'older', at: 10 },
+      { thread: 't2', sender: 'p2', text: '', at: 30 }, // non-text event: dropped
+      { thread: 't3', sender: 'p3', text: 'newer', at: 20 },
+    ]);
+    expect(normalizeInboxResponse(body).map((m) => m.text)).toEqual(['newer', 'older']);
+  });
+});
+
+describe('LiveInboxReader.readInbox', () => {
+  it('drives voyagerGet and normalizes the messaging payload', async () => {
+    const page = new SearchFakePage([
+      inboxPayload([{ thread: 't1', sender: 'p1', text: 'yes', at: 5 }]),
+    ]);
+    const reader = new LiveInboxReader({ pageFor: async () => page });
+    const msgs = await reader.readInbox('acct', 20);
+    expect(msgs.map((m) => m.text)).toEqual(['yes']);
+    // It hit the messaging conversations endpoint.
+    expect(page.calls[0]).toContain('/voyager/api/messaging/conversations');
   });
 });
