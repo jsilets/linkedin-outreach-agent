@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import express from 'express';
 import { basicAuthOk } from './auth.js';
+import { createMcpProxy } from './mcp-proxy.js';
 import { VaultError } from '@loa/account-runner';
 import {
   createCampaignFromList,
@@ -26,6 +27,17 @@ import {
 import { StepValidationError } from './steps.js';
 
 const app = express();
+
+// One public domain serves both faces of the single-service deploy: the web UI
+// here and the MCP surface on the internal MCP server. Forward /mcp before the
+// JSON body parser and the Basic-auth gate below, so the raw JSON-RPC stream and
+// the MCP server's own Authorization: Bearer auth pass through untouched. The
+// MCP server binds MCP_PORT internally and is never exposed directly.
+app.all('/mcp', createMcpProxy({
+  host: process.env.MCP_HOST ?? '127.0.0.1',
+  port: Number(process.env.MCP_PORT ?? 8080),
+}));
+
 app.use(express.json());
 
 // Health check for the platform (Railway healthcheckPath). Served by the web
