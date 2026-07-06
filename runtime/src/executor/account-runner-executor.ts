@@ -24,6 +24,7 @@ import type {
   AllowToken,
   PagePort,
   SafetyPort as RunnerSafetyPort,
+  Sleeper,
 } from '@loa/account-runner';
 import {
   connect as runnerConnect,
@@ -50,6 +51,11 @@ export interface AccountRunnerExecutorDeps {
   runnerSafety: RunnerSafetyPort;
   session: SessionProvider;
   now?: () => Date;
+  /** Between-step sleeper for the human-paced actions. Real (randomized 8-20s)
+   * gaps by default; a test injects a no-op to run the wiring without waiting. */
+  sleep?: Sleeper;
+  /** RNG the actions pace with; defaults to Math.random. Injected in tests. */
+  rng?: () => number;
 }
 
 export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort {
@@ -57,12 +63,16 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
   private readonly runnerSafety: RunnerSafetyPort;
   private readonly session: SessionProvider;
   private readonly now: () => Date;
+  private readonly sleep?: Sleeper;
+  private readonly rng?: () => number;
 
   constructor(deps: AccountRunnerExecutorDeps) {
     this.store = deps.store;
     this.runnerSafety = deps.runnerSafety;
     this.session = deps.session;
     this.now = deps.now ?? (() => new Date());
+    this.sleep = deps.sleep;
+    this.rng = deps.rng;
   }
 
   async execute(req: ActRequest): Promise<Action> {
@@ -137,7 +147,14 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     // account); it resumes the vaulted browser session for accountId.
     const page = await this.session.pageFor(accountId);
     const profileUrl = this.session.profileUrlFor(target);
-    const ctx: ActionContext = { page, token, action, accountId };
+    const ctx: ActionContext = {
+      page,
+      token,
+      action,
+      accountId,
+      ...(this.sleep ? { sleep: this.sleep } : {}),
+      ...(this.rng ? { rng: this.rng } : {}),
+    };
 
     await this.drive(ctx, type, profileUrl, body);
 
