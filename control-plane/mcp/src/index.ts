@@ -35,4 +35,4 @@ export { gateAct, mayExecuteDirectly, type GateOutcome, type GateDeps } from './
 export { requirePrivileged, CapabilityError } from './capability.js';
 export { AGENT_CONTEXT, operatorContext, type RequestContext } from './context.js';
 export { ALL_TOOLS, TOOLS_BY_NAME, type ToolDef, type ToolFamily } from './tools.js';
-export { createApp, buildMcpServer, startServer, contextFromHeaders } from './server.js';
+export { createApp, buildMcpServer, startServer, authenticate, type AuthResult } from './server.js';

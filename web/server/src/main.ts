@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import express from 'express';
+import { basicAuthOk } from './auth.js';
 import { VaultError } from '@loa/account-runner';
 import {
   createCampaignFromList,
@@ -28,9 +29,41 @@ const app = express();
 app.use(express.json());
 
 // Health check for the platform (Railway healthcheckPath). Served by the web
-// process, which is the public face of the single-service deploy.
+// process, which is the public face of the single-service deploy. Registered
+// before the auth gate so Railway can probe it without credentials.
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true, server: '@loa/web' });
+});
+
+// HTTP Basic auth over every non-health route. Railway terminates TLS, so
+// Basic over HTTPS is fine. Posture: credentials are required in production
+// (fail closed if unset); in dev with no credentials set, auth is disabled
+// with a one-time loud warning so local work still flows.
+const authUser = process.env.LOA_WEB_USER ?? '';
+const authPassword = process.env.LOA_WEB_PASSWORD ?? '';
+const authConfigured = authUser.length > 0 && authPassword.length > 0;
+const production = process.env.NODE_ENV === 'production';
+if (production && !authConfigured) {
+  console.error('web api: LOA_WEB_USER/LOA_WEB_PASSWORD are required in production; all routes will refuse requests');
+} else if (!authConfigured) {
+  console.warn('web api: LOA_WEB_USER/LOA_WEB_PASSWORD unset: Basic auth is DISABLED (dev only). All routes are open.');
+}
+
+app.use((req, res, next) => {
+  if (req.path === '/healthz') return next();
+
+  // Fail closed in production if credentials were never configured.
+  if (production && !authConfigured) {
+    res.status(503).json({ error: 'server misconfigured: web credentials are not set.' });
+    return;
+  }
+  // Dev open posture: auth disabled.
+  if (!authConfigured) return next();
+
+  if (basicAuthOk(req.headers.authorization, authUser, authPassword)) {
+    return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="loa"').status(401).json({ error: 'authentication required.' });
 });
 
 const api = express.Router();
