@@ -14,6 +14,7 @@ import { chromium } from 'patchright';
 import type {
   BrowserContextPort,
   BrowserLauncherPort,
+  InterceptedResponse,
   LocatorPort,
   PagePort,
   StorageStateShape,
@@ -34,6 +35,8 @@ function adaptLocator(loc: PwLocator): LocatorPort {
     fill: (text) => loc.fill(text),
     textContent: () => loc.textContent(),
     count: () => loc.count(),
+    first: () => adaptLocator(loc.first()),
+    nth: (index) => adaptLocator(loc.nth(index)),
     hover: () => loc.hover(),
     waitFor: (options) => loc.waitFor(options),
   };
@@ -48,6 +51,18 @@ function adaptPage(page: PwPage): PagePort {
     $$count: (selector) => page.locator(selector).count(),
     url: () => page.url(),
     waitForTimeout: (ms) => page.waitForTimeout(ms),
+    waitForResponse: async (urlSubstring, opts) => {
+      const res = await page.waitForResponse(
+        (r) => r.url().includes(urlSubstring),
+        { timeout: opts?.timeoutMs ?? 15_000 },
+      );
+      const adapted: InterceptedResponse = {
+        url: res.url(),
+        status: res.status(),
+        json: () => res.json() as Promise<unknown>,
+      };
+      return adapted;
+    },
   };
 }
 

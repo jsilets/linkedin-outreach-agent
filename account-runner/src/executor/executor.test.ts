@@ -7,7 +7,9 @@ import {
   connect,
   message,
   follow,
+  react,
   readInbox,
+  withdrawInvite,
   NotAllowedError,
   checkToken,
 } from './index.js';
@@ -111,7 +113,7 @@ describe('executor refuses without an allow', () => {
 
 describe('executor acts when allowed', () => {
   it('connect with a note drives the centralized selectors', async () => {
-    const page = new FakePage();
+    const page = new FakePage({ counts: { [SELECTORS.inviteErrorToast]: 0 } });
     const action = makeAction();
     const res = await connect(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/jane/',
@@ -126,13 +128,65 @@ describe('executor acts when allowed', () => {
   });
 
   it('connect without a note skips the note selectors', async () => {
-    const page = new FakePage();
+    const page = new FakePage({ counts: { [SELECTORS.inviteErrorToast]: 0 } });
     const action = makeAction();
     await connect(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/bob/',
     });
     expect(page.clicked(SELECTORS.connectButton)).toBe(true);
     expect(page.clicked(SELECTORS.addNoteButton)).toBe(false);
+  });
+
+  it('connect falls back to the More menu when no top-level Connect button', async () => {
+    // Follow-by-default profile: the direct Connect button is absent, so the
+    // executor must open "More" and click Connect from the dropdown.
+    const page = new FakePage({
+      counts: { [SELECTORS.connectButton]: 0, [SELECTORS.inviteErrorToast]: 0 },
+    });
+    const action = makeAction();
+    const res = await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/carol/',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.detail).toContain('more-menu');
+    expect(page.clicked(SELECTORS.connectButton)).toBe(false);
+    expect(page.clicked(SELECTORS.moreActionsButton)).toBe(true);
+    expect(page.clicked(SELECTORS.connectInMenu)).toBe(true);
+    // Note-less send must go through "Send without a note", never a generic Send.
+    expect(page.clicked(SELECTORS.sendWithoutNoteButton)).toBe(true);
+    expect(page.clicked(SELECTORS.sendInviteButton)).toBe(false);
+  });
+
+  it('connect reports ok:false when LinkedIn refuses the invite', async () => {
+    // The send click succeeds but LinkedIn shows an error toast ("invitation
+    // not sent"). connect() must report failure, not a false success.
+    const page = new FakePage({ counts: { [SELECTORS.inviteErrorToast]: 1 } });
+    const action = makeAction();
+    const res = await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/erin/',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toContain('refused by LinkedIn');
+  });
+
+  it('connect throws when no More menu exposes a Connect entry', async () => {
+    // No direct Connect button and the More menu never reveals connectInMenu:
+    // the loop tries every candidate, finds none, and refuses rather than
+    // clicking a wrong menu item.
+    const page = new FakePage({
+      counts: {
+        [SELECTORS.connectButton]: 0,
+        [SELECTORS.moreActionsButton]: 2,
+        [SELECTORS.connectInMenu]: 0,
+      },
+    });
+    const action = makeAction();
+    await expect(
+      connect(ctx(page, action, validToken(action)), {
+        profileUrl: 'https://www.linkedin.com/in/dave/',
+      }),
+    ).rejects.toThrow(/no "More" menu exposed a Connect entry/);
+    expect(page.clicked(SELECTORS.sendInviteButton)).toBe(false);
   });
 
   it('message types into the compose box and sends', async () => {
@@ -144,6 +198,32 @@ describe('executor acts when allowed', () => {
     });
     expect(page.typedInto(SELECTORS.messageComposeBox)).toContain('Thanks for connecting!');
     expect(page.clicked(SELECTORS.messageSendButton)).toBe(true);
+  });
+
+  it('react LIKE single-clicks the trigger, no flyout', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'react' });
+    const res = await react(
+      ctx(page, action, validToken(action)),
+      'https://www.linkedin.com/feed/update/urn:li:activity:123/',
+    );
+    expect(res.ok).toBe(true);
+    expect(res.detail).toContain('LIKE');
+    expect(page.clicked(SELECTORS.reactTrigger)).toBe(true);
+    expect(page.clicked(SELECTORS.reactionCelebrate)).toBe(false);
+  });
+
+  it('react PRAISE hovers the trigger then clicks the Celebrate option', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'react' });
+    const res = await react(
+      ctx(page, action, validToken(action)),
+      'https://www.linkedin.com/feed/update/urn:li:activity:123/',
+      'PRAISE',
+    );
+    expect(res.ok).toBe(true);
+    expect(res.detail).toContain('PRAISE');
+    expect(page.clicked(SELECTORS.reactionCelebrate)).toBe(true);
   });
 
   it('follow clicks the follow button', async () => {
@@ -158,5 +238,53 @@ describe('executor acts when allowed', () => {
     const action = makeAction({ type: 'message' });
     const res = await readInbox(ctx(page, action, validToken(action)));
     expect(res.count).toBe(4);
+  });
+});
+
+describe('withdrawInvite targets a specific pending invite', () => {
+  const vanity = 'jane-doe-123';
+  const profileUrl = `https://www.linkedin.com/in/${vanity}/`;
+  // Must mirror withdrawButtonForVanity() exactly.
+  const rowSel =
+    `li:has(a[href*="/in/${vanity}"]) ${SELECTORS.withdrawInviteButton}, ` +
+    `div[class*="invitation-card"]:has(a[href*="/in/${vanity}"]) ${SELECTORS.withdrawInviteButton}`;
+  const SENT = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+
+  it('refuses without an allow token and never navigates', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'withdraw_invite' });
+    await expect(
+      withdrawInvite(ctx(page, action, null), { profileUrl }),
+    ).rejects.toBeInstanceOf(NotAllowedError);
+    expect(page.gotos).toHaveLength(0);
+  });
+
+  it('returns ok:false for a URL with no /in/ vanity and never navigates', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'withdraw_invite' });
+    const res = await withdrawInvite(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/company/acme/',
+    });
+    expect(res.ok).toBe(false);
+    expect(page.gotos).toHaveLength(0);
+  });
+
+  it('returns ok:false without confirming when no matching row exists', async () => {
+    const page = new FakePage({ counts: { [rowSel]: 0 } });
+    const action = makeAction({ type: 'withdraw_invite' });
+    const res = await withdrawInvite(ctx(page, action, validToken(action)), { profileUrl });
+    expect(res.ok).toBe(false);
+    expect(page.gotos).toContain(SENT);
+    expect(page.clicked(SELECTORS.confirmWithdrawButton)).toBe(false);
+  });
+
+  it('clicks the targeted row withdraw then the confirm dialog', async () => {
+    const page = new FakePage({ counts: { [rowSel]: 1 } });
+    const action = makeAction({ type: 'withdraw_invite' });
+    const res = await withdrawInvite(ctx(page, action, validToken(action)), { profileUrl });
+    expect(res.ok).toBe(true);
+    expect(res.detail).toContain(vanity);
+    expect(page.clicked(rowSel)).toBe(true);
+    expect(page.clicked(SELECTORS.confirmWithdrawButton)).toBe(true);
   });
 });

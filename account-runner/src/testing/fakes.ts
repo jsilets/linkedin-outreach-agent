@@ -7,6 +7,7 @@ import type {
   BrowserContextPort,
   BrowserLauncherPort,
   CookieShape,
+  InterceptedResponse,
   LocatorPort,
   PagePort,
   StorageStateShape,
@@ -44,6 +45,16 @@ export class FakeLocator implements LocatorPort {
   async count(): Promise<number> {
     return this.countValue();
   }
+  first(): LocatorPort {
+    // Same underlying log, so click/type assertions still see this locator.
+    return this;
+  }
+  nth(): LocatorPort {
+    // The fake does not model per-index DOM; every index shares this log so
+    // click/type assertions still register. Per-candidate discrimination is
+    // covered by live verification, not unit tests.
+    return this;
+  }
   async hover(): Promise<void> {
     this.log.hovers += 1;
   }
@@ -64,9 +75,41 @@ export interface FakePageOptions {
 export class FakePage implements PagePort {
   readonly gotos: string[] = [];
   readonly locators = new Map<string, LocatorLog>();
+  /** Every urlSubstring a caller waited on, in order. */
+  readonly responseWaits: string[] = [];
+  // Canned responses keyed by urlSubstring. Each key holds a FIFO queue so a
+  // paginating caller that waits on the same substring repeatedly gets the
+  // successive pages a test preloaded.
+  private readonly cannedResponses = new Map<string, InterceptedResponse[]>();
   private currentUrl: string;
   constructor(private readonly opts: FakePageOptions = {}) {
     this.currentUrl = opts.url ?? 'https://www.linkedin.com/feed/';
+  }
+
+  /**
+   * Preload a canned JSON payload returned the next time a caller waits on a
+   * response whose URL contains urlSubstring. Call once per expected page to
+   * model pagination; the last preloaded payload is reused once the queue drains.
+   */
+  preloadResponse(urlSubstring: string, json: unknown, status = 200): void {
+    const queue = this.cannedResponses.get(urlSubstring) ?? [];
+    queue.push({
+      url: `https://www.linkedin.com/${urlSubstring}`,
+      status,
+      json: async () => json,
+    });
+    this.cannedResponses.set(urlSubstring, queue);
+  }
+
+  async waitForResponse(urlSubstring: string): Promise<InterceptedResponse> {
+    this.responseWaits.push(urlSubstring);
+    const queue = this.cannedResponses.get(urlSubstring);
+    if (!queue || queue.length === 0) {
+      throw new Error(`no canned response preloaded for "${urlSubstring}"`);
+    }
+    // Keep the last one so an over-eager pagination loop does not throw; the
+    // loop stops on its own once a page returns no new items.
+    return queue.length > 1 ? (queue.shift() as InterceptedResponse) : queue[0];
   }
 
   async goto(url: string): Promise<unknown> {
@@ -102,6 +145,11 @@ export class FakePage implements PagePort {
   /** Convenience: text typed into a selector. */
   typedInto(selector: string): string[] {
     return this.locators.get(selector)?.typed ?? [];
+  }
+
+  /** Convenience: text filled into a selector (fill replaces, e.g. clearing). */
+  filledInto(selector: string): string[] {
+    return this.locators.get(selector)?.filled ?? [];
   }
 }
 
