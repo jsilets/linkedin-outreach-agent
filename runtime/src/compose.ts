@@ -176,7 +176,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
   const { llm, name: llmProvider } = chooseLlm(config);
 
   // mcp ports, all backed by the single orchestrator + gate + store + executor.
-  const approvals = new ApprovalAdapter(orchestrator, executor);
+  const approvals = new ApprovalAdapter(orchestrator, executor, store);
   const admin = new AccountAdminAdapter(store, gate, orchestrator);
   const campaign = new CampaignAdapter(orchestrator, store);
   const safety = makeMcpSafetyPort(gate, store);

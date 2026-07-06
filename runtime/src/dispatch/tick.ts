@@ -26,6 +26,7 @@ import type { CampaignStepType } from '@loa/shared';
 import type { db as shared } from '@loa/shared';
 import { gateAct, type ActRequest, type GateDeps, type GateOutcome } from '@loa/mcp';
 import type { SequenceStorePort } from '../store/index.js';
+import { advanceAfterStep } from './advance.js';
 
 type CampaignStepRow = shared.CampaignStepRow;
 type TargetProgressRow = shared.TargetProgressRow;
@@ -176,35 +177,30 @@ export class DispatchTick {
       return { kind: 'failed', progressId: progress.id, error };
     }
 
-    if (outcome.kind === 'deferred' || outcome.kind === 'denied' || outcome.kind === 'queued') {
-      // Not executed this tick: leave the cursor where it is and retry later.
-      // 'queued' means autonomy routed it to human approval; the operator drives
-      // that send, and the cursor waits so we do not double-mint.
-      const reason = outcome.kind;
-      return { kind: 'held', progressId: progress.id, reason };
+    if (outcome.kind === 'queued') {
+      // Autonomy routed this to human approval. Park the cursor in
+      // awaiting_approval so it is no longer due: without this the next tick
+      // would re-run the step and enqueue a duplicate approval every pass. The
+      // post-approval resume moves it forward (approve) or stops it (reject).
+      await this.sequence.advanceTargetProgress(progress.id, { state: 'awaiting_approval' });
+      return { kind: 'held', progressId: progress.id, reason: 'queued' };
     }
 
-    // Executed. Advance to the next step and set its due time.
-    const nextIdx = idx + 1;
-    if (nextIdx >= steps.length) {
-      await this.sequence.advanceTargetProgress(progress.id, {
-        currentStep: nextIdx,
-        state: 'completed',
-        nextStepAt: null,
-        lastStepAt: now,
-        errorMessage: null,
-      });
-      // Report the terminal-advance as executed so callers see the action id.
-      return { kind: 'executed', progressId: progress.id, actionId: outcome.actionId, nextStep: nextIdx };
+    if (outcome.kind === 'deferred' || outcome.kind === 'denied') {
+      // Transient (pacing / budget). Leave the cursor in_progress and retry next
+      // tick; nothing was enqueued, so there is nothing to dedupe.
+      return { kind: 'held', progressId: progress.id, reason: outcome.kind };
     }
-    const nextStep = steps[nextIdx]!;
-    await this.sequence.advanceTargetProgress(progress.id, {
-      currentStep: nextIdx,
-      nextStepAt: new Date(now.getTime() + nextStep.delaySeconds * 1000),
-      lastStepAt: now,
-      errorMessage: null,
-    });
-    return { kind: 'executed', progressId: progress.id, actionId: outcome.actionId, nextStep: nextIdx };
+
+    // Executed. Advance to the next step (or complete) with the shared rule.
+    const patch = advanceAfterStep(steps, idx, now);
+    await this.sequence.advanceTargetProgress(progress.id, patch);
+    return {
+      kind: 'executed',
+      progressId: progress.id,
+      actionId: outcome.actionId,
+      nextStep: patch.currentStep!,
+    };
   }
 
   /** Start a restartable interval loop. No-op if already started. */

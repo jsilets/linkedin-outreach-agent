@@ -9,7 +9,7 @@
 // requirePrivileged() first. Observe / campaign / metrics tools run open.
 
 import { z } from 'zod';
-import { AUTONOMY_LEVELS } from '@loa/shared';
+import { AUTONOMY_LEVELS, CAMPAIGN_STEP_TYPES } from '@loa/shared';
 import type { RequestContext } from './context.js';
 import { requirePrivileged } from './capability.js';
 import { gateAct, type GateOutcome } from './gate.js';
@@ -275,6 +275,56 @@ const campaignTools: ToolDef[] = [
     privileged: false,
     inputShape: { campaignId: z.string() },
     handler: (a, p) => p.campaign.getMetrics(a.campaignId),
+  },
+  {
+    name: 'define_sequence',
+    family: 'campaign',
+    description:
+      'Define (replace) a campaign sequence: an ordered list of steps the ' +
+      'dispatch tick walks per enrolled target. Step types: view_profile, ' +
+      'connect, message, follow, react, delay. delaySeconds on a step is the ' +
+      'wait before that step runs. connect uses note, message uses body, react ' +
+      'uses reaction (defaults to like). A delay step needs delaySeconds > 0.',
+    privileged: false,
+    inputShape: {
+      campaignId: z.string(),
+      steps: z
+        .array(
+          z.object({
+            stepType: z.enum(CAMPAIGN_STEP_TYPES),
+            delaySeconds: z.number().int().nonnegative().default(0),
+            note: z.string().max(300).optional(),
+            body: z.string().optional(),
+            reaction: z.string().optional(),
+            enabled: z.boolean().default(true),
+          }),
+        )
+        .min(1),
+    },
+    handler: (a, p) => p.campaign.defineCampaignSteps(a.campaignId, a.steps),
+  },
+  {
+    name: 'get_sequence',
+    family: 'campaign',
+    description: 'Read a campaign ordered step sequence.',
+    privileged: false,
+    inputShape: { campaignId: z.string() },
+    handler: (a, p) => p.campaign.listCampaignSteps(a.campaignId),
+  },
+  {
+    name: 'enroll_targets',
+    family: 'campaign',
+    description:
+      'Enroll targets into a campaign sequence under a sender account. ' +
+      'Idempotent per target. The dispatch tick then advances each enrolled ' +
+      'target through the steps.',
+    privileged: false,
+    inputShape: {
+      campaignId: z.string(),
+      targetIds: z.array(z.string()).min(1),
+      accountId: z.string(),
+    },
+    handler: (a, p) => p.campaign.enrollTargets(a.campaignId, a.targetIds, a.accountId),
   },
 ];
 

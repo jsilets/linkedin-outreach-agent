@@ -69,6 +69,9 @@ export interface SequenceStorePort {
     accountId: string,
   ): Promise<shared.TargetProgressRow>;
   listTargetProgress(campaignId: string): Promise<shared.TargetProgressRow[]>;
+  /** The single enrollment cursor for a target (unique on targetId), if any.
+   * Used by the post-approval resume to move a parked cursor forward. */
+  getTargetProgressByTarget(targetId: string): Promise<shared.TargetProgressRow | undefined>;
   /** Rows the dispatch tick should act on: state='in_progress' AND
    * (nextStepAt IS NULL OR nextStepAt<=now). */
   dueTargetProgress(now: Date): Promise<shared.TargetProgressRow[]>;

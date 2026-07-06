@@ -1,0 +1,1 @@
+ALTER TYPE "public"."progress_state" ADD VALUE 'awaiting_approval';
