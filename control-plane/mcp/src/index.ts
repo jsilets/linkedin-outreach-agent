@@ -23,6 +23,7 @@ export type {
   EngagerSummary,
   JobSummary,
   ConversationSummary,
+  PeopleQuery,
   PersonSearchResult,
 } from './ports.js';
 

@@ -40,6 +40,55 @@ export interface EventReadPort extends EventRepoPort {
   listAll(): Promise<shared.EventRow[]>;
 }
 
+/** Patch applied to a target-progress row as the dispatch tick advances it. */
+export interface TargetProgressPatch {
+  currentStep?: number;
+  state?: shared.TargetProgressRow['state'];
+  nextStepAt?: Date | null;
+  lastStepAt?: Date | null;
+  errorMessage?: string | null;
+}
+
+/** Campaign-sequence read/write surface: the step template (CRUD + reorder),
+ * per-target enrollment cursors the dispatch tick walks, and the read-side
+ * counts a UI consumes. Method names are load-bearing: another package's UI
+ * consumes the read ones, so keep them exact. */
+export interface SequenceStorePort {
+  // --- step template ---
+  listCampaignSteps(campaignId: string): Promise<shared.CampaignStepRow[]>;
+  upsertCampaignStep(step: shared.NewCampaignStepRow): Promise<shared.CampaignStepRow>;
+  deleteCampaignStep(id: string): Promise<void>;
+  reorderCampaignSteps(campaignId: string, orderedIds: string[]): Promise<void>;
+
+  // --- per-target cursor ---
+  /** Enroll a target. Idempotent on targetId (unique index): a second call for
+   * the same target returns the existing row unchanged. */
+  enrollTarget(
+    campaignId: string,
+    targetId: string,
+    accountId: string,
+  ): Promise<shared.TargetProgressRow>;
+  listTargetProgress(campaignId: string): Promise<shared.TargetProgressRow[]>;
+  /** Rows the dispatch tick should act on: state='in_progress' AND
+   * (nextStepAt IS NULL OR nextStepAt<=now). */
+  dueTargetProgress(now: Date): Promise<shared.TargetProgressRow[]>;
+  advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void>;
+  /** Pull a target out of every funnel it is in (terminal 'replied' state) and
+   * stop further steps. Idempotent; a no-op if the target is not enrolled. */
+  pullTargetFromFunnel(targetId: string, reason: string): Promise<void>;
+
+  // --- read-side aggregates for the UI ---
+  campaignCounts(campaignId: string): Promise<{
+    targets: number;
+    byStage: Record<string, number>;
+    byProgressState: Record<string, number>;
+  }>;
+  actionVolume(
+    accountId: string,
+    sinceDays: number,
+  ): Promise<Array<{ date: string; type: string; count: number }>>;
+}
+
 /** The composed store shape the runtime adapters depend on. */
 export interface RuntimeStore {
   account: AccountStorePort;
@@ -49,6 +98,8 @@ export interface RuntimeStore {
   message: MessageRepoPort;
   approval: ApprovalRepoPort;
   event: EventReadPort;
+  /** Campaign sequence templates + per-target enrollment cursors. */
+  sequence: SequenceStorePort;
   /** All targets for a campaign, for funnel metrics. */
   listTargetsByCampaign(campaignId: string): Promise<shared.TargetRow[]>;
   /** Release any underlying resources (Postgres pool). No-op in memory. */

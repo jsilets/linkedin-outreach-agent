@@ -8,6 +8,20 @@
       "when": 1783273692129,
       "tag": "0000_careless_rafael_vega",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783304796111,
+      "tag": "0001_complete_masked_marvel",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783349572226,
+      "tag": "0002_parallel_ricochet",
+      "breakpoints": true
     }
   ]
 }

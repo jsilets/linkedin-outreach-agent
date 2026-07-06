@@ -7,13 +7,23 @@
 // requires a reachable Postgres with the shared Drizzle schema migrated.
 
 import { db as shared } from '@loa/shared';
+import { and, asc, eq, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import {
   PostgresDb,
   makeRepositories,
   type Db,
   type Repositories,
 } from '@loa/orchestrator';
-import type { AccountStorePort, ActionStorePort, EventReadPort, RuntimeStore } from './index.js';
+import type {
+  AccountStorePort,
+  ActionStorePort,
+  EventReadPort,
+  RuntimeStore,
+  SequenceStorePort,
+  TargetProgressPatch,
+} from './index.js';
+
+const { campaignSteps, targetProgress, targets, actions } = shared.schema;
 
 class PgAccountStore implements AccountStorePort {
   constructor(private readonly repos: Repositories) {}
@@ -60,6 +70,155 @@ class PgEventRead implements EventReadPort {
   }
 }
 
+/** Campaign-sequence store over the Drizzle handle. The orchestrator repos do
+ * not cover campaign_steps / target_progress, so these queries go direct. */
+class PgSequenceStore implements SequenceStorePort {
+  constructor(private readonly db: Db) {}
+
+  async listCampaignSteps(campaignId: string): Promise<shared.CampaignStepRow[]> {
+    return this.db.handle
+      .select()
+      .from(campaignSteps)
+      .where(eq(campaignSteps.campaignId, campaignId))
+      .orderBy(asc(campaignSteps.stepOrder));
+  }
+
+  async upsertCampaignStep(step: shared.NewCampaignStepRow): Promise<shared.CampaignStepRow> {
+    if (step.id) {
+      const [out] = await this.db.handle
+        .update(campaignSteps)
+        .set({ ...step, updatedAt: new Date() })
+        .where(eq(campaignSteps.id, step.id))
+        .returning();
+      if (out) return out;
+    }
+    const [created] = await this.db.handle.insert(campaignSteps).values(step).returning();
+    return created!;
+  }
+
+  async deleteCampaignStep(id: string): Promise<void> {
+    await this.db.handle.delete(campaignSteps).where(eq(campaignSteps.id, id));
+  }
+
+  async reorderCampaignSteps(campaignId: string, orderedIds: string[]): Promise<void> {
+    // Two-phase to dodge the (campaignId, stepOrder) unique index mid-swap:
+    // park every row at a negative order, then write the final positions.
+    await this.db.handle.transaction(async (tx) => {
+      for (let i = 0; i < orderedIds.length; i += 1) {
+        await tx
+          .update(campaignSteps)
+          .set({ stepOrder: -1 - i, updatedAt: new Date() })
+          .where(and(eq(campaignSteps.id, orderedIds[i]!), eq(campaignSteps.campaignId, campaignId)));
+      }
+      for (let i = 0; i < orderedIds.length; i += 1) {
+        await tx
+          .update(campaignSteps)
+          .set({ stepOrder: i, updatedAt: new Date() })
+          .where(and(eq(campaignSteps.id, orderedIds[i]!), eq(campaignSteps.campaignId, campaignId)));
+      }
+    });
+  }
+
+  async enrollTarget(
+    campaignId: string,
+    targetId: string,
+    accountId: string,
+  ): Promise<shared.TargetProgressRow> {
+    // Idempotent on the target_progress_target_idx unique index.
+    const [out] = await this.db.handle
+      .insert(targetProgress)
+      .values({ campaignId, targetId, accountId, state: 'in_progress' })
+      .onConflictDoNothing({ target: targetProgress.targetId })
+      .returning();
+    if (out) return out;
+    const [existing] = await this.db.handle
+      .select()
+      .from(targetProgress)
+      .where(eq(targetProgress.targetId, targetId));
+    return existing!;
+  }
+
+  async listTargetProgress(campaignId: string): Promise<shared.TargetProgressRow[]> {
+    return this.db.handle
+      .select()
+      .from(targetProgress)
+      .where(eq(targetProgress.campaignId, campaignId));
+  }
+
+  async dueTargetProgress(now: Date): Promise<shared.TargetProgressRow[]> {
+    return this.db.handle
+      .select()
+      .from(targetProgress)
+      .where(
+        and(
+          eq(targetProgress.state, 'in_progress'),
+          or(isNull(targetProgress.nextStepAt), lte(targetProgress.nextStepAt, now)),
+        ),
+      );
+  }
+
+  async advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void> {
+    await this.db.handle
+      .update(targetProgress)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(targetProgress.id, id));
+  }
+
+  async pullTargetFromFunnel(targetId: string, reason: string): Promise<void> {
+    await this.db.handle
+      .update(targetProgress)
+      .set({ state: 'replied', nextStepAt: null, errorMessage: reason, updatedAt: new Date() })
+      .where(
+        and(
+          eq(targetProgress.targetId, targetId),
+          or(eq(targetProgress.state, 'in_progress'), eq(targetProgress.state, 'pending')),
+        ),
+      );
+  }
+
+  async campaignCounts(campaignId: string): Promise<{
+    targets: number;
+    byStage: Record<string, number>;
+    byProgressState: Record<string, number>;
+  }> {
+    const stageRows = await this.db.handle
+      .select({ stage: targets.stage, count: sql<number>`count(*)::int` })
+      .from(targets)
+      .where(eq(targets.campaignId, campaignId))
+      .groupBy(targets.stage);
+    const stateRows = await this.db.handle
+      .select({ state: targetProgress.state, count: sql<number>`count(*)::int` })
+      .from(targetProgress)
+      .where(eq(targetProgress.campaignId, campaignId))
+      .groupBy(targetProgress.state);
+    const byStage: Record<string, number> = {};
+    let total = 0;
+    for (const r of stageRows) {
+      byStage[r.stage] = r.count;
+      total += r.count;
+    }
+    const byProgressState: Record<string, number> = {};
+    for (const r of stateRows) byProgressState[r.state] = r.count;
+    return { targets: total, byStage, byProgressState };
+  }
+
+  async actionVolume(
+    accountId: string,
+    sinceDays: number,
+  ): Promise<Array<{ date: string; type: string; count: number }>> {
+    const cutoff = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
+    const at = sql<Date>`coalesce(${actions.executedAt}, ${actions.scheduledAt})`;
+    const dateExpr = sql<string>`to_char(${at}, 'YYYY-MM-DD')`;
+    const rows = await this.db.handle
+      .select({ date: dateExpr, type: actions.type, count: sql<number>`count(*)::int` })
+      .from(actions)
+      .where(and(eq(actions.accountId, accountId), gte(at, cutoff)))
+      .groupBy(dateExpr, actions.type)
+      .orderBy(dateExpr, actions.type);
+    return rows.map((r) => ({ date: r.date, type: r.type, count: r.count }));
+  }
+}
+
 export class PostgresStore implements RuntimeStore {
   readonly account: AccountStorePort;
   readonly action: ActionStorePort;
@@ -68,6 +227,7 @@ export class PostgresStore implements RuntimeStore {
   readonly message: Repositories['message'];
   readonly approval: Repositories['approval'];
   readonly event: EventReadPort;
+  readonly sequence: SequenceStorePort;
   private readonly db: Db;
 
   private readonly repos: Repositories;
@@ -83,6 +243,7 @@ export class PostgresStore implements RuntimeStore {
     this.message = repos.message;
     this.approval = repos.approval;
     this.event = new PgEventRead(repos);
+    this.sequence = new PgSequenceStore(db);
   }
 
   async listTargetsByCampaign(campaignId: string): Promise<shared.TargetRow[]> {

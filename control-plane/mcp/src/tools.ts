@@ -94,10 +94,37 @@ const observeTools: ToolDef[] = [
   {
     name: 'search_people',
     family: 'observe',
-    description: 'Search people by query string.',
+    description:
+      'Search LinkedIn people (free-tier Voyager). Pass a bare `query` string for ' +
+      'a keyword search, or the structured facets (titleKeywords, companyKeywords, ' +
+      'companyUrns, geoUrn, network) for an ICP search. Seniority is approximated ' +
+      'via titleKeywords (manager/senior/director/head/lead).',
     privileged: false,
-    inputShape: { accountId: z.string(), query: z.string(), limit: z.number().int().positive().max(100).default(25) },
-    handler: (a, p) => p.observe.searchPeople(a.accountId, a.query, a.limit),
+    inputShape: {
+      accountId: z.string(),
+      // Backward-compatible: a bare string is normalized to { keywords }.
+      query: z.string().optional(),
+      titleKeywords: z.array(z.string()).optional(),
+      companyKeywords: z.array(z.string()).optional(),
+      companyUrns: z.array(z.string()).optional(),
+      geoUrn: z.string().optional(),
+      network: z.array(z.enum(['F', 'S', 'O'])).optional(),
+      limit: z.number().int().positive().max(1000).default(25),
+    },
+    handler: (a, p) =>
+      p.observe.searchPeople(
+        a.accountId,
+        {
+          keywords: a.query,
+          titleKeywords: a.titleKeywords,
+          companyKeywords: a.companyKeywords,
+          companyUrns: a.companyUrns,
+          geoUrn: a.geoUrn,
+          network: a.network,
+          limit: a.limit,
+        },
+        a.limit,
+      ),
   },
 ];
 

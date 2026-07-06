@@ -16,6 +16,16 @@ async function main(): Promise<void> {
     `[@loa/runtime] composed: store=${store} llm=${runtime.llmProvider} executor=${runtime.executorMode}`,
   );
 
+  // The dispatch tick drives real outreach, so it only runs when a host opts in
+  // with LOA_DISPATCH_INTERVAL_MS. Unset, the MCP surface is up but the sequence
+  // engine stays idle (agent-over-MCP still works; nothing self-paces).
+  if (config.dispatchIntervalMs) {
+    runtime.dispatch.start(config.dispatchIntervalMs);
+    console.log(`[@loa/runtime] dispatch tick started: every ${config.dispatchIntervalMs}ms`);
+  } else {
+    console.log('[@loa/runtime] dispatch tick idle (set LOA_DISPATCH_INTERVAL_MS to run it)');
+  }
+
   const server = startServer(runtime.ports);
 
   const shutdown = (signal: string): void => {
