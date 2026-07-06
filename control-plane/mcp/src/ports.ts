@@ -236,6 +236,24 @@ export interface EnrollResult {
   progressIds: string[];
 }
 
+/** A target to add, carrying a real LinkedIn identity. This is the shape a
+ * search_people result maps onto, so sourced people enroll with their real urn
+ * and profile URL rather than a fabricated ref. A bare string is still accepted
+ * (dev/manual) and expands to a deterministic urn. */
+export interface TargetInput {
+  /** Stable reference (public vanity id, or the entity urn when no vanity). */
+  prospectRef: string;
+  /** Real LinkedIn entity urn. */
+  linkedinUrn: string;
+  /** Everything else is stored as opaque external context on the target. */
+  profileUrl?: string;
+  name?: string;
+  headline?: string;
+  currentCompany?: string;
+  location?: string;
+  degree?: string;
+}
+
 export interface CampaignPort {
   createCampaign(input: {
     goal: string;
@@ -243,7 +261,8 @@ export interface CampaignPort {
     messageStrategy: string;
     owner: string;
   }): Promise<Campaign>;
-  addTargets(campaignId: string, prospectRefs: string[]): Promise<Target[]>;
+  /** Add targets by bare ref or by structured identity (e.g. search results). */
+  addTargets(campaignId: string, targets: Array<string | TargetInput>): Promise<Target[]>;
   attachExternalContext(targetId: string, context: Json): Promise<Target>;
   getAccountState(accountId: string): Promise<Account>;
   getQueue(accountId: string): Promise<QueueEntry[]>;
