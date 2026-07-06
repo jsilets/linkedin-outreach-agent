@@ -27,6 +27,12 @@ import { StepValidationError } from './steps.js';
 const app = express();
 app.use(express.json());
 
+// Health check for the platform (Railway healthcheckPath). Served by the web
+// process, which is the public face of the single-service deploy.
+app.get('/healthz', (_req, res) => {
+  res.json({ ok: true, server: '@loa/web' });
+});
+
 const api = express.Router();
 
 api.get('/campaigns', async (_req, res, next) => {
