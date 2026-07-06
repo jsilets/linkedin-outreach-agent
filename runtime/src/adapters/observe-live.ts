@@ -13,9 +13,8 @@
 // salesApiPeopleSearch) is a separate implementation behind this same port; do
 // not add it here.
 //
-// The exact Voyager facet grammar is the HIGH-RISK GUESS: it is isolated in
-// buildVoyagerSearchUrl() and every guessed piece is marked `// GUESS: verify
-// live`. See correcting-the-url-builder note at the bottom of this file.
+// The facet encoding is isolated in buildVoyagerSearchUrl() and was verified
+// against real captured page URLs on 2026-07-06.
 
 import type {
   InterceptedResponse,
@@ -87,85 +86,52 @@ function todayIso(): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the flagship people-search URL for a given page offset.
+ * Build the flagship people-search page URL for a given page offset. We navigate
+ * the real logged-in browser here; the page's own client JS then fires the
+ * voyagerSearchDashClusters request we intercept.
  *
- * Stable, low-risk parts (LinkedIn facts, not Linki's to license):
- *   - origin + path: https://www.linkedin.com/search/results/people/
- *   - keywords: standard URL query param
- *   - the page renders results by fetching voyagerSearchDashClusters, which is
- *     what we intercept; the human-visible URL just drives that fetch.
- *
- * HIGH-RISK GUESS: the `filters` grammar. Flagship encodes facets as a single
- * `filters` query param whose value is a comma-separated list of
- * `key->List(v1|v2)` entries. The exact key names and value formats below are
- * best-effort and MUST be verified against one real captured request.
+ * Encoding verified against captured page URLs (2026-07-06). Free-tier flagship
+ * search exposes structured facets as SEPARATE query params, each a JSON array
+ * of quoted strings:
+ *   keywords=ev charging operations lead
+ *   origin=FACETED_SEARCH
+ *   network=["S","O"]            (connection degree: F=1st, S=2nd, O=3rd+)
+ *   geoUrn=["103644278"]         (bare geo id, not the full urn)
+ *   currentCompany=["439853"]    (bare company entity ids)
+ * There is NO free-text title/company facet on free tier; title and company
+ * keywords fold into the keyword box.
  */
 export function buildVoyagerSearchUrl(query: PeopleQuery, start: number): string {
   const url = new URL('https://www.linkedin.com/search/results/people/');
   const params = url.searchParams;
 
-  if (query.keywords && query.keywords.trim()) {
-    params.set('keywords', query.keywords.trim());
-  }
+  // Free tier has no title/company free-text FACET; both fold into keywords.
+  const keywordParts = [
+    query.keywords,
+    ...(query.titleKeywords ?? []),
+    ...(query.companyKeywords ?? []),
+  ]
+    .map((s) => s?.trim())
+    .filter((s): s is string => !!s && s.length > 0);
+  if (keywordParts.length) params.set('keywords', keywordParts.join(' '));
 
-  // Flagship people search paginates by `page` (1-based), not a raw start
-  // offset, on the human URL. // GUESS: verify live — some flows use `start`.
+  const hasFacets = !!query.geoUrn || !!query.companyUrns?.length || !!query.network?.length;
+  // origin is LinkedIn's own entry-tracking token: FACETED_SEARCH when filters
+  // are applied, SWITCH_SEARCH_VERTICAL for a plain keyword search.
+  params.set('origin', hasFacets ? 'FACETED_SEARCH' : 'SWITCH_SEARCH_VERTICAL');
+
+  // Each facet is its own JSON-array param. URLSearchParams percent-encodes the
+  // brackets/quotes; LinkedIn's client decodes them back, exactly as the browser
+  // does when a human clicks the filter, so either form is accepted.
+  if (query.network?.length) params.set('network', JSON.stringify(query.network));
+  if (query.geoUrn) params.set('geoUrn', JSON.stringify([query.geoUrn]));
+  if (query.companyUrns?.length) params.set('currentCompany', JSON.stringify(query.companyUrns));
+
+  // People search paginates by `page` (1-based).
   const page = Math.floor(start / PAGE_SIZE) + 1;
   if (page > 1) params.set('page', String(page));
 
-  // origin=FACETED_SEARCH tells LinkedIn the filters below were applied
-  // deliberately (vs a typed query). // GUESS: verify live.
-  params.set('origin', 'FACETED_SEARCH');
-
-  const filters: string[] = [];
-
-  // title keyword facet. // GUESS: verify live — key may be `title` or
-  // `titleFreeText`; free-tier likely wants a free-text title, so values are
-  // raw strings joined by `|`.
-  if (query.titleKeywords?.length) {
-    filters.push(`title->${listValue(query.titleKeywords)}`);
-  }
-
-  // current-company facet by NAME (free-text). // GUESS: verify live — key may
-  // be `currentCompany` (expects company ids) vs a free-text variant.
-  if (query.companyKeywords?.length) {
-    filters.push(`company->${listValue(query.companyKeywords)}`);
-  }
-
-  // current-company facet by company entity id. // GUESS: verify live — the
-  // canonical key is `currentCompany` and values are bare numeric ids.
-  if (query.companyUrns?.length) {
-    filters.push(`currentCompany->${listValue(query.companyUrns)}`);
-  }
-
-  // geography facet. // GUESS: verify live — key `geoUrn`, value is the bare
-  // geo id (e.g. 103644278), NOT the full urn:li:geo:... string.
-  if (query.geoUrn) {
-    filters.push(`geoUrn->${listValue([query.geoUrn])}`);
-  }
-
-  // connection-degree facet. F/S/O are LinkedIn's own network-distance codes
-  // and are stable; the `network` key name is the // GUESS: verify live part.
-  if (query.network?.length) {
-    filters.push(`network->${listValue(query.network)}`);
-  }
-
-  if (filters.length) {
-    // The filters param uses `->` between key and its List, and `,` between
-    // facets; the List uses `|` between values. LinkedIn leaves `(`, `)`, `,`
-    // unencoded and encodes only `:` inside urns. URL/searchParams will encode
-    // for us here; a live capture will show whether raw punctuation is needed.
-    // GUESS: verify live — the exact separator set.
-    params.set('filters', filters.join(','));
-  }
-
   return url.toString();
-}
-
-/** Encode one facet's values as LinkedIn's `List(a|b|c)` grammar. */
-function listValue(values: readonly string[]): string {
-  // GUESS: verify live — the `List(...)` wrapper and `|` joiner.
-  return `List(${values.join('|')})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -353,16 +319,14 @@ interface EntityResult {
 }
 
 // ---------------------------------------------------------------------------
-// CORRECTING THE URL BUILDER FROM ONE CAPTURED REQUEST
+// STILL TO VERIFY LIVE
 // ---------------------------------------------------------------------------
-// 1. Log into the account, open DevTools -> Network, filter for
-//    "voyagerSearchDashClusters".
-// 2. Apply title + company + geo + connection-degree filters in the UI.
-// 3. Copy the request URL. Read off:
-//    - the exact `filters` param value (key names, `->` vs `:`, `List(...)`,
-//      the value/joiner punctuation, and which chars are URL-encoded),
-//    - whether pagination uses `page` or a raw `start`/`count`,
-//    - the real geo value format (bare id vs urn).
-// 4. Fix listValue() + the filter keys + the pagination line in
-//    buildVoyagerSearchUrl(); leave everything else untouched. The intercept,
-//    pagination loop, and normalization do not depend on the guessed encoding.
+// The page-URL facet encoding is verified. Two things still want a live run to
+// confirm, because they depend on the intercepted RESPONSE, not the request URL:
+//   - The people-search page can fire more than one voyagerSearchDashClusters
+//     request (e.g. a MYNETWORK_CURATION_HUB one). waitForResponse takes the
+//     first; if that is the wrong cluster, filter the waiter to the SRP response
+//     (the one whose elements carry entityResult people cards).
+//   - The exact entityResult field names in normalizeEntityResult (title /
+//     primarySubtitle / navigationUrl / memberDistance) — stable-ish but worth
+//     a glance against one real payload.
