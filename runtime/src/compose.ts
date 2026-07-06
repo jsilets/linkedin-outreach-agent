@@ -48,6 +48,7 @@ import {
   ApprovalAdapter,
   CampaignAdapter,
   FakeObserve,
+  LeadListAdapter,
 } from './adapters/mcp-ports.js';
 import { LiveObserve, InMemorySearchBudget } from './adapters/observe-live.js';
 import { makeDispatchTick, type DispatchTick } from './dispatch/index.js';
@@ -201,7 +202,12 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
       searchPeople: (id, q, limit) => live.searchPeople(id, q, limit),
     };
   }
-  const ports: Ports = { observe, executor, safety, approval: approvals, campaign, admin };
+  // --- sourcing-mcp-tools: lead lists over the store (read by the web UI) ----
+  // A LeadListAdapter over store.leadList backs the create_list / list_lists /
+  // get_list / source_to_list tools. It writes the same lead_lists /
+  // lead_list_members tables the web UI's ListsView reads.
+  const lists = new LeadListAdapter(store);
+  const ports: Ports = { observe, executor, safety, approval: approvals, campaign, lists, admin };
 
   // The campaign sequence engine reuses the SAME gate chokepoint the Act tools
   // route through (safety + approval + executor), so a tick-minted step obeys
