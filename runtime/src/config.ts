@@ -47,6 +47,13 @@ export interface RuntimeConfig {
    * the sequence engine unattended.
    */
   dispatchIntervalMs?: number;
+  /**
+   * Poll interval (ms) for the reply-detection tick. Unset means it does NOT
+   * auto-start (same opt-in rule as the dispatch tick): composing the runtime
+   * never reads inboxes on its own. Set LOA_REPLY_POLL_INTERVAL_MS on a host
+   * that should watch for prospect replies and pull them out of the funnel.
+   */
+  replyPollIntervalMs?: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -68,5 +75,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
   if (env.PROXY_USERNAME) cfg.proxyUsername = env.PROXY_USERNAME;
   if (env.PROXY_PASSWORD) cfg.proxyPassword = env.PROXY_PASSWORD;
   if (env.LOA_DISPATCH_INTERVAL_MS) cfg.dispatchIntervalMs = Number(env.LOA_DISPATCH_INTERVAL_MS);
+  if (env.LOA_REPLY_POLL_INTERVAL_MS)
+    cfg.replyPollIntervalMs = Number(env.LOA_REPLY_POLL_INTERVAL_MS);
   return cfg;
 }

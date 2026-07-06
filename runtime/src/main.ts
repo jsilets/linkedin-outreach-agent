@@ -26,6 +26,18 @@ async function main(): Promise<void> {
     console.log('[@loa/runtime] dispatch tick idle (set LOA_DISPATCH_INTERVAL_MS to run it)');
   }
 
+  // The reply tick watches inboxes and pulls repliers out of the funnel. Same
+  // opt-in rule as dispatch, and it only exists with a real session (fake mode
+  // has no inbox to read), so it starts only when both are present.
+  if (config.replyPollIntervalMs && runtime.replyTick) {
+    runtime.replyTick.start(config.replyPollIntervalMs);
+    console.log(`[@loa/runtime] reply tick started: every ${config.replyPollIntervalMs}ms`);
+  } else if (config.replyPollIntervalMs) {
+    console.log('[@loa/runtime] reply tick idle (needs LOA_EXECUTOR=real for a live inbox)');
+  } else {
+    console.log('[@loa/runtime] reply tick idle (set LOA_REPLY_POLL_INTERVAL_MS to run it)');
+  }
+
   const server = startServer(runtime.ports);
 
   const shutdown = (signal: string): void => {
