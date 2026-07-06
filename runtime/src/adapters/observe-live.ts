@@ -500,9 +500,15 @@ function normalizeEntityResult(er: EntityResult): PersonSearchResult | null {
       ? `https://www.linkedin.com/in/${publicId}/`
       : '';
 
+  // entityUrn wraps the stable profile urn plus search context, e.g.
+  // urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ABC,SEARCH_SRP,DEFAULT).
+  // Persist the inner fsd_profile urn as the identity so dedup and reply-matching
+  // key on the person, not the volatile search-result context.
+  const linkedinUrn = profileUrnFromEntityUrn(entityUrn) ?? entityUrn;
+
   return {
     entityUrn,
-    linkedinUrn: entityUrn,
+    linkedinUrn,
     ...(publicId ? { publicId } : {}),
     name: textOf(er.title),
     headline: textOf(er.primarySubtitle),
@@ -524,6 +530,15 @@ function textOf(node: TextNode | undefined): string | undefined {
 function publicIdFromUrl(url: string): string | undefined {
   const m = url.match(/\/in\/([^/?]+)/);
   return m?.[1] ? decodeURIComponent(m[1]) : undefined;
+}
+
+/**
+ * Extract the stable `urn:li:fsd_profile:...` from a search-result entityUrn,
+ * which wraps it with search context. Returns undefined if the urn is already
+ * bare or carries no profile urn, letting the caller fall back to the raw value.
+ */
+export function profileUrnFromEntityUrn(urn: string): string | undefined {
+  return urn.match(/urn:li:fsd_profile:[A-Za-z0-9_-]+/)?.[0];
 }
 
 // ---------------------------------------------------------------------------

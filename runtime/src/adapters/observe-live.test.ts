@@ -10,6 +10,7 @@ import {
   buildVoyagerGraphqlPath,
   normalizeSearchResponse,
   normalizeInboxResponse,
+  profileUrnFromEntityUrn,
   LiveInboxReader,
   LiveObserve,
   InMemorySearchBudget,
@@ -202,6 +203,47 @@ describe('normalizeSearchResponse (response shapes)', () => {
     };
     const people = normalizeSearchResponse(payload);
     expect(people.map((p) => p.name)).toEqual(['Real Person']);
+  });
+
+  it('sets linkedinUrn to the stable inner profile urn, not the search wrapper', () => {
+    // Shape seen live: entityUrn wraps the profile urn + search context.
+    const wrapped = 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoAAF123,SEARCH_SRP,DEFAULT)';
+    const payload = {
+      data: {
+        searchDashClustersByAll: {
+          elements: [
+            {
+              items: [
+                {
+                  item: {
+                    entityResult: {
+                      entityUrn: wrapped,
+                      navigationUrl: 'https://www.linkedin.com/in/jc-ev',
+                      title: { text: 'John Collier' },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const [person] = normalizeSearchResponse(payload);
+    expect(person?.linkedinUrn).toBe('urn:li:fsd_profile:ACoAAF123');
+    expect(person?.entityUrn).toBe(wrapped);
+  });
+});
+
+describe('profileUrnFromEntityUrn', () => {
+  it('extracts the profile urn from a wrapped entityUrn', () => {
+    expect(
+      profileUrnFromEntityUrn('urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoAAF123,SEARCH_SRP,DEFAULT)'),
+    ).toBe('urn:li:fsd_profile:ACoAAF123');
+  });
+
+  it('returns undefined when no profile urn is present', () => {
+    expect(profileUrnFromEntityUrn('urn:li:fsd_company:123')).toBeUndefined();
   });
 });
 
