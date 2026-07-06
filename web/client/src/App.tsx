@@ -1,8 +1,10 @@
 import { useState } from 'react';
+import { AccountsView } from './AccountsView';
 import { CampaignsView } from './CampaignsView';
+import { ListsView } from './ListsView';
 import { MetricsView } from './MetricsView';
 
-type Tab = 'campaigns' | 'metrics';
+type Tab = 'campaigns' | 'metrics' | 'accounts' | 'lists';
 
 export function App() {
   const [tab, setTab] = useState<Tab>('campaigns');
@@ -20,9 +22,18 @@ export function App() {
           <button className={tab === 'metrics' ? 'active' : ''} onClick={() => setTab('metrics')}>
             Volume
           </button>
+          <button className={tab === 'lists' ? 'active' : ''} onClick={() => setTab('lists')}>
+            Lists
+          </button>
+          <button className={tab === 'accounts' ? 'active' : ''} onClick={() => setTab('accounts')}>
+            Accounts
+          </button>
         </nav>
       </header>
-      {tab === 'campaigns' ? <CampaignsView /> : <MetricsView />}
+      {tab === 'campaigns' && <CampaignsView />}
+      {tab === 'metrics' && <MetricsView />}
+      {tab === 'lists' && <ListsView />}
+      {tab === 'accounts' && <AccountsView />}
     </div>
   );
 }

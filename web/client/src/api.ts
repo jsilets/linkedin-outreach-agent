@@ -50,6 +50,57 @@ export interface Account {
   warmupDay: number;
 }
 
+export interface ListSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  memberCount: number;
+  createdAt: string;
+}
+
+export interface ListMember {
+  id: string;
+  linkedinUrn: string;
+  name: string | null;
+  headline: string | null;
+  profileUrl: string | null;
+  degree: string | null;
+  location: string | null;
+  currentCompany: string | null;
+}
+
+export interface ListDetail {
+  id: string;
+  name: string;
+  description: string | null;
+  createdAt: string;
+  members: ListMember[];
+}
+
+export interface CreateListResult {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+export interface CreateCampaignFromListResult {
+  ok: true;
+  campaignId: string;
+  targetCount: number;
+}
+
+export interface LinkAccountBody {
+  handle: string;
+  liAt: string;
+  jsessionId: string;
+}
+
+export interface LinkAccountResult {
+  ok: true;
+  accountId: string;
+  handle: string;
+}
+
 async function get<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(await errorText(res));
@@ -69,10 +120,54 @@ export const api = {
   campaigns: () => get<CampaignSummary[]>('/api/campaigns'),
   campaign: (id: string) => get<CampaignDetail>(`/api/campaigns/${id}`),
   accounts: () => get<Account[]>('/api/accounts'),
+  lists: () => get<ListSummary[]>('/api/lists'),
+  getList: (id: string) => get<ListDetail>(`/api/lists/${id}`),
+  createList: async (body: { name: string; description?: string }): Promise<CreateListResult> => {
+    const res = await fetch('/api/lists', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    return res.json() as Promise<CreateListResult>;
+  },
+  createCampaignFromList: async (
+    listId: string,
+    body: { goal: string; owner?: string; messageStrategy?: string },
+  ): Promise<CreateCampaignFromListResult> => {
+    const res = await fetch(`/api/lists/${listId}/campaign`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    return res.json() as Promise<CreateCampaignFromListResult>;
+  },
+  linkAccount: async (body: LinkAccountBody): Promise<LinkAccountResult> => {
+    const res = await fetch('/api/accounts/link', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    return res.json() as Promise<LinkAccountResult>;
+  },
   volume: (accountId: string, days: number) => {
     const params = new URLSearchParams({ days: String(days) });
     if (accountId) params.set('accountId', accountId);
     return get<VolumeRow[]>(`/api/metrics/volume?${params.toString()}`);
+  },
+  launchCampaign: async (
+    id: string,
+    accountId: string,
+  ): Promise<{ ok: true; enrolled: number; alreadyEnrolled: number }> => {
+    const res = await fetch(`/api/campaigns/${id}/launch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ accountId }),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    return res.json() as Promise<{ ok: true; enrolled: number; alreadyEnrolled: number }>;
   },
   saveSteps: async (id: string, steps: Step[]): Promise<Step[]> => {
     const res = await fetch(`/api/campaigns/${id}/steps`, {

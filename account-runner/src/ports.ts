@@ -49,16 +49,33 @@ export interface PagePort {
   // Small random settle wait; the executor calls this between steps.
   waitForTimeout(ms: number): Promise<void>;
   /**
-   * Resolve with the first response whose URL contains urlSubstring. Used to
-   * intercept the JSON the page fetches for people-search. The waiter must be
-   * armed BEFORE the navigation/interaction that triggers the request, so the
-   * caller races this against goto() rather than awaiting goto() first.
-   * Rejects on timeout (default 15s).
+   * Resolve with the first response whose URL contains urlSubstring — or, when
+   * an array is given, contains ALL of the substrings. The array form is how
+   * people-search pins the real results cluster (voyagerSearchDashClusters +
+   * SEARCH_SRP) past decoy clusters the page also fires (MYNETWORK_CURATION_HUB).
+   * The waiter must be armed BEFORE the navigation/interaction that triggers the
+   * request, so the caller races this against goto() rather than awaiting goto()
+   * first. Rejects on timeout (default 15s).
    */
   waitForResponse(
-    urlSubstring: string,
+    urlSubstring: string | string[],
     opts?: { timeoutMs?: number },
   ): Promise<InterceptedResponse>;
+  /**
+   * Issue an authenticated same-origin GET to the LinkedIn Voyager API from the
+   * page's own fetch context, so the session cookies attach automatically. Adds
+   * the Csrf-Token (derived in-page from the JSESSIONID cookie) and
+   * X-Restli-Protocol-Version headers the API requires. `pathWithQuery` is the
+   * origin-relative path, e.g. "/voyager/api/graphql?variables=(...)&queryId=...".
+   * This is how people-search runs — a direct call, which is deterministic,
+   * versus intercepting the flagship page's XHRs (the results page is SSR'd and
+   * does not reliably fire a client-side search XHR on navigation). The page
+   * must already be on https://www.linkedin.com for the cookies to attach.
+   */
+  voyagerGet(
+    pathWithQuery: string,
+    opts?: { accept?: string },
+  ): Promise<{ status: number; body: unknown }>;
 }
 
 /**

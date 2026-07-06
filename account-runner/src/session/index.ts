@@ -10,6 +10,9 @@ export {
   extractSessionCookies,
 } from './vault.js';
 
+export { buildStorageStateFromPastedCookies } from './link.js';
+export type { PastedSession } from './link.js';
+
 export {
   BrowserContextFactory,
   buildLaunchConfig,

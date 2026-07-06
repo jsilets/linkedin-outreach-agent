@@ -183,7 +183,7 @@ describe('requirePrivileged', () => {
   });
 
   it('passes for an operator context', () => {
-    expect(() => requirePrivileged(operatorContext('josh'), 'kill_all')).not.toThrow();
+    expect(() => requirePrivileged(operatorContext('operator'), 'kill_all')).not.toThrow();
   });
 });
 
@@ -284,7 +284,7 @@ describe('privileged tool handlers', () => {
       safety: { getAccount: vi.fn(), getCampaign: vi.fn(), canAct } as unknown as Ports['safety'],
     });
     const tool = TOOLS_BY_NAME.get('kill_all')!;
-    await tool.handler({ reason: 'panic' } as never, ports, operatorContext('josh'));
+    await tool.handler({ reason: 'panic' } as never, ports, operatorContext('operator'));
     expect(killAll).toHaveBeenCalledWith('panic');
     // Never routed through the scheduler/safety path.
     expect(canAct).not.toHaveBeenCalled();
@@ -305,7 +305,7 @@ describe('privileged tool handlers', () => {
       safety: { getAccount: vi.fn(), getCampaign: vi.fn(), canAct } as unknown as Ports['safety'],
     });
     const tool = TOOLS_BY_NAME.get('pause_account')!;
-    await tool.handler({ accountId: 'acct-1', reason: 'stop' } as never, ports, operatorContext('josh'));
+    await tool.handler({ accountId: 'acct-1', reason: 'stop' } as never, ports, operatorContext('operator'));
     expect(pauseAccount).toHaveBeenCalledWith('acct-1', 'stop');
     expect(canAct).not.toHaveBeenCalled();
   });

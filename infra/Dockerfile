@@ -1,10 +1,12 @@
 # The single app image.
 #
-# The system runs as ONE process: @loa/runtime composes the control-plane brain
-# and an in-process account executor, starts the MCP HTTP server on MCP_PORT,
-# and serves GET /healthz. This is the whole deployable unit today. The
-# brain/body split across separate machines is future-phase work and is not
-# wired yet, so there is no separate "body" service here.
+# One container runs two Node processes (see infra/entrypoint.sh): the @loa/runtime
+# worker (control-plane brain + in-process browser executor + dispatch tick, MCP
+# on MCP_PORT) and the @loa/web server (UI + JSON API, the public face on PORT).
+# They share this container's /data volume, COOKIE_VAULT_KEY and DATABASE_URL, so
+# an account linked through the web UI is sealed into the same vault the executor
+# reads. Keeping them in one service is deliberate: Railway volumes attach to a
+# single service, and the vault must be shared.
 #
 # RAM expectation: the runtime alone is small (a few hundred MB). Budget ~2GB
 # once real browser runs land, since one headful Chromium plus the runtime fits
@@ -36,6 +38,7 @@ COPY control-plane/mcp/package.json control-plane/mcp/
 COPY control-plane/orchestrator/package.json control-plane/orchestrator/
 COPY control-plane/scheduler/package.json control-plane/scheduler/
 COPY control-plane/agent/package.json control-plane/agent/
+COPY web/package.json web/
 
 # Skip patchright/playwright's browser download during install. The runtime
 # stage installs the system Chromium and its OS deps via the patchright CLI.
@@ -44,9 +47,12 @@ ENV PATCHRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN npm ci
 
 # Copy the rest of the sources and build the whole workspace. `npm run build`
-# runs `tsc -b`, which walks the project references and emits every dist/.
+# runs `tsc -b`, which walks the project references and emits every dist/. The
+# web package is not in the root tsc project references, so build its client
+# bundle (Vite) separately; the web server itself runs from source via tsx.
 COPY . .
-RUN npm run build
+RUN npm run build \
+ && npm --prefix web run build
 
 # ---- runtime stage -------------------------------------------------------
 FROM node:24-bookworm-slim AS runtime
@@ -99,6 +105,15 @@ COPY --from=build /app/control-plane/safety/dist ./control-plane/safety/dist
 # Migrations ship with the image so `npm run db:migrate` can apply them.
 COPY --from=build /app/infra/migrations ./infra/migrations
 
+# The web UI + JSON API run in the same container as the public face (port 8080),
+# sharing the /data vault + COOKIE_VAULT_KEY + DATABASE_URL with the runtime. The
+# server runs from source via tsx (already in node_modules); the client is the
+# prebuilt Vite bundle. node_modules/@loa/web symlinks to this web/ dir.
+COPY --from=build /app/web/package.json ./web/package.json
+COPY --from=build /app/web/tsconfig.json ./web/tsconfig.json
+COPY --from=build /app/web/server ./web/server
+COPY --from=build /app/web/client/dist ./web/client/dist
+
 # Install the Chromium build patchright drives, plus its OS deps. patchright is
 # the driver the account-runner actually uses (a Playwright drop-in); install
 # its Chromium so the driver and the browser stay version-matched. Store the
@@ -122,8 +137,11 @@ USER app
 # restarts. LOA_PROFILE_DIR points the persistent browser context at it.
 ENV LOA_PROFILE_DIR=/data/profile
 
-# The MCP server binds MCP_PORT (runtime default 8080 when unset). Publish it.
-ENV MCP_PORT=8080
+# Ports: the web UI + API (public face) binds PORT; the runtime's MCP server
+# binds MCP_PORT internally. The platform routes its domain to PORT (8080) and
+# health-checks /healthz there. Railway may inject its own PORT at runtime.
+ENV PORT=8080
+ENV MCP_PORT=8090
 EXPOSE 8080
 
 # dumb-init reaps zombies and forwards signals to the entrypoint so container

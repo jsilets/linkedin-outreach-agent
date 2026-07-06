@@ -20,13 +20,16 @@ SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080x24}"
 XVFB_LOCK="/tmp/.X${DISPLAY_NUM}-lock"
 
 xvfb_pid=""
+runtime_pid=""
+web_pid=""
 
 cleanup() {
-  # Forward the stop to Xvfb so we do not leak the process on restart.
-  if [ -n "${xvfb_pid}" ] && kill -0 "${xvfb_pid}" 2>/dev/null; then
-    kill "${xvfb_pid}" 2>/dev/null || true
-    wait "${xvfb_pid}" 2>/dev/null || true
-  fi
+  # Forward the stop to every child so we do not leak processes on restart.
+  for pid in "${web_pid}" "${runtime_pid}" "${xvfb_pid}"; do
+    if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+      kill "${pid}" 2>/dev/null || true
+    fi
+  done
 }
 trap cleanup EXIT INT TERM
 
@@ -50,7 +53,17 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 
-# Hand off to the runtime. exec so signals reach Node directly; the EXIT trap
-# still tears Xvfb down when Node exits. This is the proven production start
-# command: compiled JS, no tsx.
-exec node /app/runtime/dist/main.js
+# Single-service deploy: the runtime worker (MCP + dispatch tick + real browser
+# executor) runs in the background on MCP_PORT; the web UI + JSON API is the
+# public face on PORT (8080). They share this container's /data volume, env, and
+# COOKIE_VAULT_KEY, so an account linked through the UI is sealed into the same
+# vault the executor reads. If either process exits, we exit too so the platform
+# restarts the whole container (rather than limping on with half the system).
+node /app/runtime/dist/main.js &
+runtime_pid=$!
+
+node --import tsx /app/web/server/src/main.ts &
+web_pid=$!
+
+# Wait for the first child to exit, then fall through to cleanup + exit.
+wait -n "${runtime_pid}" "${web_pid}"

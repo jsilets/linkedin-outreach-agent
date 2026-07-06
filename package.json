@@ -31,6 +31,10 @@
     "smoke": "node --import tsx runtime/src/smoke.ts",
     "login": "node --env-file-if-exists=.env --import tsx runtime/src/login.ts",
     "leak-test": "node --env-file-if-exists=.env --import tsx runtime/src/tools/leak-test.ts",
+    "search-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/search-shakeout.ts",
+    "act-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/act-shakeout.ts",
+    "link-account": "node --env-file-if-exists=.env --import tsx runtime/src/tools/link-account.ts",
+    "source-to-list": "node --env-file-if-exists=.env --import tsx runtime/src/tools/source-to-list.ts",
     "selector-scan": "node --env-file-if-exists=.env --import tsx runtime/src/tools/selector-scan.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"

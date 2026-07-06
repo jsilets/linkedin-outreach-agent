@@ -20,6 +20,12 @@ import type {
   StorageStateShape,
 } from '../ports.js';
 
+// The voyagerGet callback below runs in the browser, not in Node, so `document`
+// is provided by Chromium at runtime. The runtime tsconfig omits the DOM lib
+// (this is a Node package), so declare the one browser global it touches as
+// ambient to keep this file typechecking without pulling in all of lib.dom.
+declare const document: { cookie: string };
+
 // Derive patchright's concrete types from the driver itself so we never import
 // its named types (which vary across versions) and never fall out of sync.
 type PwContext = Awaited<ReturnType<typeof chromium.launchPersistentContext>>;
@@ -52,8 +58,12 @@ function adaptPage(page: PwPage): PagePort {
     url: () => page.url(),
     waitForTimeout: (ms) => page.waitForTimeout(ms),
     waitForResponse: async (urlSubstring, opts) => {
+      const needles = Array.isArray(urlSubstring) ? urlSubstring : [urlSubstring];
       const res = await page.waitForResponse(
-        (r) => r.url().includes(urlSubstring),
+        (r) => {
+          const u = r.url();
+          return needles.every((n) => u.includes(n));
+        },
         { timeout: opts?.timeoutMs ?? 15_000 },
       );
       const adapted: InterceptedResponse = {
@@ -63,6 +73,29 @@ function adaptPage(page: PwPage): PagePort {
       };
       return adapted;
     },
+    voyagerGet: (pathWithQuery, opts) =>
+      page.evaluate(
+        async ({ path, accept }: { path: string; accept: string }) => {
+          // JSESSIONID is stored WITH surrounding double-quotes; the Csrf-Token
+          // header wants the value WITHOUT them (e.g. ajax:1234...).
+          const m = document.cookie.match(/JSESSIONID=("?)([^;"]+)\1/);
+          const csrf = m?.[2] ?? '';
+          const headers: Record<string, string> = {
+            'csrf-token': csrf,
+            'x-restli-protocol-version': '2.0.0',
+          };
+          if (accept) headers['accept'] = accept;
+          const resp = await fetch(path, { credentials: 'include', headers });
+          let body: unknown = null;
+          try {
+            body = await resp.json();
+          } catch {
+            body = null;
+          }
+          return { status: resp.status, body };
+        },
+        { path: pathWithQuery, accept: opts?.accept ?? '' },
+      ),
   };
 }
 
