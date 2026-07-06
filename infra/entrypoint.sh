@@ -6,14 +6,24 @@
 # matters: LinkedIn's client-side checks trip on headless signatures, so we
 # render to a real (virtual) framebuffer instead of using --headless.
 #
-# Real browser runs are a P0 item and are not yet wired, but the display is
-# started unconditionally so the image is structurally correct for when they
-# land. Xvfb is cheap when nothing draws to it.
+# The display is started unconditionally; with LOA_EXECUTOR=real the runtime
+# drives Chromium against it, and it is cheap when nothing draws to it.
 #
 # The script traps signals and forwards them so the host can stop the container
 # cleanly, and it clears a stale X lock left by a previous crash/restart.
 
 set -euo pipefail
+
+# Platforms (Railway included) mount the /data volume owned by root, which masks
+# the image's build-time chown. Fix ownership at runtime as root, then drop to
+# the unprivileged app user for everything else. dumb-init (PID 1) forwards
+# signals to gosu, which execs without forking, so signal handling is preserved.
+# On the re-exec, id is the app user, so this block is skipped and boot proceeds.
+if [ "$(id -u)" = "0" ]; then
+  mkdir -p /data/vault /data/profile
+  chown app:app /data /data/vault /data/profile
+  exec gosu app "$0" "$@"
+fi
 
 DISPLAY_NUM="${DISPLAY_NUM:-99}"
 SCREEN_GEOMETRY="${SCREEN_GEOMETRY:-1920x1080x24}"

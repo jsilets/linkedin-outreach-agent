@@ -122,16 +122,24 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN node node_modules/patchright/cli.js install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/*
 
+# gosu lets the entrypoint drop from root to the app user AFTER it fixes runtime
+# volume ownership. Platforms mount the /data volume root-owned, which masks the
+# build-time chown below, so the fix has to happen at container start as root.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gosu \
+ && rm -rf /var/lib/apt/lists/*
+
 # Entrypoint starts Xvfb, then execs `node runtime/dist/main.js`.
 COPY infra/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Non-root user. Create the profile mount point so a first boot without a
-# mounted volume still works, and hand it plus the browser cache to that user.
+# Non-root user. Create the profile + vault mount points so a first boot without
+# a mounted volume still works, and hand them plus the browser cache to that
+# user. The container starts as root (no USER line): the entrypoint re-chowns the
+# mounted /data volume, then drops to this user via gosu.
 RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 app \
- && mkdir -p /data/profile \
+ && mkdir -p /data/profile /data/vault \
  && chown -R app:app /data /opt/playwright-browsers
-USER app
 
 # The browser profile lives on the mounted volume so cookies/session survive
 # restarts. LOA_PROFILE_DIR points the persistent browser context at it.
