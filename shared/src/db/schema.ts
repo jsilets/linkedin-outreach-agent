@@ -256,6 +256,39 @@ export const events = pgTable('events', {
   payload: jsonb('payload').notNull().default({}),
 });
 
+// A named list of sourced leads, independent of any campaign. Lead gen (search)
+// populates a list; a list can later be enrolled onto a campaign as targets.
+export const leadLists = pgTable('lead_lists', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// A person in a lead list. Shape mirrors a people-search result; linkedinUrn is
+// the stable identity used to dedup within a list. externalContext holds any
+// enrichment blob the sourcing layer attached.
+export const leadListMembers = pgTable(
+  'lead_list_members',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    listId: uuid('list_id')
+      .notNull()
+      .references(() => leadLists.id, { onDelete: 'cascade' }),
+    linkedinUrn: text('linkedin_urn').notNull(),
+    name: text('name'),
+    headline: text('headline'),
+    profileUrl: text('profile_url'),
+    degree: text('degree'),
+    location: text('location'),
+    currentCompany: text('current_company'),
+    externalContext: jsonb('external_context').notNull().default({}),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('lead_list_members_list_urn_uq').on(t.listId, t.linkedinUrn)],
+);
+
 // --- inferred types --------------------------------------------------------
 
 export type AccountRow = typeof accounts.$inferSelect;
@@ -276,6 +309,10 @@ export type ApprovalRow = typeof approvals.$inferSelect;
 export type NewApprovalRow = typeof approvals.$inferInsert;
 export type EventRow = typeof events.$inferSelect;
 export type NewEventRow = typeof events.$inferInsert;
+export type LeadListRow = typeof leadLists.$inferSelect;
+export type NewLeadListRow = typeof leadLists.$inferInsert;
+export type LeadListMemberRow = typeof leadListMembers.$inferSelect;
+export type NewLeadListMemberRow = typeof leadListMembers.$inferInsert;
 
 export const schema = {
   accounts,
@@ -287,4 +324,6 @@ export const schema = {
   messages,
   approvals,
   events,
+  leadLists,
+  leadListMembers,
 };

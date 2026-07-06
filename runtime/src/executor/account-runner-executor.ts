@@ -132,9 +132,9 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     // re-checks canAct and refuses to mint unless the decision is allow.
     const token: AllowToken = await this.runnerSafety.mintToken(account, action);
 
-    // TODO(p0): obtain the live Page from a resumed session. session.pageFor
-    // throws until a real browser is wired; that is the only gap to running this
-    // executor for real.
+    // Obtain the live Page from the resumed session. LiveSessionProvider.pageFor
+    // is wired and proven (people-search runs over this same call on a real
+    // account); it resumes the vaulted browser session for accountId.
     const page = await this.session.pageFor(accountId);
     const profileUrl = this.session.profileUrlFor(target);
     const ctx: ActionContext = { page, token, action, accountId };

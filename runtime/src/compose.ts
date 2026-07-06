@@ -181,8 +181,8 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
   const campaign = new CampaignAdapter(orchestrator, store);
   const safety = makeMcpSafetyPort(gate, store);
   // Observe: reads run open (no gating). With a real session, people-search
-  // goes live (drives the page + intercepts voyagerSearchDashClusters); the
-  // other reads stay on the canned FakeObserve until they get live backends.
+  // goes live (a direct authenticated /voyager/api/graphql call from the page);
+  // the other reads stay on the canned FakeObserve until they get live backends.
   // Without a real session there is no page to drive, so everything is fake.
   const fakeObserve = new FakeObserve();
   let observe: ObservePort = fakeObserve;

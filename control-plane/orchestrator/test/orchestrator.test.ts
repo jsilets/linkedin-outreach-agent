@@ -43,7 +43,7 @@ describe('CampaignService', () => {
     const camp = await w.campaigns.createCampaign({
       goal: 'book intro calls',
       messageStrategy: 'warm',
-      owner: 'josh',
+      owner: 'operator',
     });
     expect(camp.autonomyLevel).toBe('supervised');
 
@@ -72,7 +72,7 @@ describe('ApprovalService', () => {
       draft: { body: 'hello there' },
     });
 
-    const decision = await w.approvals.approve(pendingItemRef, 'josh');
+    const decision = await w.approvals.approve(pendingItemRef, 'operator');
     expect(decision.decision).toBe('approved');
     expect(decision.message.status).toBe('sent');
     expect(w.approvalRepo.rows).toHaveLength(1);
@@ -89,7 +89,7 @@ describe('ApprovalService', () => {
       threadRef: 'thread-1',
       draft: { body: 'hello there' },
     });
-    const decision = await w.approvals.reject(pendingItemRef, 'josh');
+    const decision = await w.approvals.reject(pendingItemRef, 'operator');
     expect(decision.decision).toBe('rejected');
     expect(decision.message.status).toBe('draft');
     expect(w.approvalRepo.rows[0]!.decision).toBe('rejected');
@@ -105,7 +105,7 @@ describe('ApprovalService', () => {
       threadRef: 'thread-1',
       draft: { body: 'original' },
     });
-    const decision = await w.approvals.editAndApprove(pendingItemRef, 'josh', 'edited body');
+    const decision = await w.approvals.editAndApprove(pendingItemRef, 'operator', 'edited body');
     expect(decision.decision).toBe('edited');
     expect(decision.message.body).toBe('edited body');
     expect(decision.message.status).toBe('sent');

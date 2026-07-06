@@ -101,11 +101,14 @@ export class FakePage implements PagePort {
     this.cannedResponses.set(urlSubstring, queue);
   }
 
-  async waitForResponse(urlSubstring: string): Promise<InterceptedResponse> {
-    this.responseWaits.push(urlSubstring);
-    const queue = this.cannedResponses.get(urlSubstring);
+  async waitForResponse(urlSubstring: string | string[]): Promise<InterceptedResponse> {
+    // Normalize the array form to a single lookup key so preloadResponse and the
+    // waiter agree; the array's first substring is the cluster query marker.
+    const key = Array.isArray(urlSubstring) ? (urlSubstring[0] ?? '') : urlSubstring;
+    this.responseWaits.push(key);
+    const queue = this.cannedResponses.get(key);
     if (!queue || queue.length === 0) {
-      throw new Error(`no canned response preloaded for "${urlSubstring}"`);
+      throw new Error(`no canned response preloaded for "${key}"`);
     }
     // Keep the last one so an over-eager pagination loop does not throw; the
     // loop stops on its own once a page returns no new items.
@@ -135,6 +138,13 @@ export class FakePage implements PagePort {
 
   async waitForTimeout(): Promise<void> {
     // no-op in tests
+  }
+
+  /** Canned Voyager response; set by a test that exercises a direct API call. */
+  cannedVoyager?: { status: number; body: unknown };
+
+  async voyagerGet(): Promise<{ status: number; body: unknown }> {
+    return this.cannedVoyager ?? { status: 200, body: {} };
   }
 
   /** Convenience: was a selector clicked at least once? */

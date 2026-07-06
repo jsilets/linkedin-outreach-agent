@@ -7,6 +7,8 @@ import type {
 import type { PeopleQuery } from '@loa/mcp';
 import {
   buildVoyagerSearchUrl,
+  buildVoyagerGraphqlPath,
+  normalizeSearchResponse,
   LiveObserve,
   InMemorySearchBudget,
   type SearchBudget,
@@ -14,37 +16,40 @@ import {
 
 // ---------------------------------------------------------------------------
 // A local FakePage: the account-runner FakePage is not exported past its index,
-// so the runtime test carries its own minimal page that preloads canned search
-// responses per goto. Each goto pops the next preloaded page payload.
+// so the runtime test carries its own minimal page that returns canned search
+// bodies from the direct voyagerGet call. Each call pops the next payload.
 // ---------------------------------------------------------------------------
 
 class SearchFakePage implements PagePort {
-  readonly gotos: string[] = [];
-  readonly waits: string[] = [];
+  /** The origin-relative voyager paths requested, in order. */
+  readonly calls: string[] = [];
   private readonly queue: unknown[];
 
   constructor(pages: unknown[]) {
     this.queue = [...pages];
   }
 
-  async goto(url: string): Promise<unknown> {
-    this.gotos.push(url);
+  async goto(): Promise<unknown> {
     return null;
   }
 
-  async waitForResponse(urlSubstring: string): Promise<InterceptedResponse> {
-    this.waits.push(urlSubstring);
+  async voyagerGet(pathWithQuery: string): Promise<{ status: number; body: unknown }> {
+    this.calls.push(pathWithQuery);
     // The last payload is reused if the loop over-asks; the loop stops itself
     // when a page yields no new items.
-    const json = this.queue.length > 1 ? this.queue.shift() : this.queue[0];
-    return { url: `https://x/${urlSubstring}`, status: 200, json: async () => json };
+    const body = this.queue.length > 1 ? this.queue.shift() : this.queue[0];
+    return { status: 200, body };
   }
 
+  async waitForResponse(): Promise<InterceptedResponse> {
+    throw new Error('not used');
+  }
   locator(): LocatorPort {
     throw new Error('not used');
   }
+  // Already on the LinkedIn origin, so searchPeople skips the ensure-nav goto.
   url(): string {
-    return 'https://www.linkedin.com/search/results/people/';
+    return 'https://www.linkedin.com/feed/';
   }
   async waitForTimeout(): Promise<void> {}
 }
@@ -126,6 +131,78 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
   });
 });
 
+describe('buildVoyagerGraphqlPath (direct API request)', () => {
+  it('emits the SEARCH_SRP people-results grammar with parens left literal', () => {
+    const path = buildVoyagerGraphqlPath({ keywords: 'growth marketer' }, 0, 10);
+    expect(path.startsWith('/voyager/api/graphql?variables=(')).toBe(true);
+    expect(path).toContain('flagshipSearchIntent:SEARCH_SRP');
+    expect(path).toContain('queryParameters:List((key:resultType,value:List(PEOPLE)))');
+    // keywords VALUE is escaped (space -> %20); the grammar is not.
+    expect(path).toContain('keywords:growth%20marketer,');
+    expect(path).toContain('count:10)');
+    expect(path).toContain('&queryId=voyagerSearchDashClusters.');
+  });
+
+  it('encodes facets as queryParameters tuples and offsets by start', () => {
+    const path = buildVoyagerGraphqlPath(
+      { keywords: 'x', companyUrns: ['439853', '2685826'], geoUrn: '103644278', network: ['S', 'O'] },
+      20,
+      10,
+    );
+    expect(path).toContain('(key:currentCompany,value:List(439853,2685826))');
+    expect(path).toContain('(key:geoUrn,value:List(103644278))');
+    expect(path).toContain('(key:network,value:List(S,O))');
+    expect(path).toContain('start:20,');
+  });
+
+  it('folds title/company keywords into the keyword value', () => {
+    const path = buildVoyagerGraphqlPath(
+      { keywords: 'ops', titleKeywords: ['manager'], companyKeywords: ['Acme'] },
+      0,
+      10,
+    );
+    expect(path).toContain('keywords:ops%20manager%20Acme,');
+  });
+});
+
+describe('normalizeSearchResponse (response shapes)', () => {
+  it('reads the double-nested data.data envelope', () => {
+    const single = clusterPayload([alice]); // { data: { searchDashClustersByAll } }
+    const doubled = { data: { data: (single as { data: unknown }).data } };
+    const people = normalizeSearchResponse(doubled);
+    expect(people.map((p) => p.name)).toEqual(['Alice Ng']);
+  });
+
+  it('drops non-person cards a cluster mixes in', () => {
+    const payload = {
+      data: {
+        searchDashClustersByAll: {
+          elements: [
+            {
+              items: [
+                // a company/promo card: no fsd_profile / :member: urn
+                { item: { entityResult: { entityUrn: 'urn:li:fsd_company:123', title: { text: 'Acme Inc' } } } },
+                {
+                  item: {
+                    entityResult: {
+                      entityUrn: 'urn:li:fsd_entityResult:(urn:li:fsd_profile:xyz)',
+                      trackingUrn: 'urn:li:member:99',
+                      navigationUrl: 'https://www.linkedin.com/in/real-person?x=1',
+                      title: { text: 'Real Person' },
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const people = normalizeSearchResponse(payload);
+    expect(people.map((p) => p.name)).toEqual(['Real Person']);
+  });
+});
+
 describe('LiveObserve.searchPeople', () => {
   it('normalizes cluster items to PersonSearchResult', async () => {
     const page = new SearchFakePage([clusterPayload([alice])]);
@@ -155,7 +232,7 @@ describe('LiveObserve.searchPeople', () => {
       'urn:li:fsd_entityResult:b2',
     ]);
     // second page was fetched (pagination happened) but added nothing new.
-    expect(page.gotos.length).toBeGreaterThanOrEqual(2);
+    expect(page.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it('stops paginating on an empty page', async () => {

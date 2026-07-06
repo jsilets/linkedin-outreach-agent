@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type CampaignDetail, type CampaignSummary } from './api';
+import { api, type Account, type CampaignDetail, type CampaignSummary } from './api';
 import { FlowEditor } from './FlowEditor';
 
 const STAGE_ORDER = [
@@ -69,13 +69,45 @@ export function CampaignsView() {
 function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accountId, setAccountId] = useState('');
+  const [launching, setLaunching] = useState(false);
+  const [launchMsg, setLaunchMsg] = useState<string | null>(null);
 
-  useEffect(() => {
+  function load() {
     api.campaign(id).then(setDetail).catch((e) => setError(String(e)));
+  }
+  useEffect(() => {
+    load();
+    api.accounts().then((a) => {
+      setAccounts(a);
+      if (a[0]) setAccountId((prev) => prev || a[0]!.id);
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  async function launch() {
+    setLaunching(true);
+    setLaunchMsg(null);
+    try {
+      const res = await api.launchCampaign(id, accountId);
+      setLaunchMsg(
+        `Launched: enrolled ${res.enrolled} ${res.enrolled === 1 ? 'target' : 'targets'}` +
+          (res.alreadyEnrolled ? ` (${res.alreadyEnrolled} already enrolled)` : '') +
+          '. The dispatch loop will start stepping them.',
+      );
+      load();
+    } catch (e) {
+      setLaunchMsg(e instanceof Error ? e.message : 'Launch failed.');
+    } finally {
+      setLaunching(false);
+    }
+  }
 
   if (error) return <div className="error">{error}</div>;
   if (!detail) return <p className="muted">Loading...</p>;
+
+  const launched = Object.values(detail.byProgressState).reduce((a, b) => a + b, 0);
 
   return (
     <div>
@@ -103,6 +135,37 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Flow</h3>
         <FlowEditor campaignId={id} initial={detail.steps} />
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3 style={{ marginTop: 0 }}>Launch</h3>
+        <div className="muted" style={{ marginBottom: 12 }}>
+          Enroll this campaign&apos;s targets under a linked account. Save the funnel above first;
+          the dispatch loop then steps each lead through it. {launched > 0 ? `${launched} already enrolled.` : ''}
+        </div>
+        <div className="toolbar" style={{ margin: 0 }}>
+          {accounts.length === 0 ? (
+            <span className="muted">No linked accounts. Link one in the Accounts tab first.</span>
+          ) : (
+            <>
+              <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.handle} ({a.state})
+                  </option>
+                ))}
+              </select>
+              <button className="btn" onClick={launch} disabled={!accountId || launching}>
+                {launching ? 'Launching...' : 'Launch campaign'}
+              </button>
+            </>
+          )}
+        </div>
+        {launchMsg && (
+          <div className={launchMsg.startsWith('Launched') ? 'saved' : 'error'} style={{ marginTop: 10 }}>
+            {launchMsg}
+          </div>
+        )}
       </div>
     </div>
   );

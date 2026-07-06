@@ -5,11 +5,21 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import express from 'express';
+import { VaultError } from '@loa/account-runner';
 import {
+  createCampaignFromList,
+  createList,
+  deleteList,
+  EmptyListError,
   getCampaign,
+  getList,
   getVolume,
+  launchCampaign,
+  LaunchError,
+  linkAccount,
   listAccounts,
   listCampaigns,
+  listLists,
   replaceSteps,
 } from './queries.js';
 import { StepValidationError } from './steps.js';
@@ -58,6 +68,26 @@ api.put('/campaigns/:id/steps', async (req, res, next) => {
   }
 });
 
+// Launch a campaign: enroll its targets under a sender account so the dispatch
+// loop starts stepping them through the funnel.
+api.post('/campaigns/:id/launch', async (req, res, next) => {
+  try {
+    const { accountId } = req.body ?? {};
+    if (typeof accountId !== 'string' || accountId.trim().length === 0) {
+      res.status(400).json({ error: 'accountId is required.' });
+      return;
+    }
+    const result = await launchCampaign(req.params.id, accountId.trim());
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof LaunchError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
 api.get('/metrics/volume', async (req, res, next) => {
   try {
     const accountId =
@@ -75,6 +105,106 @@ api.get('/accounts', async (_req, res, next) => {
   try {
     res.json(await listAccounts());
   } catch (err) {
+    next(err);
+  }
+});
+
+// Link a LinkedIn account from pasted session cookies (li_at + JSESSIONID).
+// Secrets are never logged; a malformed cookie surfaces as a 400.
+api.post('/accounts/link', async (req, res, next) => {
+  try {
+    const { handle, liAt, jsessionId } = req.body ?? {};
+    if (
+      typeof handle !== 'string' ||
+      handle.trim().length === 0 ||
+      typeof liAt !== 'string' ||
+      typeof jsessionId !== 'string'
+    ) {
+      res.status(400).json({ error: 'handle, liAt, and jsessionId are required.' });
+      return;
+    }
+    const result = await linkAccount({ handle: handle.trim(), liAt, jsessionId });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof VaultError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+api.get('/lists', async (_req, res, next) => {
+  try {
+    res.json(await listLists());
+  } catch (err) {
+    next(err);
+  }
+});
+
+api.post('/lists', async (req, res, next) => {
+  try {
+    const { name, description } = req.body ?? {};
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      res.status(400).json({ error: 'name is required.' });
+      return;
+    }
+    const list = await createList({
+      name: name.trim(),
+      description: typeof description === 'string' ? description : undefined,
+    });
+    res.json(list);
+  } catch (err) {
+    next(err);
+  }
+});
+
+api.get('/lists/:id', async (req, res, next) => {
+  try {
+    const list = await getList(req.params.id);
+    if (!list) {
+      res.status(404).json({ error: 'List not found.' });
+      return;
+    }
+    res.json(list);
+  } catch (err) {
+    next(err);
+  }
+});
+
+api.delete('/lists/:id', async (req, res, next) => {
+  try {
+    const deleted = await deleteList(req.params.id);
+    if (!deleted) {
+      res.status(404).json({ error: 'List not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Create a campaign seeded from a list's leads (added as targets).
+api.post('/lists/:id/campaign', async (req, res, next) => {
+  try {
+    const { goal, owner, messageStrategy } = req.body ?? {};
+    if (typeof goal !== 'string' || goal.trim().length === 0) {
+      res.status(400).json({ error: 'goal is required.' });
+      return;
+    }
+    const result = await createCampaignFromList(req.params.id, {
+      goal: goal.trim(),
+      owner: typeof owner === 'string' && owner.trim() ? owner.trim() : undefined,
+      messageStrategy:
+        typeof messageStrategy === 'string' && messageStrategy.trim() ? messageStrategy.trim() : undefined,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    if (err instanceof EmptyListError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
     next(err);
   }
 });

@@ -95,7 +95,7 @@ export function fakeCampaign(overrides: Partial<Campaign> = {}): Campaign {
     goal: 'book intro calls',
     autonomyLevel: 'supervised',
     messageStrategy: 'warm, specific, no hard sell',
-    owner: 'josh',
+    owner: 'operator',
     createdAt: now,
     updatedAt: now,
     ...overrides,

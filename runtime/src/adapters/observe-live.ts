@@ -1,10 +1,15 @@
 // LiveObserve.searchPeople — free-tier Voyager (Flagship) people search.
 //
-// Strategy (Linki-style, clean-room): drive the account's real logged-in page
-// to a LinkedIn people-search URL and INTERCEPT the JSON the page already
-// fetches (voyagerSearchDashClusters) rather than scraping the DOM or issuing a
-// server-side API call. The page carries the auth + CSRF; we only read what it
-// pulls.
+// Strategy: issue a DIRECT authenticated GET to /voyager/api/graphql from the
+// account's own logged-in page context (page.voyagerGet), rather than navigating
+// to the search results page and intercepting its XHRs. The flagship results
+// page is server-rendered — it does not reliably fire a client-side
+// voyagerSearchDashClusters request on navigation; the only XHR that fires on a
+// bare load is a MYNETWORK_CURATION_HUB "people you may know" decoy. Every
+// maintained open-source client (StaffSpy, tomquirk/linkedin-api,
+// transitive-bullshit, showrun) calls the graphql endpoint directly with the
+// session cookie + csrf-token. Confirmed live on 2026-07-06: intercept-on-nav
+// only ever caught the curation decoy.
 //
 // FREE-TIER ONLY: no Sales Navigator. So the only facets available are
 // title-keyword, current-company, geography, and connection-degree. Seniority
@@ -13,13 +18,13 @@
 // salesApiPeopleSearch) is a separate implementation behind this same port; do
 // not add it here.
 //
-// The facet encoding is isolated in buildVoyagerSearchUrl() and was verified
-// against real captured page URLs on 2026-07-06.
+// The request grammar is isolated in buildVoyagerGraphqlPath(); its literals
+// (flagshipSearchIntent:SEARCH_SRP, resultType:List(PEOPLE), the manual
+// non-percent-encoded variables string) are cross-verified against three current
+// open-source clients. buildVoyagerSearchUrl() is retained as the human-facing
+// results-page URL (e.g. to open the same search in a real browser).
 
-import type {
-  InterceptedResponse,
-  PagePort,
-} from '@loa/account-runner';
+import type { PagePort } from '@loa/account-runner';
 import type {
   ObservePort,
   PeopleQuery,
@@ -31,13 +36,23 @@ import type {
   ConversationSummary,
 } from '@loa/mcp';
 
-/** The substring that identifies the search XHR among all page responses. */
-const SEARCH_RESPONSE_MARKER = 'voyagerSearchDashClusters';
+/**
+ * The persisted-query id for the people-search graphql call. LinkedIn rotates
+ * this hash as it ships new web builds; a stale hash eventually 400s. Override
+ * with LOA_SEARCH_QUERY_ID once you capture a current one from a live browser's
+ * Network tab (the voyagerSearchDashClusters.<hash> on a /search/results/people/
+ * request). Default is the newest observed in prior art (showrun, 2025).
+ */
+const DEFAULT_SEARCH_QUERY_ID = 'voyagerSearchDashClusters.05111e1b90ee7fea15bebe9f9410ced9';
+
+function searchQueryId(): string {
+  return process.env.LOA_SEARCH_QUERY_ID?.trim() || DEFAULT_SEARCH_QUERY_ID;
+}
 
 /** Flagship caps free-tier search at ~1000 results; never page past it. */
 const FLAGSHIP_RESULT_CAP = 1000;
 
-/** Results per page in the Voyager cluster response. */
+/** Results per page (Voyager `count`); prior art caps this at ~25. */
 const PAGE_SIZE = 10;
 
 /** How the page is obtained for an account (a thin slice of SessionProvider). */
@@ -134,6 +149,67 @@ export function buildVoyagerSearchUrl(query: PeopleQuery, start: number): string
   return url.toString();
 }
 
+/**
+ * Build the origin-relative /voyager/api/graphql path for one page of people
+ * results. This is the request we ISSUE directly (page.voyagerGet), not a page
+ * to navigate to.
+ *
+ * CRITICAL ENCODING RULE: the `variables=(...)` value must NOT be percent-encoded
+ * — LinkedIn's Rest.li parser needs the literal parens/colons/commas. Only the
+ * keywords VALUE is escaped (so a space or comma inside it can't break the
+ * grammar). This is why the string is concatenated by hand rather than built
+ * with URLSearchParams, which would percent-encode the structure and 400.
+ *
+ * Load-bearing literals (cross-verified against StaffSpy, tomquirk/linkedin-api,
+ * transitive-bullshit, showrun):
+ *   flagshipSearchIntent:SEARCH_SRP           — the people-results intent
+ *   queryParameters:List((key:resultType,value:List(PEOPLE)))  — always present
+ * Free-tier facets map to queryParameters tuples:
+ *   (key:currentCompany,value:List(<companyIds>))
+ *   (key:geoUrn,value:List(<geoId>))
+ *   (key:network,value:List(F,S,O))     (comma-joined, as the live browser sends)
+ * Title/company free text folds into keywords (no free-tier facet for those).
+ */
+export function buildVoyagerGraphqlPath(
+  query: PeopleQuery,
+  start: number,
+  count: number,
+): string {
+  const keywordParts = [
+    query.keywords,
+    ...(query.titleKeywords ?? []),
+    ...(query.companyKeywords ?? []),
+  ]
+    .map((s) => s?.trim())
+    .filter((s): s is string => !!s && s.length > 0);
+  const keywords = keywordParts.join(' ');
+
+  const facets: string[] = [];
+  if (query.companyUrns?.length) {
+    facets.push(`(key:currentCompany,value:List(${query.companyUrns.join(',')}))`);
+  }
+  if (query.geoUrn) facets.push(`(key:geoUrn,value:List(${query.geoUrn}))`);
+  if (query.network?.length) facets.push(`(key:network,value:List(${query.network.join(',')}))`);
+  facets.push('(key:resultType,value:List(PEOPLE))');
+
+  // Escape ONLY the keyword value; leave the (...) grammar literal.
+  const kwPart = keywords ? `keywords:${encodeURIComponent(keywords)},` : '';
+  const variables =
+    `(start:${start},origin:GLOBAL_SEARCH_HEADER,` +
+    `query:(${kwPart}flagshipSearchIntent:SEARCH_SRP,` +
+    `queryParameters:List(${facets.join(',')}),includeFiltersInResponse:false),` +
+    `count:${count})`;
+
+  return `/voyager/api/graphql?variables=${variables}&queryId=${searchQueryId()}`;
+}
+
+/** Navigate to the LinkedIn origin so same-origin voyagerGet carries cookies. */
+async function ensureOnLinkedIn(page: PagePort): Promise<void> {
+  if (!page.url().startsWith('https://www.linkedin.com')) {
+    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded' });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // LiveObserve
 // ---------------------------------------------------------------------------
@@ -152,25 +228,29 @@ export class LiveObserve implements ObservePort {
     this.budget.charge(accountId);
 
     const page = await this.pages.pageFor(accountId);
+    await ensureOnLinkedIn(page);
     const target = Math.min(query.limit ?? limit, limit, FLAGSHIP_RESULT_CAP);
 
     const seen = new Set<string>();
     const results: PersonSearchResult[] = [];
 
     for (let start = 0; start < target; start += PAGE_SIZE) {
-      const url = buildVoyagerSearchUrl(query, start);
+      const path = buildVoyagerGraphqlPath(query, start, PAGE_SIZE);
+      const { status, body } = await page.voyagerGet(path, { accept: 'application/json' });
 
-      // Arm the interceptor BEFORE navigating so we catch the search XHR the
-      // page fires on load. Race the waiter against the navigation.
-      const waitForSearch = page.waitForResponse(SEARCH_RESPONSE_MARKER, {
-        timeoutMs: 20_000,
-      });
-      const [res] = await Promise.all([
-        waitForSearch,
-        page.goto(url, { waitUntil: 'domcontentloaded' }),
-      ]);
+      if (status !== 200) {
+        // A non-200 on the first page is a hard failure (bad session or a stale
+        // queryId — set LOA_SEARCH_QUERY_ID). Later pages just stop pagination.
+        if (results.length === 0) {
+          throw new Error(
+            `voyager people-search returned HTTP ${status}; the session may be ` +
+              `invalid or the queryId stale (set LOA_SEARCH_QUERY_ID to a current one)`,
+          );
+        }
+        break;
+      }
 
-      const items = await parseClusters(res);
+      const items = normalizeSearchResponse(body);
       if (items.length === 0) break; // no more results; stop paginating.
 
       let added = 0;
@@ -225,24 +305,42 @@ function notLive(method: string): Promise<never> {
 // ---------------------------------------------------------------------------
 
 /**
- * The cluster response nests result cards under
- * data.searchDashClustersByAll.elements[].items[].item.entityResult.
- * Each entityResult carries the person's urn, name, headline, degree and the
- * navigation URL to the profile. Field names below match the flagship shape;
- * they are stable-ish but // GUESS: verify live where noted.
+ * Walk a voyagerSearchDashClusters response body into PersonSearchResult[].
+ * Handles the two shapes the API returns depending on the Accept header:
+ *   - Decorated (application/json): people are nested under
+ *     data.searchDashClustersByAll.elements[].items[].item.entityResult, and the
+ *     GraphQL envelope may double-nest as data.data.searchDashClustersByAll.
+ *   - Normalized (…normalized+json…): a flat top-level `included[]` of entities
+ *     tagged by $type/_type; we filter to the EntityResultViewModel cards.
+ * Exported so ops tooling (the search shakeout) can run the REAL normalizer over
+ * a captured raw payload and confirm the field names.
  */
-async function parseClusters(res: InterceptedResponse): Promise<PersonSearchResult[]> {
-  if (res.status !== 200) return [];
-  const body = (await res.json()) as VoyagerSearchResponse | undefined;
-  const clusters = body?.data?.searchDashClustersByAll?.elements ?? [];
+export function normalizeSearchResponse(body: unknown): PersonSearchResult[] {
+  const root = body as VoyagerSearchResponse | undefined;
+  const clusters =
+    root?.data?.searchDashClustersByAll?.elements ??
+    root?.data?.data?.searchDashClustersByAll?.elements ??
+    [];
 
   const out: PersonSearchResult[] = [];
   for (const cluster of clusters) {
     for (const wrapper of cluster.items ?? []) {
       const er = wrapper.item?.entityResult;
-      if (!er) continue; // non-person cards (people-also-viewed, etc.)
+      if (!er) continue; // non-person items (feedback/promo/also-viewed cards)
       const normalized = normalizeEntityResult(er);
       if (normalized) out.push(normalized);
+    }
+  }
+
+  // Fallback for the normalized `included[]` shape: filter to person cards by
+  // type tag ($type or _type ending in EntityResultViewModel).
+  if (out.length === 0 && Array.isArray(root?.included)) {
+    for (const el of root.included) {
+      const t = el?.$type ?? el?._type ?? '';
+      if (typeof t === 'string' && t.endsWith('EntityResultViewModel')) {
+        const normalized = normalizeEntityResult(el);
+        if (normalized) out.push(normalized);
+      }
     }
   }
   return out;
@@ -251,6 +349,14 @@ async function parseClusters(res: InterceptedResponse): Promise<PersonSearchResu
 function normalizeEntityResult(er: EntityResult): PersonSearchResult | null {
   const entityUrn = er.entityUrn ?? er.trackingUrn;
   if (!entityUrn) return null;
+
+  // Keep only person cards. A real people-search card's entityUrn wraps a
+  // urn:li:fsd_profile and its trackingUrn is a urn:li:member; company/content/
+  // promo cards carry neither. This drops non-person items a cluster may mix in.
+  const isPerson =
+    (er.entityUrn?.includes('fsd_profile') ?? false) ||
+    (er.trackingUrn?.includes(':member:') ?? false);
+  if (!isPerson) return null;
 
   const navUrl = er.navigationUrl ?? '';
   const publicId = publicIdFromUrl(navUrl);
@@ -293,10 +399,12 @@ function publicIdFromUrl(url: string): string | undefined {
 
 interface VoyagerSearchResponse {
   data?: {
-    searchDashClustersByAll?: {
-      elements?: SearchCluster[];
-    };
+    // The GraphQL envelope sometimes double-nests as data.data.…
+    data?: { searchDashClustersByAll?: { elements?: SearchCluster[] } };
+    searchDashClustersByAll?: { elements?: SearchCluster[] };
   };
+  /** Flat entity list in the normalized (…normalized+json…) response shape. */
+  included?: EntityResult[];
 }
 
 interface SearchCluster {
@@ -308,6 +416,9 @@ interface TextNode {
 }
 
 interface EntityResult {
+  /** Type discriminator in the normalized ($type) / decorated (_type) shapes. */
+  $type?: string;
+  _type?: string;
   entityUrn?: string;
   trackingUrn?: string;
   navigationUrl?: string;
@@ -321,12 +432,10 @@ interface EntityResult {
 // ---------------------------------------------------------------------------
 // STILL TO VERIFY LIVE
 // ---------------------------------------------------------------------------
-// The page-URL facet encoding is verified. Two things still want a live run to
-// confirm, because they depend on the intercepted RESPONSE, not the request URL:
-//   - The people-search page can fire more than one voyagerSearchDashClusters
-//     request (e.g. a MYNETWORK_CURATION_HUB one). waitForResponse takes the
-//     first; if that is the wrong cluster, filter the waiter to the SRP response
-//     (the one whose elements carry entityResult people cards).
-//   - The exact entityResult field names in normalizeEntityResult (title /
-//     primarySubtitle / navigationUrl / memberDistance) — stable-ish but worth
-//     a glance against one real payload.
+// Request grammar and response parsing are grounded in three current OSS clients.
+// Two things only a live run against this account confirms:
+//   - The hardcoded DEFAULT_SEARCH_QUERY_ID is current (a stale hash 400s; if so,
+//     capture a fresh voyagerSearchDashClusters.<hash> and set LOA_SEARCH_QUERY_ID).
+//   - The entityResult field names (title / primarySubtitle / navigationUrl /
+//     memberDistance) against a real payload. The shakeout dumps the raw body so
+//     these can be checked and adjusted if LinkedIn renamed them.
