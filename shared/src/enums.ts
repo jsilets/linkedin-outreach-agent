@@ -104,7 +104,10 @@ export type CampaignStepType = (typeof CAMPAIGN_STEP_TYPES)[number];
 
 // Per-target enrollment cursor state as it moves through a campaign sequence.
 // 'replied' is terminal: an inbound reply pulls the target out of the funnel for
-// manual handling and stops any further steps.
+// manual handling and stops any further steps. 'awaiting_approval' is a park
+// state: a step routed to human approval waits here (not due) so the dispatch
+// tick does not re-enqueue an approval on every pass; it resolves back to
+// 'in_progress' on approve, or terminal 'skipped' on reject.
 export const PROGRESS_STATES = [
   'pending',
   'in_progress',
@@ -112,5 +115,6 @@ export const PROGRESS_STATES = [
   'failed',
   'skipped',
   'replied',
+  'awaiting_approval',
 ] as const;
 export type ProgressState = (typeof PROGRESS_STATES)[number];

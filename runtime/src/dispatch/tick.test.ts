@@ -109,6 +109,45 @@ function makeGate(executor: ExecutorPort, decision: Decision): GateDeps {
   };
 }
 
+/** A supervised gate: getCampaign returns a supervised campaign so every send
+ * queues, and approval.enqueue returns a pending item (never touches executor). */
+function makeSupervisedGate(executor: ExecutorPort): GateDeps {
+  return {
+    executor,
+    safety: {
+      async getAccount(id: string): Promise<Account> {
+        return fakeAccount(id);
+      },
+      async getCampaign(id: string): Promise<Campaign> {
+        return { ...fakeCampaign(id), autonomyLevel: 'supervised' };
+      },
+      async canAct(): Promise<Decision> {
+        throw new Error('canAct should not run: supervised queues before the safety check');
+      },
+    },
+    approval: {
+      async enqueue(req) {
+        return { id: 'pending-1', req, autonomyLevel: 'supervised', createdAt: new Date() };
+      },
+      async listPending() {
+        return [];
+      },
+      async approve() {
+        throw new Error('not used');
+      },
+      async editAndApprove() {
+        throw new Error('not used');
+      },
+      async reject() {
+        /* not used */
+      },
+      async record() {
+        /* not used */
+      },
+    },
+  };
+}
+
 // --- fixtures ---------------------------------------------------------------
 
 const ACCT = 'acct-1';
@@ -204,6 +243,29 @@ describe('DispatchTick', () => {
     const [after] = await store.sequence.listTargetProgress(CAMP);
     expect(after.currentStep).toBe(1);
     expect(executor.calls).toHaveLength(1);
+  });
+
+  it('parks a queued step in awaiting_approval so it is not re-enqueued each tick', async () => {
+    // Supervised: a message step queues for approval. The cursor must move to
+    // awaiting_approval (not stay due), or the next tick enqueues a duplicate.
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const executor = new RecordingExecutor();
+    const tick = new DispatchTick({ sequence: store.sequence, gate: makeSupervisedGate(executor) });
+
+    const res = await tick.runTick(new Date());
+
+    expect(executor.calls).toHaveLength(0);
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'queued' });
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.state).toBe('awaiting_approval');
+    expect(progress.currentStep).toBe(0); // held at the pending step
+
+    // Parked cursors are no longer due, so a second tick does nothing (no dup).
+    expect(await store.sequence.dueTargetProgress(new Date())).toHaveLength(0);
+    const res2 = await tick.runTick(new Date());
+    expect(res2.ran).toBe(0);
   });
 
   it('completes when the last step executes', async () => {

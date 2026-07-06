@@ -15,6 +15,7 @@ import type {
   ApprovalDecision,
   AutonomyLevel,
   Campaign,
+  CampaignStepType,
   DailyBudget,
   Decision,
   Json,
@@ -204,6 +205,37 @@ export interface Metrics {
   won: number;
 }
 
+/** One step in a campaign's sequence, as read back to the agent/UI. */
+export interface CampaignStepView {
+  id: string;
+  stepOrder: number;
+  stepType: CampaignStepType;
+  /** Wait (seconds) before this step becomes due after the previous one. */
+  delaySeconds: number;
+  note: string | null;
+  body: string | null;
+  reaction: string | null;
+  enabled: boolean;
+}
+
+/** A step spec when defining a sequence. stepOrder is implied by array order. */
+export interface SequenceStepInput {
+  stepType: CampaignStepType;
+  delaySeconds?: number;
+  note?: string | null;
+  body?: string | null;
+  reaction?: string | null;
+  enabled?: boolean;
+}
+
+/** Outcome of enrolling targets into a campaign's sequence. */
+export interface EnrollResult {
+  campaignId: string;
+  accountId: string;
+  enrolled: number;
+  progressIds: string[];
+}
+
 export interface CampaignPort {
   createCampaign(input: {
     goal: string;
@@ -218,6 +250,20 @@ export interface CampaignPort {
   getMetrics(campaignId: string): Promise<Metrics>;
   /** Set the autonomy dial for a campaign (privileged approval-family tool). */
   setAutonomyLevel(campaignId: string, level: AutonomyLevel): Promise<Campaign>;
+  /** Read a campaign's ordered step sequence. */
+  listCampaignSteps(campaignId: string): Promise<CampaignStepView[]>;
+  /** Replace a campaign's step sequence with the given ordered steps. */
+  defineCampaignSteps(
+    campaignId: string,
+    steps: SequenceStepInput[],
+  ): Promise<CampaignStepView[]>;
+  /** Enroll targets into the campaign sequence under a sender account. The
+   * dispatch tick then advances each enrolled target through the steps. */
+  enrollTargets(
+    campaignId: string,
+    targetIds: string[],
+    accountId: string,
+  ): Promise<EnrollResult>;
 }
 
 // ---------------------------------------------------------------------------

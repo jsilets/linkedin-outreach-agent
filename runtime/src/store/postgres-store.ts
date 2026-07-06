@@ -145,6 +145,16 @@ class PgSequenceStore implements SequenceStorePort {
       .where(eq(targetProgress.campaignId, campaignId));
   }
 
+  async getTargetProgressByTarget(
+    targetId: string,
+  ): Promise<shared.TargetProgressRow | undefined> {
+    const [row] = await this.db.handle
+      .select()
+      .from(targetProgress)
+      .where(eq(targetProgress.targetId, targetId));
+    return row;
+  }
+
   async dueTargetProgress(now: Date): Promise<shared.TargetProgressRow[]> {
     return this.db.handle
       .select()
@@ -171,7 +181,11 @@ class PgSequenceStore implements SequenceStorePort {
       .where(
         and(
           eq(targetProgress.targetId, targetId),
-          or(eq(targetProgress.state, 'in_progress'), eq(targetProgress.state, 'pending')),
+          or(
+            eq(targetProgress.state, 'in_progress'),
+            eq(targetProgress.state, 'pending'),
+            eq(targetProgress.state, 'awaiting_approval'),
+          ),
         ),
       );
   }

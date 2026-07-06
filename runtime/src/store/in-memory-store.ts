@@ -358,6 +358,10 @@ class InMemSequenceStore implements SequenceStorePort {
     return [...this.progress.values()].filter((p) => p.campaignId === campaignId);
   }
 
+  async getTargetProgressByTarget(targetId: string): Promise<TargetProgressRow | undefined> {
+    return [...this.progress.values()].find((p) => p.targetId === targetId);
+  }
+
   async dueTargetProgress(now: Date): Promise<TargetProgressRow[]> {
     return [...this.progress.values()].filter(
       (p) =>
@@ -384,8 +388,10 @@ class InMemSequenceStore implements SequenceStorePort {
   async pullTargetFromFunnel(targetId: string, reason: string): Promise<void> {
     for (const [id, p] of this.progress) {
       if (p.targetId !== targetId) continue;
-      // Terminal, and only from an active enrollment; leave completed/failed as-is.
-      if (p.state !== 'in_progress' && p.state !== 'pending') continue;
+      // Terminal, and only from an active enrollment (including one parked for
+      // approval); leave completed/failed/skipped/replied as-is.
+      if (p.state !== 'in_progress' && p.state !== 'pending' && p.state !== 'awaiting_approval')
+        continue;
       this.progress.set(id, {
         ...p,
         state: 'replied',

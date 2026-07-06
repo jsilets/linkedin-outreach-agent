@@ -22,6 +22,8 @@ import type {
   ApprovalPort,
   AuditRecord,
   CampaignPort,
+  CampaignStepView,
+  EnrollResult,
   ExecutorPort,
   HealthReport,
   Metrics,
@@ -34,12 +36,29 @@ import type {
   ConversationSummary,
   PersonSearchResult,
   QueueEntry,
+  SequenceStepInput,
 } from '@loa/mcp';
 import type { ApprovalDecision } from '@loa/shared';
+import type { db as shared } from '@loa/shared';
 import { DefaultSafetyGate } from '@loa/safety';
 import type { OrchestratorServices } from './orchestrator.js';
 import type { RuntimeStore } from '../store/index.js';
+import { advanceAfterStep } from '../dispatch/advance.js';
 import { rowToAccount } from '../mappers.js';
+
+/** Map a stored campaign-step row onto the port view shape. */
+function toStepView(row: shared.CampaignStepRow): CampaignStepView {
+  return {
+    id: row.id,
+    stepOrder: row.stepOrder,
+    stepType: row.stepType,
+    delaySeconds: row.delaySeconds,
+    note: row.note,
+    body: row.body,
+    reaction: row.reaction,
+    enabled: row.enabled,
+  };
+}
 
 /** Thread ref used for pending sends that are not replies to a thread yet. */
 function sendThreadRef(req: ActRequest): string {
@@ -56,6 +75,7 @@ export class ApprovalAdapter implements ApprovalPort {
   constructor(
     private readonly services: OrchestratorServices,
     private readonly executor: ExecutorPort,
+    private readonly store: RuntimeStore,
   ) {}
 
   /** Register a ref -> ActRequest binding (used by the loop persistence path
@@ -107,16 +127,50 @@ export class ApprovalAdapter implements ApprovalPort {
 
   async approve(pendingId: string, editor: string) {
     await this.services.approvals.approve(pendingId, editor);
-    return this.dispatch(pendingId);
+    const action = await this.dispatch(pendingId);
+    await this.onApprovalResolved(action.targetId, 'approved');
+    return action;
   }
 
   async editAndApprove(pendingId: string, editor: string, body: string) {
     await this.services.approvals.editAndApprove(pendingId, editor, body);
-    return this.dispatch(pendingId);
+    const action = await this.dispatch(pendingId);
+    await this.onApprovalResolved(action.targetId, 'approved');
+    return action;
   }
 
   async reject(pendingId: string, editor: string, _reason: string): Promise<void> {
+    const req = this.reqByRef.get(pendingId);
     await this.services.approvals.reject(pendingId, editor);
+    this.reqByRef.delete(pendingId);
+    if (req) await this.onApprovalResolved(req.targetId, 'rejected');
+  }
+
+  /** Resume a sequence cursor parked in awaiting_approval once its step's
+   * approval resolves. Approve advances to the next step; reject stops the
+   * enrollment (terminal 'skipped') so it is not silently carried forward. A
+   * no-op when the target is not sequence-driven (a direct Act-tool approval)
+   * or its cursor is not parked. */
+  private async onApprovalResolved(
+    targetId: string,
+    outcome: 'approved' | 'rejected',
+  ): Promise<void> {
+    const prog = await this.store.sequence.getTargetProgressByTarget(targetId);
+    if (!prog || prog.state !== 'awaiting_approval') return;
+    if (outcome === 'rejected') {
+      await this.store.sequence.advanceTargetProgress(prog.id, {
+        state: 'skipped',
+        nextStepAt: null,
+      });
+      return;
+    }
+    const steps = (await this.store.sequence.listCampaignSteps(prog.campaignId)).filter(
+      (s) => s.enabled,
+    );
+    await this.store.sequence.advanceTargetProgress(
+      prog.id,
+      advanceAfterStep(steps, prog.currentStep, new Date()),
+    );
   }
 
   async record(pendingId: string, decision: ApprovalDecision, editor: string): Promise<void> {
@@ -213,6 +267,58 @@ export class CampaignAdapter implements CampaignPort {
 
   async setAutonomyLevel(campaignId: string, level: AutonomyLevel): Promise<Campaign> {
     return this.services.campaigns.setAutonomyLevel(campaignId, level);
+  }
+
+  async listCampaignSteps(campaignId: string): Promise<CampaignStepView[]> {
+    const rows = await this.store.sequence.listCampaignSteps(campaignId);
+    return rows.map(toStepView);
+  }
+
+  async defineCampaignSteps(
+    campaignId: string,
+    steps: SequenceStepInput[],
+  ): Promise<CampaignStepView[]> {
+    // Validate before mutating so a bad step never half-replaces a sequence.
+    steps.forEach((s, i) => {
+      if (s.stepType === 'delay' && !(s.delaySeconds && s.delaySeconds > 0)) {
+        throw new Error(`step ${i}: a delay step needs delaySeconds > 0`);
+      }
+      if (s.stepType === 'message' && !(s.body && s.body.trim())) {
+        throw new Error(`step ${i}: a message step needs a non-empty body`);
+      }
+    });
+    // Replace the whole template: clear existing, then insert in the given order.
+    const existing = await this.store.sequence.listCampaignSteps(campaignId);
+    for (const s of existing) await this.store.sequence.deleteCampaignStep(s.id);
+    let order = 0;
+    for (const s of steps) {
+      await this.store.sequence.upsertCampaignStep({
+        campaignId,
+        stepOrder: order,
+        stepType: s.stepType,
+        delaySeconds: s.delaySeconds ?? 0,
+        note: s.note ?? null,
+        body: s.body ?? null,
+        reaction: s.reaction ?? null,
+        enabled: s.enabled ?? true,
+      });
+      order += 1;
+    }
+    const rows = await this.store.sequence.listCampaignSteps(campaignId);
+    return rows.map(toStepView);
+  }
+
+  async enrollTargets(
+    campaignId: string,
+    targetIds: string[],
+    accountId: string,
+  ): Promise<EnrollResult> {
+    const progressIds: string[] = [];
+    for (const targetId of targetIds) {
+      const row = await this.store.sequence.enrollTarget(campaignId, targetId, accountId);
+      progressIds.push(row.id);
+    }
+    return { campaignId, accountId, enrolled: progressIds.length, progressIds };
   }
 }
 

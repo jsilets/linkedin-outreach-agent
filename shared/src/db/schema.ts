@@ -100,6 +100,7 @@ export const progressStateEnum = pgEnum('progress_state', [
   'failed',
   'skipped',
   'replied',
+  'awaiting_approval',
 ]);
 
 // --- tables ----------------------------------------------------------------
