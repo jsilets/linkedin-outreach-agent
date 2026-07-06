@@ -174,7 +174,7 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
         await runnerFollow(ctx, profileUrl);
         return;
       case 'withdraw_invite':
-        await runnerWithdrawInvite(ctx, profileUrl);
+        await runnerWithdrawInvite(ctx, { profileUrl });
         return;
       case 'react':
         await runnerReact(ctx, profileUrl);

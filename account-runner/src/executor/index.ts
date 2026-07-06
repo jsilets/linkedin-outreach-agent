@@ -16,4 +16,4 @@ export {
   withdrawInvite,
   react,
 } from './actions.js';
-export type { ActionContext, ActionResultOut } from './actions.js';
+export type { ActionContext, ActionResultOut, ReactionType } from './actions.js';

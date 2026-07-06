@@ -15,10 +15,28 @@ export interface LocatorPort {
   fill(text: string): Promise<void>;
   textContent(): Promise<string | null>;
   count(): Promise<number>;
+  // Narrow an OR-chain / multi-match locator to its first element, so a click
+  // does not trip Playwright strict mode when several elements match.
+  first(): LocatorPort;
+  // Narrow to the nth match (0-based); used to try each candidate in turn when
+  // a selector matches several elements and only one is the right target.
+  nth(index: number): LocatorPort;
   // Human-style hover before a click.
   hover(): Promise<void>;
   // Wait until the element is present/visible.
   waitFor(options?: { state?: 'visible' | 'attached'; timeout?: number }): Promise<void>;
+}
+
+/**
+ * A response the page already fetched, surfaced to the runner so lead-sourcing
+ * can read the JSON the page's own XHR pulled (Voyager search) instead of
+ * scraping the DOM or issuing a separate API call. Structural subset of a
+ * Playwright Response.
+ */
+export interface InterceptedResponse {
+  url: string;
+  status: number;
+  json(): Promise<unknown>;
 }
 
 /** Minimal page surface the executor and detector rely on. */
@@ -30,6 +48,17 @@ export interface PagePort {
   url(): string;
   // Small random settle wait; the executor calls this between steps.
   waitForTimeout(ms: number): Promise<void>;
+  /**
+   * Resolve with the first response whose URL contains urlSubstring. Used to
+   * intercept the JSON the page fetches for people-search. The waiter must be
+   * armed BEFORE the navigation/interaction that triggers the request, so the
+   * caller races this against goto() rather than awaiting goto() first.
+   * Rejects on timeout (default 15s).
+   */
+  waitForResponse(
+    urlSubstring: string,
+    opts?: { timeoutMs?: number },
+  ): Promise<InterceptedResponse>;
 }
 
 /**
