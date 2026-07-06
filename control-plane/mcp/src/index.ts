@@ -16,6 +16,7 @@ export type {
   PendingItem,
   QueueEntry,
   Metrics,
+  TargetInput,
   CampaignStepView,
   SequenceStepInput,
   EnrollResult,

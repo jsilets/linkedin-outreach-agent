@@ -12,6 +12,46 @@ const ACCT = 'acct-1';
 
 const noServices = {} as unknown as OrchestratorServices;
 
+describe('CampaignAdapter.addTargets mapping', () => {
+  it('maps bare refs and search-result people to service inputs', async () => {
+    const recorded: Array<{ prospectRef: string; linkedinUrn: string; externalContext?: unknown }> = [];
+    const services = {
+      campaigns: {
+        async addTargets(_campaignId: string, inputs: typeof recorded) {
+          recorded.push(...inputs);
+          return inputs.map((i) => ({ id: `tgt-${i.prospectRef}`, ...i }));
+        },
+      },
+    } as unknown as OrchestratorServices;
+    const adapter = new CampaignAdapter(services, new InMemoryStore());
+
+    await adapter.addTargets(CAMP, [
+      'manual-ref',
+      {
+        prospectRef: 'jane-doe',
+        linkedinUrn: 'urn:li:fsd_profile:ABC123',
+        profileUrl: 'https://www.linkedin.com/in/jane-doe/',
+        name: 'Jane Doe',
+        headline: 'Head of Ops',
+      },
+    ]);
+
+    // Bare string: deterministic urn, no external context.
+    expect(recorded[0]).toMatchObject({
+      prospectRef: 'manual-ref',
+      linkedinUrn: 'urn:li:person:manual-ref',
+    });
+    // Structured: real urn kept, extras land in external context.
+    expect(recorded[1]!.prospectRef).toBe('jane-doe');
+    expect(recorded[1]!.linkedinUrn).toBe('urn:li:fsd_profile:ABC123');
+    expect(recorded[1]!.externalContext).toMatchObject({
+      profileUrl: 'https://www.linkedin.com/in/jane-doe/',
+      name: 'Jane Doe',
+      headline: 'Head of Ops',
+    });
+  });
+});
+
 describe('CampaignAdapter sequence surface', () => {
   let store: InMemoryStore;
   let campaign: CampaignAdapter;

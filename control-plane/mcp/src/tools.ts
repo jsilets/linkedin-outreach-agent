@@ -13,7 +13,7 @@ import { AUTONOMY_LEVELS, CAMPAIGN_STEP_TYPES } from '@loa/shared';
 import type { RequestContext } from './context.js';
 import { requirePrivileged } from './capability.js';
 import { gateAct, type GateOutcome } from './gate.js';
-import type { ActRequest, Ports } from './ports.js';
+import type { ActRequest, Ports, TargetInput } from './ports.js';
 
 export type ToolFamily = 'observe' | 'act' | 'campaign' | 'approval' | 'safety';
 
@@ -239,10 +239,57 @@ const campaignTools: ToolDef[] = [
   {
     name: 'add_targets',
     family: 'campaign',
-    description: 'Add targets to a campaign by prospect reference.',
+    description:
+      'Add targets to a campaign. Pass prospectRefs (bare strings) and/or people ' +
+      '(search_people results, which carry the real entityUrn + profileUrl so the ' +
+      'target enrolls with its true identity). At least one must be non-empty.',
     privileged: false,
-    inputShape: { campaignId: z.string(), prospectRefs: z.array(z.string()).min(1) },
-    handler: (a, p) => p.campaign.addTargets(a.campaignId, a.prospectRefs),
+    inputShape: {
+      campaignId: z.string(),
+      prospectRefs: z.array(z.string()).optional(),
+      people: z
+        .array(
+          z.object({
+            entityUrn: z.string(),
+            profileUrl: z.string().optional(),
+            publicId: z.string().optional(),
+            name: z.string().optional(),
+            headline: z.string().optional(),
+            currentCompany: z.string().optional(),
+            location: z.string().optional(),
+            degree: z.string().optional(),
+          }),
+        )
+        .optional(),
+    },
+    handler: (a, p) => {
+      type PersonArg = {
+        entityUrn: string;
+        profileUrl?: string;
+        publicId?: string;
+        name?: string;
+        headline?: string;
+        currentCompany?: string;
+        location?: string;
+        degree?: string;
+      };
+      const people: PersonArg[] = a.people ?? [];
+      const fromPeople: TargetInput[] = people.map((person) => ({
+        prospectRef: person.publicId ?? person.entityUrn,
+        linkedinUrn: person.entityUrn,
+        ...(person.profileUrl ? { profileUrl: person.profileUrl } : {}),
+        ...(person.name ? { name: person.name } : {}),
+        ...(person.headline ? { headline: person.headline } : {}),
+        ...(person.currentCompany ? { currentCompany: person.currentCompany } : {}),
+        ...(person.location ? { location: person.location } : {}),
+        ...(person.degree ? { degree: person.degree } : {}),
+      }));
+      const targets: Array<string | TargetInput> = [...(a.prospectRefs ?? []), ...fromPeople];
+      if (targets.length === 0) {
+        throw new Error('add_targets: provide at least one prospectRef or person');
+      }
+      return p.campaign.addTargets(a.campaignId, targets);
+    },
   },
   {
     name: 'attach_external_context',

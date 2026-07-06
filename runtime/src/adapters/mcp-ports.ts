@@ -37,6 +37,7 @@ import type {
   PersonSearchResult,
   QueueEntry,
   SequenceStepInput,
+  TargetInput,
 } from '@loa/mcp';
 import type { ApprovalDecision } from '@loa/shared';
 import type { db as shared } from '@loa/shared';
@@ -214,16 +215,27 @@ export class CampaignAdapter implements CampaignPort {
     return this.services.campaigns.createCampaign(input);
   }
 
-  async addTargets(campaignId: string, prospectRefs: string[]): Promise<Target[]> {
-    // The mcp port passes bare prospect refs; the service wants prospectRef +
-    // linkedinUrn. Mint a deterministic urn from the ref for dev/smoke. A live
-    // sourcing layer supplies real urns via attachExternalContext / addTargets.
+  async addTargets(
+    campaignId: string,
+    targets: Array<string | TargetInput>,
+  ): Promise<Target[]> {
+    // A bare string is a manual/dev ref: mint a deterministic urn. A structured
+    // TargetInput (e.g. a search_people result) carries the real urn; its extra
+    // fields (profileUrl, name, headline, company, location, degree) are stored
+    // as opaque external context so the funnel keeps the sourced identity.
     return this.services.campaigns.addTargets(
       campaignId,
-      prospectRefs.map((prospectRef) => ({
-        prospectRef,
-        linkedinUrn: `urn:li:person:${prospectRef}`,
-      })),
+      targets.map((t) => {
+        if (typeof t === 'string') {
+          return { prospectRef: t, linkedinUrn: `urn:li:person:${t}` };
+        }
+        const { prospectRef, linkedinUrn, ...rest } = t;
+        const externalContext: Record<string, string> = {};
+        for (const [k, v] of Object.entries(rest)) {
+          if (v !== undefined) externalContext[k] = v;
+        }
+        return { prospectRef, linkedinUrn, externalContext: externalContext as Json };
+      }),
     );
   }
 
