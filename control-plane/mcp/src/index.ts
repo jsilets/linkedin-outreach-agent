@@ -11,6 +11,7 @@ export type {
   SafetyPort,
   ApprovalPort,
   CampaignPort,
+  LeadListPort,
   AccountAdminPort,
   ActRequest,
   PendingItem,
@@ -29,6 +30,10 @@ export type {
   ConversationSummary,
   PeopleQuery,
   PersonSearchResult,
+  ListSummary,
+  ListMember,
+  ListDetail,
+  InsertMembersResult,
 } from './ports.js';
 
 export { gateAct, mayExecuteDirectly, type GateOutcome, type GateDeps } from './gate.js';

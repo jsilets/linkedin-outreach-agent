@@ -13,7 +13,7 @@ import { AUTONOMY_LEVELS, CAMPAIGN_STEP_TYPES } from '@loa/shared';
 import type { RequestContext } from './context.js';
 import { requirePrivileged } from './capability.js';
 import { gateAct, type GateOutcome } from './gate.js';
-import type { ActRequest, Ports, TargetInput } from './ports.js';
+import type { ActRequest, PeopleQuery, Ports, TargetInput } from './ports.js';
 
 export type ToolFamily = 'observe' | 'act' | 'campaign' | 'approval' | 'safety';
 
@@ -45,6 +45,42 @@ async function act(
 }
 
 const autonomyEnum = z.enum(AUTONOMY_LEVELS);
+
+// The free-tier people-search facets, shared by search_people, source_people,
+// and source_to_list. Kept as a raw shape so it can be spread into each tool's
+// inputShape. Seniority/role has no free-tier facet, so it is approximated via
+// titleKeywords (manager/senior/director/head/lead) rather than a Sales Nav
+// seniority/function filter.
+const peopleFacetShape = {
+  titleKeywords: z.array(z.string()).optional(),
+  companyKeywords: z.array(z.string()).optional(),
+  companyUrns: z.array(z.string()).optional(),
+  geoUrn: z.string().optional(),
+  network: z.array(z.enum(['F', 'S', 'O'])).optional(),
+};
+
+/** Assemble a PeopleQuery from the shared facet args + an optional keyword box.
+ * Typed loosely because ToolDef erases each tool's parsed-arg shape to a raw
+ * zod shape, so handlers see their args as an index signature. */
+function toPeopleQuery(a: {
+  query?: string;
+  titleKeywords?: string[];
+  companyKeywords?: string[];
+  companyUrns?: string[];
+  geoUrn?: string;
+  network?: Array<'F' | 'S' | 'O'>;
+  limit?: number;
+}): PeopleQuery {
+  return {
+    keywords: a.query,
+    titleKeywords: a.titleKeywords,
+    companyKeywords: a.companyKeywords,
+    companyUrns: a.companyUrns,
+    geoUrn: a.geoUrn,
+    network: a.network,
+    limit: a.limit,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Observe (autonomous, open): read-only.
@@ -112,19 +148,26 @@ const observeTools: ToolDef[] = [
       limit: z.number().int().positive().max(1000).default(25),
     },
     handler: (a, p) =>
-      p.observe.searchPeople(
-        a.accountId,
-        {
-          keywords: a.query,
-          titleKeywords: a.titleKeywords,
-          companyKeywords: a.companyKeywords,
-          companyUrns: a.companyUrns,
-          geoUrn: a.geoUrn,
-          network: a.network,
-          limit: a.limit,
-        },
-        a.limit,
-      ),
+      p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit),
+  },
+  {
+    name: 'source_people',
+    family: 'observe',
+    description:
+      'Run a live LinkedIn people search and return the raw PersonSearchResult[] ' +
+      '(no list write). Facets are free-tier Voyager: titleKeywords, ' +
+      'companyKeywords, companyUrns, geoUrn, network (F=1st/S=2nd/O=3rd+). There ' +
+      'is no Sales Navigator seniority/function facet, so a role like "manager or ' +
+      'above" is approximated via titleKeywords (manager/senior/director/head/' +
+      'lead). Use source_to_list to search AND persist into a lead list in one call.',
+    privileged: false,
+    inputShape: {
+      accountId: z.string(),
+      query: z.string().optional(),
+      ...peopleFacetShape,
+      limit: z.number().int().positive().max(1000).default(25),
+    },
+    handler: (a, p) => p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit),
   },
 ];
 
@@ -372,6 +415,66 @@ const campaignTools: ToolDef[] = [
       accountId: z.string(),
     },
     handler: (a, p) => p.campaign.enrollTargets(a.campaignId, a.targetIds, a.accountId),
+  },
+  // --- lead lists (lead gen, visible in the web UI's ListsView) -------------
+  {
+    name: 'create_list',
+    family: 'campaign',
+    description:
+      'Create a lead list (a named set of sourced people, independent of any ' +
+      'campaign). Returns the new list id. The web UI ListsView reads the same ' +
+      'lead_lists table, so it appears there immediately.',
+    privileged: false,
+    inputShape: { name: z.string().min(1), description: z.string().optional() },
+    handler: (a, p) =>
+      p.lists.createList(a.description ? { name: a.name, description: a.description } : { name: a.name }),
+  },
+  {
+    name: 'list_lists',
+    family: 'campaign',
+    description: 'List all lead lists with their member counts.',
+    privileged: false,
+    inputShape: {},
+    handler: (_a, p) => p.lists.listLists(),
+  },
+  {
+    name: 'get_list',
+    family: 'campaign',
+    description: 'Read one lead list with its members.',
+    privileged: false,
+    inputShape: { listId: z.string() },
+    handler: (a, p) => p.lists.getList(a.listId),
+  },
+  {
+    name: 'source_to_list',
+    family: 'campaign',
+    description:
+      'Run a live people search and write the matches into a lead list in one ' +
+      'call. Target an existing list with listId, or create one by passing ' +
+      'listName. Facets are free-tier Voyager (see source_people); seniority is ' +
+      'approximated via titleKeywords. Idempotent: a person already in the list ' +
+      '(unique on listId + linkedinUrn) is skipped, so re-running is safe. ' +
+      'Returns { listId, found, inserted, duplicates }. Results land in the same ' +
+      'lead_list_members table the web UI reads.',
+    privileged: false,
+    inputShape: {
+      accountId: z.string(),
+      query: z.string().optional(),
+      ...peopleFacetShape,
+      limit: z.number().int().positive().max(1000).default(25),
+      listId: z.string().optional(),
+      listName: z.string().optional(),
+    },
+    handler: async (a, p) => {
+      if (!a.listId && !a.listName) {
+        throw new Error('source_to_list: provide either listId or listName');
+      }
+      // Resolve the target list up front (create it when only a name was given).
+      const listId = a.listId ?? (await p.lists.createList({ name: a.listName! })).id;
+      const people = await p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit);
+      const { inserted, duplicates } = await p.lists.insertMembers(listId, people);
+      return { listId, found: people.length, inserted, duplicates };
+    },
   },
 ];
 

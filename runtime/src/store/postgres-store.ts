@@ -18,12 +18,14 @@ import type {
   AccountStorePort,
   ActionStorePort,
   EventReadPort,
+  LeadListStorePort,
   RuntimeStore,
   SequenceStorePort,
   TargetProgressPatch,
 } from './index.js';
 
-const { campaignSteps, targetProgress, targets, actions } = shared.schema;
+const { campaignSteps, targetProgress, targets, actions, leadLists, leadListMembers } =
+  shared.schema;
 
 class PgAccountStore implements AccountStorePort {
   constructor(private readonly repos: Repositories) {}
@@ -233,6 +235,57 @@ class PgSequenceStore implements SequenceStorePort {
   }
 }
 
+/** Lead-list store over the Drizzle handle. Writes the same lead_lists /
+ * lead_list_members tables the web UI's ListsView reads. Member inserts dedup on
+ * the lead_list_members_list_urn_uq unique index. */
+class PgLeadListStore implements LeadListStorePort {
+  constructor(private readonly db: Db) {}
+
+  async createList(input: { name: string; description?: string }): Promise<shared.LeadListRow> {
+    const [row] = await this.db.handle
+      .insert(leadLists)
+      .values({ name: input.name, description: input.description ?? null })
+      .returning();
+    return row!;
+  }
+
+  async listWithCounts(): Promise<Array<shared.LeadListRow & { memberCount: number }>> {
+    const rows = await this.db.handle
+      .select({
+        list: leadLists,
+        memberCount: sql<number>`count(${leadListMembers.id})::int`,
+      })
+      .from(leadLists)
+      .leftJoin(leadListMembers, eq(leadListMembers.listId, leadLists.id))
+      .groupBy(leadLists.id)
+      .orderBy(asc(leadLists.createdAt));
+    return rows.map((r) => ({ ...r.list, memberCount: r.memberCount }));
+  }
+
+  async findById(id: string): Promise<shared.LeadListRow | undefined> {
+    const [row] = await this.db.handle.select().from(leadLists).where(eq(leadLists.id, id));
+    return row;
+  }
+
+  async listMembers(listId: string): Promise<shared.LeadListMemberRow[]> {
+    return this.db.handle
+      .select()
+      .from(leadListMembers)
+      .where(eq(leadListMembers.listId, listId))
+      .orderBy(asc(leadListMembers.addedAt));
+  }
+
+  async insertMembers(rows: shared.NewLeadListMemberRow[]): Promise<{ inserted: number }> {
+    if (rows.length === 0) return { inserted: 0 };
+    const out = await this.db.handle
+      .insert(leadListMembers)
+      .values(rows)
+      .onConflictDoNothing()
+      .returning({ id: leadListMembers.id });
+    return { inserted: out.length };
+  }
+}
+
 export class PostgresStore implements RuntimeStore {
   readonly account: AccountStorePort;
   readonly action: ActionStorePort;
@@ -242,6 +295,7 @@ export class PostgresStore implements RuntimeStore {
   readonly approval: Repositories['approval'];
   readonly event: EventReadPort;
   readonly sequence: SequenceStorePort;
+  readonly leadList: LeadListStorePort;
   private readonly db: Db;
 
   private readonly repos: Repositories;
@@ -258,6 +312,7 @@ export class PostgresStore implements RuntimeStore {
     this.approval = repos.approval;
     this.event = new PgEventRead(repos);
     this.sequence = new PgSequenceStore(db);
+    this.leadList = new PgLeadListStore(db);
   }
 
   async listTargetsByCampaign(campaignId: string): Promise<shared.TargetRow[]> {
