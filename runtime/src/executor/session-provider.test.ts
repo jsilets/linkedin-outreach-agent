@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtemp, writeFile, symlink, access } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Target } from '@loa/shared';
-import { LiveSessionProvider } from './session-provider.js';
+import { LiveSessionProvider, clearSingletonLocks } from './session-provider.js';
 
 function target(linkedinUrn: string): Target {
   const now = new Date();
@@ -50,5 +53,32 @@ describe('LiveSessionProvider proxy guard', () => {
       allowNoProxy: false,
     });
     await expect(provider.pageFor('acc-1')).rejects.toThrow(/proxy/i);
+  });
+});
+
+describe('clearSingletonLocks', () => {
+  const missing = (p: string) => access(p).then(() => false, () => true);
+
+  it('removes a stale SingletonLock symlink and sibling guards', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loa-profile-'));
+    // A container restart leaves SingletonLock as a symlink to a dead host/pid.
+    await symlink('some-old-host-4242', join(dir, 'SingletonLock'));
+    await writeFile(join(dir, 'SingletonCookie'), '1');
+    await writeFile(join(dir, 'SingletonSocket'), '1');
+    await writeFile(join(dir, 'Cookies'), 'keep-me');
+
+    await clearSingletonLocks(dir);
+
+    expect(await missing(join(dir, 'SingletonLock'))).toBe(true);
+    expect(await missing(join(dir, 'SingletonCookie'))).toBe(true);
+    expect(await missing(join(dir, 'SingletonSocket'))).toBe(true);
+    // Only the singleton guards go; the real profile is untouched.
+    expect(await missing(join(dir, 'Cookies'))).toBe(false);
+  });
+
+  it('does not throw when the profile dir has no locks (or does not exist)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loa-profile-'));
+    await expect(clearSingletonLocks(dir)).resolves.toBeUndefined();
+    await expect(clearSingletonLocks(join(dir, 'nope'))).resolves.toBeUndefined();
   });
 });
