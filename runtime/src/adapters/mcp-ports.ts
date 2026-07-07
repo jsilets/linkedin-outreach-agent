@@ -247,6 +247,11 @@ export class CampaignAdapter implements CampaignPort {
     return this.services.campaigns.attachExternalContext(targetId, context);
   }
 
+  async listAccounts(): Promise<Account[]> {
+    const rows = await this.store.account.all();
+    return rows.map(rowToAccount);
+  }
+
   async getAccountState(accountId: string): Promise<Account> {
     const row = await this.store.account.findById(accountId);
     if (!row) throw new Error(`account not found: ${accountId}`);

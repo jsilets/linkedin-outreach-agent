@@ -264,6 +264,10 @@ export interface CampaignPort {
   /** Add targets by bare ref or by structured identity (e.g. search results). */
   addTargets(campaignId: string, targets: Array<string | TargetInput>): Promise<Target[]>;
   attachExternalContext(targetId: string, context: Json): Promise<Target>;
+  /** List every sender account so callers can discover the accountId the other
+   * campaign/sourcing tools require. The account UUID appears nowhere in the web
+   * UI, so this is the only in-MCP way to find it. */
+  listAccounts(): Promise<Account[]>;
   getAccountState(accountId: string): Promise<Account>;
   getQueue(accountId: string): Promise<QueueEntry[]>;
   getMetrics(campaignId: string): Promise<Metrics>;
