@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import express from 'express';
-import { basicAuthOk } from './auth.js';
+import { AUTH_COOKIE, authCookieOk, basicAuthOk, issueAuthToken, safeEqual } from './auth.js';
 import { createMcpProxy } from './mcp-proxy.js';
 import { VaultError } from '@loa/account-runner';
 import {
@@ -47,10 +47,12 @@ app.get('/healthz', (_req, res) => {
   res.json({ ok: true, server: '@loa/web' });
 });
 
-// HTTP Basic auth over every non-health route. Railway terminates TLS, so
-// Basic over HTTPS is fine. Posture: credentials are required in production
-// (fail closed if unset); in dev with no credentials set, auth is disabled
-// with a one-time loud warning so local work still flows.
+// Auth over every route except health and login. Two credential paths: HTTP
+// Basic (curl/API) and a signed session cookie set by POST /login. The cookie is
+// what lets embedded browsers in — they cannot render a native Basic-auth prompt,
+// and URL-embedded credentials break the SPA's fetch() calls. Posture:
+// credentials are required in production (fail closed if unset); in dev with none
+// set, auth is disabled with a one-time warning so local work still flows.
 const authUser = process.env.LOA_WEB_USER ?? '';
 const authPassword = process.env.LOA_WEB_PASSWORD ?? '';
 const authConfigured = authUser.length > 0 && authPassword.length > 0;
@@ -58,11 +60,36 @@ const production = process.env.NODE_ENV === 'production';
 if (production && !authConfigured) {
   console.error('web api: LOA_WEB_USER/LOA_WEB_PASSWORD are required in production; all routes will refuse requests');
 } else if (!authConfigured) {
-  console.warn('web api: LOA_WEB_USER/LOA_WEB_PASSWORD unset: Basic auth is DISABLED (dev only). All routes are open.');
+  console.warn('web api: LOA_WEB_USER/LOA_WEB_PASSWORD unset: auth is DISABLED (dev only). All routes are open.');
 }
 
+// Login page + handler, served without auth so a browser can sign in.
+app.get('/login', (_req, res) => {
+  res.type('html').send(loginPage());
+});
+
+app.post('/login', (req, res) => {
+  if (!authConfigured) {
+    res.json({ ok: true }); // dev: auth disabled, nothing to check.
+    return;
+  }
+  const user = typeof req.body?.user === 'string' && req.body.user ? req.body.user : authUser;
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  if (safeEqual(user, authUser) && safeEqual(password, authPassword)) {
+    const token = issueAuthToken(authUser, authPassword);
+    const secure = production ? ' Secure;' : '';
+    res.setHeader(
+      'Set-Cookie',
+      `${AUTH_COOKIE}=${token}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=${30 * 24 * 60 * 60}`,
+    );
+    res.json({ ok: true });
+    return;
+  }
+  res.status(401).json({ error: 'invalid credentials.' });
+});
+
 app.use((req, res, next) => {
-  if (req.path === '/healthz') return next();
+  if (req.path === '/healthz' || req.path === '/login') return next();
 
   // Fail closed in production if credentials were never configured.
   if (production && !authConfigured) {
@@ -72,10 +99,20 @@ app.use((req, res, next) => {
   // Dev open posture: auth disabled.
   if (!authConfigured) return next();
 
-  if (basicAuthOk(req.headers.authorization, authUser, authPassword)) {
+  // Accept either a valid session cookie (browsers) or Basic credentials (curl).
+  if (
+    authCookieOk(req.headers.cookie, authUser, authPassword) ||
+    basicAuthOk(req.headers.authorization, authUser, authPassword)
+  ) {
     return next();
   }
-  res.set('WWW-Authenticate', 'Basic realm="loa"').status(401).json({ error: 'authentication required.' });
+
+  // API callers get a clean 401; browsers get sent to the login page.
+  if (req.path.startsWith('/api')) {
+    res.set('WWW-Authenticate', 'Basic realm="loa"').status(401).json({ error: 'authentication required.' });
+    return;
+  }
+  res.redirect('/login');
 });
 
 const api = express.Router();
@@ -277,6 +314,41 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   console.error(err);
   res.status(500).json({ error: 'Internal server error.' });
 });
+
+// Self-contained login page (no external assets) so it renders in any browser,
+// including embedded preview panes that cannot show a native Basic-auth dialog.
+// Posts JSON to /login, which sets the session cookie, then redirects to the app.
+function loginPage(): string {
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>loa · sign in</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f14;color:#e6edf3;font:15px/1.4 system-ui,-apple-system,sans-serif}
+  form{background:#111820;border:1px solid #1f2a36;border-radius:12px;padding:28px;width:280px}
+  h1{margin:0 0 4px;font-size:17px}
+  p{margin:0 0 18px;color:#8b98a5;font-size:13px}
+  input{width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:12px;background:#0b0f14;border:1px solid #223041;border-radius:8px;color:#e6edf3;font-size:14px}
+  button{width:100%;padding:10px;background:#2f81f7;border:0;border-radius:8px;color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.6}
+  .err{color:#f85149;font-size:13px;min-height:18px;margin-top:8px}
+</style></head><body>
+<form id="f">
+  <h1>linkedin-outreach-agent</h1>
+  <p>Sign in to the control panel.</p>
+  <input id="u" placeholder="username" autocomplete="username" autofocus>
+  <input id="p" type="password" placeholder="password" autocomplete="current-password">
+  <button id="b" type="submit">Sign in</button>
+  <div class="err" id="e"></div>
+</form>
+<script>
+  var f=document.getElementById('f'),b=document.getElementById('b'),e=document.getElementById('e');
+  f.addEventListener('submit',async function(ev){ev.preventDefault();b.disabled=true;e.textContent='';
+    try{var r=await fetch('/login',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({user:document.getElementById('u').value,password:document.getElementById('p').value})});
+      if(r.ok){location.href='/';}else{e.textContent='Invalid credentials.';b.disabled=false;}
+    }catch(_){e.textContent='Network error.';b.disabled=false;}});
+</script>
+</body></html>`;
+}
 
 function clampDays(raw: unknown): number {
   const n = Number(Array.isArray(raw) ? raw[0] : raw);
