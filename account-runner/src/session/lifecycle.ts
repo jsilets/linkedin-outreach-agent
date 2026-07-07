@@ -72,20 +72,37 @@ export async function bootstrap(
 }
 
 /**
- * resume: reuse the persistent userDataDir and inject vaulted cookies into a
- * fresh context. Returns the live context + page for the executor to drive.
+ * resume: reuse the persistent userDataDir. Seed the vaulted cookies ONLY when
+ * the profile has no session of its own — i.e. a fresh (empty) profile.
+ *
+ * The vault holds the cookies captured at link time and is never refreshed, so
+ * they go stale as LinkedIn rotates the session. The persistent profile, once
+ * bootstrapped, carries the live rotated session. Re-injecting the stale vaulted
+ * cookies over a live profile on every launch clobbers the rotated session with
+ * old values, and the next navigation gets challenged. So: bootstrap an empty
+ * profile from the vault, but never overwrite a profile that is already logged in.
  */
 export async function resume(
   deps: SessionDeps,
   input: LaunchConfigInput,
 ): Promise<{ context: BrowserContextPort; page: PagePort }> {
-  const state = await loadStorageState(deps.vaultPath);
   const { context } = await deps.factory.launch(input);
-  if (state.cookies.length > 0) {
-    await context.addCookies(state.cookies);
+  if (!(await hasLinkedInSession(context))) {
+    const state = await loadStorageState(deps.vaultPath);
+    if (state.cookies.length > 0) {
+      await context.addCookies(state.cookies);
+    }
   }
   const page = await context.newPage();
   return { context, page };
+}
+
+/** True if the context's profile already carries a LinkedIn auth cookie. */
+async function hasLinkedInSession(context: BrowserContextPort): Promise<boolean> {
+  const cookies = await context.cookies();
+  return cookies.some(
+    (c) => typeof c === 'object' && c !== null && (c as { name?: unknown }).name === 'li_at',
+  );
 }
 
 /**

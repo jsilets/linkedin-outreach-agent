@@ -69,24 +69,30 @@ describe('bootstrap', () => {
 });
 
 describe('resume', () => {
-  it('injects vaulted cookies into a fresh context', async () => {
+  async function resumeWith(profileCookies: StorageStateShape): Promise<FakeContext> {
     const page = new FakePage();
     const dir = await mkdtemp(join(tmpdir(), 'loa-life-'));
     const vaultPath = join(dir, 'state.enc');
-    await saveStorageState(vaultPath, state(), key);
+    await saveStorageState(vaultPath, state(), key); // vault always has a li_at cookie
     process.env.COOKIE_VAULT_KEY = key.toString('base64');
 
-    const ctx = new FakeContext(page, state());
+    const ctx = new FakeContext(page, profileCookies);
     const launcher = new FakeLauncher(ctx);
     const factory = new BrowserContextFactory(launcher);
-    const d: SessionDeps = {
-      factory,
-      vaultPath,
-      accountId: 'acct-1',
-      raiseHumanTask: () => {},
-    };
+    const d: SessionDeps = { factory, vaultPath, accountId: 'acct-1', raiseHumanTask: () => {} };
     const { context } = await resume(d, input);
-    expect((context as FakeContext).addedCookies.length).toBeGreaterThan(0);
+    return context as FakeContext;
+  }
+
+  it('seeds vaulted cookies into a fresh (empty) profile', async () => {
+    const context = await resumeWith({ cookies: [], origins: [] });
+    expect(context.addedCookies.length).toBeGreaterThan(0);
+  });
+
+  it('does NOT clobber a profile that already has a LinkedIn session', async () => {
+    // Profile already carries a li_at (LinkedIn rotated it in an earlier run).
+    const context = await resumeWith(state());
+    expect(context.addedCookies.length).toBe(0);
   });
 });
 
