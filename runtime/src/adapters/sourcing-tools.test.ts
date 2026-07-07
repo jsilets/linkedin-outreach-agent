@@ -8,7 +8,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
 import type { PeopleQuery, PersonSearchResult, Ports } from '@loa/mcp';
 import { InMemoryStore } from '../store/in-memory-store.js';
-import { LeadListAdapter } from './mcp-ports.js';
+import { CampaignAdapter, LeadListAdapter } from './mcp-ports.js';
 import { sourceToList } from '../tools/source-to-list.js';
 
 const ACCT = 'acct-1';
@@ -53,6 +53,35 @@ function run(tool: string, args: Record<string, unknown>, ports: Ports) {
   if (!def) throw new Error(`no such tool: ${tool}`);
   return def.handler(args as never, ports, AGENT_CONTEXT);
 }
+
+describe('list_accounts tool', () => {
+  it('lists every sender account with the id/handle/state a caller needs', async () => {
+    const store = new InMemoryStore();
+    const today = new Date().toISOString().slice(0, 10);
+    const caps = { connect: 10, message: 10, view_profile: 10, follow: 10, withdraw_invite: 10, react: 10 };
+    const used = { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 };
+    await store.account.create({
+      id: ACCT,
+      handle: 'josh-silets',
+      state: 'Warming',
+      warmupDay: 5,
+      proxyBinding: { proxyId: 'p', region: 'us-east', sticky: true },
+      health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: new Date() },
+      budget: { date: today, caps, used },
+    });
+    // Only the store is exercised; the orchestrator services are unused here.
+    const ports = { campaign: new CampaignAdapter({} as never, store) } as unknown as Ports;
+
+    const accounts = (await run('list_accounts', {}, ports)) as Array<{
+      id: string;
+      handle: string;
+      state: string;
+    }>;
+
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({ id: ACCT, handle: 'josh-silets', state: 'Warming' });
+  });
+});
 
 describe('source_people tool', () => {
   it('returns the search results and passes the facets through as a PeopleQuery', async () => {

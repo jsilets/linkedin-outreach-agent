@@ -343,6 +343,18 @@ const campaignTools: ToolDef[] = [
     handler: (a, p) => p.campaign.attachExternalContext(a.targetId, a.context as never),
   },
   {
+    name: 'list_accounts',
+    family: 'campaign',
+    description:
+      'List every sender account with its id, handle, and state. Call this ' +
+      'first to discover the accountId that source_to_list, enroll_targets, and ' +
+      'the other account tools require: the UUID is not shown in the web UI, so ' +
+      'this is the only way to find it. Takes no arguments.',
+    privileged: false,
+    inputShape: {},
+    handler: (_a, p) => p.campaign.listAccounts(),
+  },
+  {
     name: 'get_account_state',
     family: 'campaign',
     description: 'Read an account state snapshot.',
