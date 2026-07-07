@@ -25,3 +25,9 @@ test-results/
 
 # os
 .DS_Store
+
+# local MCP client config (references tokens via env vars, no secrets)
+.mcp.json
+
+# local Claude Code tooling state (launch config, worktrees)
+.claude/
