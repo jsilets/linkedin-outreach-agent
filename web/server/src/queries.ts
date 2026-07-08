@@ -1,13 +1,22 @@
 // Read queries and the steps write, all against the shared schema via Drizzle.
 import { join } from 'node:path';
-import { and, asc, eq, gte, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { buildStorageStateFromPastedCookies, saveStorageState } from '@loa/account-runner';
 import type { ActionType } from '@loa/shared';
-import { db, schema } from './db.js';
+import { db, schema, type Db } from './db.js';
 import { normalizeSteps, type NormalizedStep } from './steps.js';
 
-const { campaigns, campaignSteps, targets, targetProgress, actions, accounts, leadLists, leadListMembers } =
-  schema;
+const {
+  campaigns,
+  campaignSteps,
+  targets,
+  targetProgress,
+  actions,
+  messages,
+  accounts,
+  leadLists,
+  leadListMembers,
+} = schema;
 
 export interface CampaignSummary {
   id: string;
@@ -129,6 +138,39 @@ export async function replaceSteps(campaignId: string, input: unknown): Promise<
   });
 
   return normalized;
+}
+
+// Ordered delete statements that clear a campaign's dependents and then the
+// campaign row itself. The campaigns table is referenced with ON DELETE NO
+// ACTION from target_progress, actions, targets, and campaign_steps, and
+// messages hang off the campaign's targets, so everything must go before the
+// campaign row. Exposed (and parameterized on the executor) so a test can assert
+// the SQL shape and order without a live DB; deleteCampaign runs them inside a
+// transaction against tx. Order: rows referencing targets (progress, actions,
+// messages) first, then targets, then the campaign's steps, then the campaign.
+export function campaignDeleteStatements(exec: Db, id: string) {
+  const campaignTargets = db.select({ id: targets.id }).from(targets).where(eq(targets.campaignId, id));
+  return [
+    exec.delete(targetProgress).where(eq(targetProgress.campaignId, id)),
+    exec.delete(actions).where(eq(actions.campaignId, id)),
+    exec.delete(messages).where(inArray(messages.targetId, campaignTargets)),
+    exec.delete(targets).where(eq(targets.campaignId, id)),
+    exec.delete(campaignSteps).where(eq(campaignSteps.campaignId, id)),
+    exec.delete(campaigns).where(eq(campaigns.id, id)),
+  ];
+}
+
+// Delete a campaign and every dependent row in one transaction. Returns false
+// when no campaign with that id exists (so the route can answer 404).
+export async function deleteCampaign(id: string): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const [campaign] = await tx.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.id, id));
+    if (!campaign) return false;
+    for (const stmt of campaignDeleteStatements(tx, id)) {
+      await stmt;
+    }
+    return true;
+  });
 }
 
 export interface VolumeRow {
