@@ -181,7 +181,7 @@ describe('DispatchTick', () => {
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
 
     const now = new Date('2026-07-06T12:00:00Z');
     const res = await tick.runTick(now);
@@ -195,21 +195,22 @@ describe('DispatchTick', () => {
     expect(progress.nextStepAt?.getTime()).toBe(now.getTime() + 120_000);
   });
 
-  it('action step routes through the gate and advances with the next delay', async () => {
-    // steps: [connect, delay(120s), message]
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hello' });
+  it('a non-connect action routes through the gate and advances with the next delay', async () => {
+    // steps: [view_profile, delay(120s), message]. A view_profile is a plain
+    // timer-advancing action (connect is special-cased to park; see below).
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 120 });
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 2, stepType: 'message', body: 'body' });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
 
     const now = new Date('2026-07-06T12:00:00Z');
     const res = await tick.runTick(now);
 
     expect(executor.calls).toHaveLength(1);
-    expect(executor.calls[0]).toMatchObject({ type: 'connect', accountId: ACCT, targetId: TGT, campaignId: CAMP, payload: 'hello' });
+    expect(executor.calls[0]).toMatchObject({ type: 'view_profile', accountId: ACCT, targetId: TGT, campaignId: CAMP });
     const [progress] = await store.sequence.listTargetProgress(CAMP);
     expect(progress.currentStep).toBe(1);
     expect(progress.state).toBe('in_progress');
@@ -218,9 +219,64 @@ describe('DispatchTick', () => {
     expect(res.outcomes[0]).toMatchObject({ kind: 'executed', actionId: 'action-1' });
   });
 
+  it('a successful connect parks the cursor in awaiting_connection and sets the target invited', async () => {
+    // steps: [connect, message]. A connect is not a timer advance: it sends the
+    // invite, sets the target stage to 'invited', and parks the cursor ON the
+    // connect step (no due time) for the acceptance tick to release.
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hello' });
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'body' });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const executor = new RecordingExecutor();
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+
+    const now = new Date('2026-07-06T12:00:00Z');
+    const res = await tick.runTick(now);
+
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0]).toMatchObject({ type: 'connect', payload: 'hello' });
+    expect(res.outcomes[0]).toMatchObject({ kind: 'awaiting_connection' });
+
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.state).toBe('awaiting_connection');
+    expect(progress.currentStep).toBe(0); // still ON the connect step
+    expect(progress.nextStepAt).toBeNull(); // parked, not on a timer
+    expect(progress.lastStepAt?.getTime()).toBe(now.getTime());
+
+    const target = await store.target.findById(TGT);
+    expect(target?.stage).toBe('invited');
+
+    // Parked cursors are not due, so the dispatch tick will not re-fire it.
+    expect(await store.sequence.dueTargetProgress(new Date())).toHaveLength(0);
+  });
+
+  it('holds a message step whose target is not yet connected, and fires once it is', async () => {
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    // Target is still 'invited' (connect sent, not accepted): the message is held.
+    await store.target.setStage(TGT, 'invited');
+
+    const executor = new RecordingExecutor();
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+
+    const res = await tick.runTick(new Date());
+
+    expect(executor.calls).toHaveLength(0); // not fired
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'not_connected' });
+    const [held] = await store.sequence.listTargetProgress(CAMP);
+    expect(held.currentStep).toBe(0); // cursor left in place
+    expect(held.state).toBe('in_progress');
+
+    // Once the target is connected, the same step fires.
+    await store.target.setStage(TGT, 'connected');
+    await tick.runTick(new Date());
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0]).toMatchObject({ type: 'message', payload: 'hi' });
+  });
+
   it('gate deny leaves the cursor in place for a later retry', async () => {
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'b' });
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 0 });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
@@ -238,7 +294,7 @@ describe('DispatchTick', () => {
     expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'denied' });
 
     // A later tick with allow now advances it.
-    const tick2 = new DispatchTick({ sequence: store.sequence, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick2 = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
     await tick2.runTick(new Date());
     const [after] = await store.sequence.listTargetProgress(CAMP);
     expect(after.currentStep).toBe(1);
@@ -250,9 +306,11 @@ describe('DispatchTick', () => {
     // awaiting_approval (not stay due), or the next tick enqueues a duplicate.
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    // Connected, so the message gate lets it through to the approval queue.
+    await store.target.setStage(TGT, 'connected');
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, gate: makeSupervisedGate(executor) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeSupervisedGate(executor) });
 
     const res = await tick.runTick(new Date());
 
@@ -273,7 +331,7 @@ describe('DispatchTick', () => {
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
 
     await tick.runTick(new Date());
 
@@ -287,17 +345,20 @@ describe('DispatchTick', () => {
     expect(due).toHaveLength(0);
   });
 
-  it('walks a full sequence across ticks: connect -> delay -> message -> completed', async () => {
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect' });
+  it('walks a full sequence across ticks: view_profile -> delay -> message -> completed', async () => {
+    // The linear timer walk (connect is covered separately since it parks).
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 60 });
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 2, stepType: 'message', body: 'b' });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    // Connected, so the message step at the end fires.
+    await store.target.setStage(TGT, 'connected');
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
 
     const t0 = new Date('2026-07-06T12:00:00Z');
-    await tick.runTick(t0); // connect -> cursor at delay, due at +60s (delay's own delaySeconds)
+    await tick.runTick(t0); // view_profile -> cursor at delay, due at +60s (delay's own delaySeconds)
     let [p] = await store.sequence.listTargetProgress(CAMP);
     expect(p.currentStep).toBe(1);
     expect(p.nextStepAt?.getTime()).toBe(t0.getTime() + 60_000);
@@ -314,6 +375,6 @@ describe('DispatchTick', () => {
     await tick.runTick(t1); // message -> completed
     [p] = await store.sequence.listTargetProgress(CAMP);
     expect(p.state).toBe('completed');
-    expect(executor.calls.map((c) => c.type)).toEqual(['connect', 'message']);
+    expect(executor.calls.map((c) => c.type)).toEqual(['view_profile', 'message']);
   });
 });

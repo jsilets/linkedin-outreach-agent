@@ -10,9 +10,11 @@ import {
   buildVoyagerGraphqlPath,
   normalizeSearchResponse,
   normalizeInboxResponse,
+  normalizeConnectionsResponse,
   profileUrnFromEntityUrn,
   ensureOnLinkedIn,
   LiveInboxReader,
+  LiveConnectionsReader,
   LiveObserve,
   InMemorySearchBudget,
   type SearchBudget,
@@ -444,5 +446,62 @@ describe('LiveInboxReader.readInbox', () => {
     expect(msgs.map((m) => m.text)).toEqual(['yes']);
     // It hit the messaging conversations endpoint.
     expect(page.calls[0]).toContain('/voyager/api/messaging/conversations');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connections reader — relationships connections -> AcceptedConnection[].
+// ---------------------------------------------------------------------------
+
+/** A trimmed but realistic relationships connections payload. */
+function connectionsPayload(
+  people: Array<{ urn: string; publicId?: string; at?: number }>,
+) {
+  return {
+    elements: people.map((p) => ({
+      ...(p.at !== undefined ? { createdAt: p.at } : {}),
+      miniProfile: {
+        entityUrn: `urn:li:fsd_profile:${p.urn}`,
+        ...(p.publicId ? { publicIdentifier: p.publicId } : {}),
+      },
+    })),
+  };
+}
+
+describe('normalizeConnectionsResponse (relationships shapes)', () => {
+  it('reads entity urn, profile url, and connectedAt', () => {
+    const body = connectionsPayload([{ urn: 'p1', publicId: 'alice-ng', at: 1_700_000_000_000 }]);
+    const conns = normalizeConnectionsResponse(body);
+    expect(conns).toHaveLength(1);
+    expect(conns[0]).toMatchObject({
+      entityUrn: 'urn:li:fsd_profile:p1',
+      profileUrl: 'https://www.linkedin.com/in/alice-ng/',
+    });
+    expect(conns[0]!.connectedAt?.getTime()).toBe(1_700_000_000_000);
+  });
+
+  it('sorts most-recent-first and drops entries without a urn', () => {
+    const body = {
+      elements: [
+        { createdAt: 10, miniProfile: { entityUrn: 'urn:li:fsd_profile:older' } },
+        { createdAt: 30, miniProfile: {} }, // no urn: dropped
+        { createdAt: 20, miniProfile: { entityUrn: 'urn:li:fsd_profile:newer' } },
+      ],
+    };
+    expect(normalizeConnectionsResponse(body).map((c) => c.entityUrn)).toEqual([
+      'urn:li:fsd_profile:newer',
+      'urn:li:fsd_profile:older',
+    ]);
+  });
+});
+
+describe('LiveConnectionsReader.readConnections', () => {
+  it('drives voyagerGet and normalizes the connections payload', async () => {
+    const page = new SearchFakePage([connectionsPayload([{ urn: 'p1', at: 5 }])]);
+    const reader = new LiveConnectionsReader({ pageFor: async () => page });
+    const conns = await reader.readConnections('acct', 40);
+    expect(conns.map((c) => c.entityUrn)).toEqual(['urn:li:fsd_profile:p1']);
+    // It hit the relationships connections endpoint.
+    expect(page.calls[0]).toContain('/voyager/api/relationships/connections');
   });
 });

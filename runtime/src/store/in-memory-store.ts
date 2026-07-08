@@ -374,6 +374,10 @@ class InMemSequenceStore implements SequenceStorePort {
     );
   }
 
+  async awaitingConnectionEnrollments(): Promise<TargetProgressRow[]> {
+    return [...this.progress.values()].filter((p) => p.state === 'awaiting_connection');
+  }
+
   async advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void> {
     const cur = this.progress.get(id);
     if (!cur) throw new Error(`no target progress: ${id}`);
@@ -393,8 +397,14 @@ class InMemSequenceStore implements SequenceStorePort {
     for (const [id, p] of this.progress) {
       if (p.targetId !== targetId) continue;
       // Terminal, and only from an active enrollment (including one parked for
-      // approval); leave completed/failed/skipped/replied as-is.
-      if (p.state !== 'in_progress' && p.state !== 'pending' && p.state !== 'awaiting_approval')
+      // approval or awaiting an invite accept); leave completed/failed/skipped/
+      // replied as-is.
+      if (
+        p.state !== 'in_progress' &&
+        p.state !== 'pending' &&
+        p.state !== 'awaiting_approval' &&
+        p.state !== 'awaiting_connection'
+      )
         continue;
       this.progress.set(id, {
         ...p,

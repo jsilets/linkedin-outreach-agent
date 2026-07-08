@@ -38,6 +38,21 @@ async function main(): Promise<void> {
     console.log('[@loa/runtime] reply tick idle (set LOA_REPLY_POLL_INTERVAL_MS to run it)');
   }
 
+  // The acceptance tick watches the connections list and releases cursors parked
+  // after a connect step once the invite is accepted. Same opt-in rule as the
+  // reply tick, and it only exists with a real session (fake mode has no
+  // connections list), so it starts only when both are present.
+  if (config.acceptancePollIntervalMs && runtime.acceptanceTick) {
+    runtime.acceptanceTick.start(config.acceptancePollIntervalMs);
+    console.log(
+      `[@loa/runtime] acceptance tick started: every ${config.acceptancePollIntervalMs}ms`,
+    );
+  } else if (config.acceptancePollIntervalMs) {
+    console.log('[@loa/runtime] acceptance tick idle (needs LOA_EXECUTOR=real for a live connections list)');
+  } else {
+    console.log('[@loa/runtime] acceptance tick idle (set LOA_ACCEPTANCE_POLL_INTERVAL_MS to run it)');
+  }
+
   const server = startServer(runtime.ports);
 
   const shutdown = (signal: string): void => {

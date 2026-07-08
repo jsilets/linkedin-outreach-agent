@@ -169,6 +169,13 @@ class PgSequenceStore implements SequenceStorePort {
       );
   }
 
+  async awaitingConnectionEnrollments(): Promise<shared.TargetProgressRow[]> {
+    return this.db.handle
+      .select()
+      .from(targetProgress)
+      .where(eq(targetProgress.state, 'awaiting_connection'));
+  }
+
   async advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void> {
     await this.db.handle
       .update(targetProgress)
@@ -187,6 +194,7 @@ class PgSequenceStore implements SequenceStorePort {
             eq(targetProgress.state, 'in_progress'),
             eq(targetProgress.state, 'pending'),
             eq(targetProgress.state, 'awaiting_approval'),
+            eq(targetProgress.state, 'awaiting_connection'),
           ),
         ),
       );

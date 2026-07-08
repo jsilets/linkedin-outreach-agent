@@ -75,6 +75,10 @@ export interface SequenceStorePort {
   /** Rows the dispatch tick should act on: state='in_progress' AND
    * (nextStepAt IS NULL OR nextStepAt<=now). */
   dueTargetProgress(now: Date): Promise<shared.TargetProgressRow[]>;
+  /** Cursors parked after a connect step (state='awaiting_connection'), waiting
+   * for the invite to be accepted. The acceptance tick reads these to release
+   * connected targets into the next step. */
+  awaitingConnectionEnrollments(): Promise<shared.TargetProgressRow[]>;
   advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void>;
   /** Pull a target out of every funnel it is in (terminal 'replied' state) and
    * stop further steps. Idempotent; a no-op if the target is not enrolled. */
