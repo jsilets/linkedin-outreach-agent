@@ -11,6 +11,7 @@ import { VaultError } from '@loa/account-runner';
 import {
   createCampaignFromList,
   createList,
+  deleteCampaign,
   deleteList,
   EmptyListError,
   getCampaign,
@@ -152,6 +153,21 @@ api.put('/campaigns/:id/steps', async (req, res, next) => {
       res.status(400).json({ error: err.message });
       return;
     }
+    next(err);
+  }
+});
+
+// Delete a campaign and all its dependents (targets, progress, actions,
+// messages, steps) in one transaction. 404 when the campaign does not exist.
+api.delete('/campaigns/:id', async (req, res, next) => {
+  try {
+    const deleted = await deleteCampaign(req.params.id);
+    if (!deleted) {
+      res.status(404).json({ error: 'Campaign not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
     next(err);
   }
 });
