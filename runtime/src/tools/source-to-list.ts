@@ -8,7 +8,7 @@
 //     --keywords "ev charging operations" --limit 25
 //
 // Target an existing list with --list-id <uuid> instead of --list-name. Facets
-// match search-shakeout: --title a,b  --company a,b  --company-urn 1,2  --geo id
+// match search-shakeout: --title a,b  --company a,b  --company-urn 1,2  --geo id1,id2
 // --network S,O  --limit N. Re-running is safe: a person already in the list is
 // skipped (unique on list_id + linkedin_urn).
 
@@ -58,7 +58,7 @@ function csv(v: string | undefined): string[] {
   return (v ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-function parseArgs(argv: string[]): {
+export function parseArgs(argv: string[]): {
   accountId: string;
   listId?: string;
   listName?: string;
@@ -87,8 +87,8 @@ function parseArgs(argv: string[]): {
   if (company.length) query.companyKeywords = company;
   const companyUrn = csv(flags.get('company-urn'));
   if (companyUrn.length) query.companyUrns = companyUrn;
-  const geo = flags.get('geo')?.trim();
-  if (geo) query.geoUrn = geo;
+  const geo = csv(flags.get('geo'));
+  if (geo.length) query.geoUrns = geo;
   if (network.length) query.network = network;
 
   return {
@@ -104,7 +104,7 @@ async function main(): Promise<void> {
   if (!accountId || (!listIdArg && !listName)) {
     console.error(
       'usage: source-to-list <accountId> (--list-name "..." | --list-id <uuid>) ' +
-        '--keywords "..." [--title a,b] [--company a,b] [--company-urn 1,2] [--geo id] ' +
+        '--keywords "..." [--title a,b] [--company a,b] [--company-urn 1,2] [--geo id1,id2] ' +
         '[--network S,O] [--limit N]',
     );
     process.exit(2);

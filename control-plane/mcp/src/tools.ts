@@ -56,6 +56,7 @@ const peopleFacetShape = {
   companyKeywords: z.array(z.string()).optional(),
   companyUrns: z.array(z.string()).optional(),
   geoUrn: z.string().optional(),
+  geoUrns: z.array(z.string()).optional(),
   network: z.array(z.enum(['F', 'S', 'O'])).optional(),
 };
 
@@ -68,6 +69,7 @@ function toPeopleQuery(a: {
   companyKeywords?: string[];
   companyUrns?: string[];
   geoUrn?: string;
+  geoUrns?: string[];
   network?: Array<'F' | 'S' | 'O'>;
   limit?: number;
 }): PeopleQuery {
@@ -77,6 +79,7 @@ function toPeopleQuery(a: {
     companyKeywords: a.companyKeywords,
     companyUrns: a.companyUrns,
     geoUrn: a.geoUrn,
+    geoUrns: a.geoUrns,
     network: a.network,
     limit: a.limit,
   };
@@ -133,8 +136,9 @@ const observeTools: ToolDef[] = [
     description:
       'Search LinkedIn people (free-tier Voyager). Pass a bare `query` string for ' +
       'a keyword search, or the structured facets (titleKeywords, companyKeywords, ' +
-      'companyUrns, geoUrn, network) for an ICP search. Seniority is approximated ' +
-      'via titleKeywords (manager/senior/director/head/lead).',
+      'companyUrns, geoUrns, network) for an ICP search. geoUrns takes multiple ' +
+      'geography ids (e.g. ["103644278","101174742"] for US + Canada) in one pass. ' +
+      'Seniority is approximated via titleKeywords (manager/senior/director/head/lead).',
     privileged: false,
     inputShape: {
       accountId: z.string(),
@@ -144,6 +148,7 @@ const observeTools: ToolDef[] = [
       companyKeywords: z.array(z.string()).optional(),
       companyUrns: z.array(z.string()).optional(),
       geoUrn: z.string().optional(),
+      geoUrns: z.array(z.string()).optional(),
       network: z.array(z.enum(['F', 'S', 'O'])).optional(),
       limit: z.number().int().positive().max(1000).default(25),
     },
@@ -156,7 +161,8 @@ const observeTools: ToolDef[] = [
     description:
       'Run a live LinkedIn people search and return the raw PersonSearchResult[] ' +
       '(no list write). Facets are free-tier Voyager: titleKeywords, ' +
-      'companyKeywords, companyUrns, geoUrn, network (F=1st/S=2nd/O=3rd+). There ' +
+      'companyKeywords, companyUrns, geoUrns (multiple geographies in one pass), ' +
+      'network (F=1st/S=2nd/O=3rd+). There ' +
       'is no Sales Navigator seniority/function facet, so a role like "manager or ' +
       'above" is approximated via titleKeywords (manager/senior/director/head/' +
       'lead). Use source_to_list to search AND persist into a lead list in one call.',

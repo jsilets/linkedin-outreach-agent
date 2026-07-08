@@ -133,6 +133,20 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
     // The old single `filters` param no longer exists.
     expect(params.get('filters')).toBeNull();
   });
+
+  it('serializes multiple geoUrns into one geoUrn facet param', () => {
+    const q: PeopleQuery = { keywords: 'ops', geoUrns: ['103644278', '101174742'] };
+    const params = new URL(buildVoyagerSearchUrl(q, 0)).searchParams;
+    // US + Canada in a single pass, mirroring currentCompany's JSON array.
+    expect(params.get('geoUrn')).toBe('["103644278","101174742"]');
+    expect(params.get('origin')).toBe('FACETED_SEARCH');
+  });
+
+  it('merges the legacy single geoUrn with geoUrns (deduped)', () => {
+    const q: PeopleQuery = { keywords: 'ops', geoUrn: '103644278', geoUrns: ['103644278', '101174742'] };
+    const params = new URL(buildVoyagerSearchUrl(q, 0)).searchParams;
+    expect(params.get('geoUrn')).toBe('["103644278","101174742"]');
+  });
 });
 
 describe('buildVoyagerGraphqlPath (direct API request)', () => {
@@ -157,6 +171,17 @@ describe('buildVoyagerGraphqlPath (direct API request)', () => {
     expect(path).toContain('(key:geoUrn,value:List(103644278))');
     expect(path).toContain('(key:network,value:List(S,O))');
     expect(path).toContain('start:20,');
+  });
+
+  it('joins multiple geoUrns into one geoUrn queryParameters tuple', () => {
+    const path = buildVoyagerGraphqlPath(
+      { keywords: 'ops', geoUrns: ['103644278', '101174742'] },
+      0,
+      10,
+    );
+    // One tuple, comma-joined like currentCompany, so a single search spans
+    // US + Canada.
+    expect(path).toContain('(key:geoUrn,value:List(103644278,101174742))');
   });
 
   it('folds title/company keywords into the keyword value', () => {

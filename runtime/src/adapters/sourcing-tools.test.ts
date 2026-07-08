@@ -102,6 +102,17 @@ describe('source_people tool', () => {
       limit: 25,
     });
   });
+
+  it('passes a multi-geo geoUrns facet through to the observe backend', async () => {
+    const { ports, observe } = makePorts([person(1)]);
+    await run(
+      'source_people',
+      { accountId: ACCT, geoUrns: ['103644278', '101174742'], limit: 25 },
+      ports,
+    );
+    // US + Canada targeted in one pass rather than two separate runs.
+    expect(observe.lastQuery?.geoUrns).toEqual(['103644278', '101174742']);
+  });
 });
 
 describe('create_list / list_lists / get_list round-trip', () => {
