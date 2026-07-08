@@ -113,7 +113,9 @@ describe('executor refuses without an allow', () => {
 
 describe('executor acts when allowed', () => {
   it('connect with a note drives the centralized selectors', async () => {
-    const page = new FakePage({ counts: { [SELECTORS.inviteErrorToast]: 0 } });
+    const page = new FakePage({
+      counts: { [SELECTORS.inviteErrorToast]: 0, [SELECTORS.pendingIndicator]: 0 },
+    });
     const action = makeAction();
     const res = await connect(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/jane/',
@@ -128,7 +130,9 @@ describe('executor acts when allowed', () => {
   });
 
   it('connect without a note skips the note selectors', async () => {
-    const page = new FakePage({ counts: { [SELECTORS.inviteErrorToast]: 0 } });
+    const page = new FakePage({
+      counts: { [SELECTORS.inviteErrorToast]: 0, [SELECTORS.pendingIndicator]: 0 },
+    });
     const action = makeAction();
     await connect(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/bob/',
@@ -141,7 +145,12 @@ describe('executor acts when allowed', () => {
     // Follow-by-default profile: the direct Connect button is absent, so the
     // executor must open "More" and click Connect from the dropdown.
     const page = new FakePage({
-      counts: { [SELECTORS.connectButton]: 0, [SELECTORS.inviteErrorToast]: 0 },
+      counts: {
+        [SELECTORS.connectButton]: 0,
+        [SELECTORS.inviteErrorToast]: 0,
+        [SELECTORS.pendingIndicator]: 0,
+        [SELECTORS.pendingInMenu]: 0,
+      },
     });
     const action = makeAction();
     const res = await connect(ctx(page, action, validToken(action)), {
@@ -160,13 +169,50 @@ describe('executor acts when allowed', () => {
   it('connect reports ok:false when LinkedIn refuses the invite', async () => {
     // The send click succeeds but LinkedIn shows an error toast ("invitation
     // not sent"). connect() must report failure, not a false success.
-    const page = new FakePage({ counts: { [SELECTORS.inviteErrorToast]: 1 } });
+    const page = new FakePage({
+      counts: { [SELECTORS.inviteErrorToast]: 1, [SELECTORS.pendingIndicator]: 0 },
+    });
     const action = makeAction();
     const res = await connect(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/erin/',
     });
     expect(res.ok).toBe(false);
     expect(res.detail).toContain('refused by LinkedIn');
+  });
+
+  it('connect stops without inviting when the profile is already pending', async () => {
+    // The action bar shows "Pending" instead of Connect. connect() must detect
+    // it up front and never click a Connect (which, on such a profile, would be
+    // a recommendation card in the sidebar).
+    const page = new FakePage({ counts: { [SELECTORS.pendingIndicator]: 1 } });
+    const action = makeAction();
+    const res = await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/frank/',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.detail).toContain('already pending');
+    expect(page.clicked(SELECTORS.connectButton)).toBe(false);
+    expect(page.clicked(SELECTORS.connectInMenu)).toBe(false);
+    expect(page.clicked(SELECTORS.sendWithoutNoteButton)).toBe(false);
+  });
+
+  it('connect detects a pending invite inside the More menu', async () => {
+    // No top-level Connect; opening More reveals "Pending", not Connect.
+    const page = new FakePage({
+      counts: {
+        [SELECTORS.connectButton]: 0,
+        [SELECTORS.pendingIndicator]: 0,
+        [SELECTORS.pendingInMenu]: 1,
+      },
+    });
+    const action = makeAction();
+    const res = await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/grace/',
+    });
+    expect(res.ok).toBe(true);
+    expect(res.detail).toContain('already pending');
+    expect(page.clicked(SELECTORS.moreActionsButton)).toBe(true);
+    expect(page.clicked(SELECTORS.connectInMenu)).toBe(false);
   });
 
   it('connect throws when no More menu exposes a Connect entry', async () => {
@@ -178,6 +224,8 @@ describe('executor acts when allowed', () => {
         [SELECTORS.connectButton]: 0,
         [SELECTORS.moreActionsButton]: 2,
         [SELECTORS.connectInMenu]: 0,
+        [SELECTORS.pendingIndicator]: 0,
+        [SELECTORS.pendingInMenu]: 0,
       },
     });
     const action = makeAction();
