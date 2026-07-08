@@ -116,6 +116,14 @@ function todayIso(): string {
  * There is NO free-text title/company facet on free tier; title and company
  * keywords fold into the keyword box.
  */
+/** All geo facet ids for a query: the legacy single geoUrn plus the geoUrns
+ * array, in that order, deduped. Lets a search target multiple geographies
+ * (e.g. US + Canada) in one pass, mirroring how companyUrns is a plain list. */
+export function collectGeoUrns(query: PeopleQuery): string[] {
+  const all = [...(query.geoUrn ? [query.geoUrn] : []), ...(query.geoUrns ?? [])];
+  return [...new Set(all)];
+}
+
 export function buildVoyagerSearchUrl(query: PeopleQuery, start: number): string {
   const url = new URL('https://www.linkedin.com/search/results/people/');
   const params = url.searchParams;
@@ -130,7 +138,8 @@ export function buildVoyagerSearchUrl(query: PeopleQuery, start: number): string
     .filter((s): s is string => !!s && s.length > 0);
   if (keywordParts.length) params.set('keywords', keywordParts.join(' '));
 
-  const hasFacets = !!query.geoUrn || !!query.companyUrns?.length || !!query.network?.length;
+  const geoUrns = collectGeoUrns(query);
+  const hasFacets = geoUrns.length > 0 || !!query.companyUrns?.length || !!query.network?.length;
   // origin is LinkedIn's own entry-tracking token: FACETED_SEARCH when filters
   // are applied, SWITCH_SEARCH_VERTICAL for a plain keyword search.
   params.set('origin', hasFacets ? 'FACETED_SEARCH' : 'SWITCH_SEARCH_VERTICAL');
@@ -139,7 +148,7 @@ export function buildVoyagerSearchUrl(query: PeopleQuery, start: number): string
   // brackets/quotes; LinkedIn's client decodes them back, exactly as the browser
   // does when a human clicks the filter, so either form is accepted.
   if (query.network?.length) params.set('network', JSON.stringify(query.network));
-  if (query.geoUrn) params.set('geoUrn', JSON.stringify([query.geoUrn]));
+  if (geoUrns.length) params.set('geoUrn', JSON.stringify(geoUrns));
   if (query.companyUrns?.length) params.set('currentCompany', JSON.stringify(query.companyUrns));
 
   // People search paginates by `page` (1-based).
@@ -188,7 +197,8 @@ export function buildVoyagerGraphqlPath(
   if (query.companyUrns?.length) {
     facets.push(`(key:currentCompany,value:List(${query.companyUrns.join(',')}))`);
   }
-  if (query.geoUrn) facets.push(`(key:geoUrn,value:List(${query.geoUrn}))`);
+  const geoUrns = collectGeoUrns(query);
+  if (geoUrns.length) facets.push(`(key:geoUrn,value:List(${geoUrns.join(',')}))`);
   if (query.network?.length) facets.push(`(key:network,value:List(${query.network.join(',')}))`);
   facets.push('(key:resultType,value:List(PEOPLE))');
 

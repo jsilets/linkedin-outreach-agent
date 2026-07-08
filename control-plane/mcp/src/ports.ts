@@ -76,8 +76,12 @@ export interface PeopleQuery {
   companyKeywords?: string[];
   /** Company entity ids for the currentCompany facet (e.g. "1035"); OR-ed. */
   companyUrns?: string[];
-  /** Geography facet id (e.g. "103644278" for United States). */
+  /** Single geography facet id (e.g. "103644278" for United States). Kept for
+   * back-compat; prefer geoUrns. When both are set they are merged. */
   geoUrn?: string;
+  /** Geography facet ids for the geoUrn facet (e.g. ["103644278","101174742"]
+   * for US + Canada); OR-ed, like companyUrns. */
+  geoUrns?: string[];
   /** Connection-degree facet: F=1st, S=2nd, O=3rd+. */
   network?: Array<'F' | 'S' | 'O'>;
   /** Max results to return across pages; capped at the ~1000 flagship limit. */
