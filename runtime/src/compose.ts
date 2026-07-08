@@ -50,9 +50,15 @@ import {
   FakeObserve,
   LeadListAdapter,
 } from './adapters/mcp-ports.js';
-import { LiveObserve, LiveInboxReader, InMemorySearchBudget } from './adapters/observe-live.js';
+import {
+  LiveObserve,
+  LiveInboxReader,
+  LiveConnectionsReader,
+  InMemorySearchBudget,
+} from './adapters/observe-live.js';
 import { makeDispatchTick, type DispatchTick } from './dispatch/index.js';
 import { ReplyTick } from './dispatch/reply-tick.js';
+import { AcceptanceTick } from './dispatch/acceptance-tick.js';
 import { PersistenceAdapter } from './adapters/persistence.js';
 import { FakeExecutor } from './executor/fake-executor.js';
 import { resolveProxyIdentity } from '@loa/account-runner';
@@ -89,6 +95,10 @@ export interface Runtime {
    * inboxes); undefined in fake mode. A host starts it with
    * replyTick.start(intervalMs); compose never starts it. */
   replyTick?: ReplyTick;
+  /** The acceptance-detection tick. Only built with a real session (it reads
+   * the live connections list); undefined in fake mode. A host starts it with
+   * acceptanceTick.start(intervalMs); compose never starts it. */
+  acceptanceTick?: AcceptanceTick;
   /** Drive the agent loop once for one target; returns the terminal state. */
   runLoopOnce(accountId: string, targetId: string): Promise<LoopState>;
   /** Rehydrate safety state (weekly counter + soft-signal streak) from the
@@ -220,6 +230,8 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
   const dispatch = makeDispatchTick({
     sequence: store.sequence,
     gate: { safety, approval: approvals, executor },
+    // Park at 'invited' after a connect and gate message steps on the stage.
+    targets: store.target,
   });
 
   // --- reply-detection tick (additive) -------------------------------------
@@ -245,6 +257,26 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     });
   }
   // --- end reply-detection tick --------------------------------------------
+
+  // --- acceptance-detection tick (additive) --------------------------------
+  // Only meaningful with a real session (it reads the live connections list over
+  // the page's Voyager relationships endpoint). Releases cursors parked in
+  // 'awaiting_connection' by the dispatch tick once the invite is accepted, so a
+  // message step only fires against a real 1st-degree connection. Built here but
+  // never started by compose; a host starts it with
+  // acceptanceTick.start(acceptancePollIntervalMs).
+  let acceptanceTick: AcceptanceTick | undefined;
+  if (sessionProvider) {
+    const connections = new LiveConnectionsReader({
+      pageFor: (id) => sessionProvider!.pageFor(id),
+    });
+    acceptanceTick = new AcceptanceTick({
+      connections,
+      sequence: store.sequence,
+      targets: store.target,
+    });
+  }
+  // --- end acceptance-detection tick ---------------------------------------
 
   // agent loop persistence writes through the same orchestrator + approvals.
   const persistence = new PersistenceAdapter(orchestrator, approvals, store);
@@ -273,6 +305,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     admin,
     dispatch,
     ...(replyTick ? { replyTick } : {}),
+    ...(acceptanceTick ? { acceptanceTick } : {}),
     async runLoopOnce(accountId: string, targetId: string): Promise<LoopState> {
       const { account, campaign: camp, target } = await loadLoopContext(
         store,
@@ -299,6 +332,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
     async close(): Promise<void> {
       dispatch.stop();
       replyTick?.stop();
+      acceptanceTick?.stop();
       if (sessionProvider) await sessionProvider.close();
       await store.close();
     },

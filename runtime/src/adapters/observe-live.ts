@@ -377,6 +377,132 @@ function normalizeEvent(threadUrn: string, event: MessagingEvent | undefined): I
 }
 
 // ---------------------------------------------------------------------------
+// Connections reading — recently accepted connections, for acceptance gating.
+// ---------------------------------------------------------------------------
+
+/**
+ * One accepted connection as the acceptance tick needs it: the connected
+ * person's profile urn, a /in/ profile url when derivable, and when the
+ * connection formed if the payload carries it. Shape mirrors InboundMessage so
+ * the SAME identity matcher maps it back to an enrolled target.
+ */
+export interface AcceptedConnection {
+  /** The connection's profile urn (urn:li:fsd_profile:... / urn:li:member:...). */
+  entityUrn: string;
+  /** https://www.linkedin.com/in/<publicId>/ when the payload carries one. */
+  profileUrl?: string;
+  /** When LinkedIn timestamps the connection (createdAt). */
+  connectedAt?: Date;
+}
+
+/** The slice of the network the acceptance tick drives per account. */
+export interface ConnectionsReaderPort {
+  readConnections(accountId: string, limit: number): Promise<AcceptedConnection[]>;
+}
+
+/**
+ * Static connections reader for fake-executor mode: returns [] so composing
+ * with executor=fake never touches a browser. Mirrors how the reply tick simply
+ * has no live inbox in fake mode. Seed `connections` in a test to drive matches.
+ */
+export class StaticConnectionsReader implements ConnectionsReaderPort {
+  constructor(private readonly connections: AcceptedConnection[] = []) {}
+  async readConnections(): Promise<AcceptedConnection[]> {
+    return this.connections;
+  }
+}
+
+/** Voyager relationships connections endpoint. Returns the account's own
+ * 1st-degree connections most-recently-added first; free on a normal session.
+ * The count caps how many come back. */
+function connectionsPath(count: number): string {
+  return (
+    `/voyager/api/relationships/connections` +
+    `?count=${count}&q=search&sortType=RECENTLY_ADDED&start=0`
+  );
+}
+
+/**
+ * LiveConnectionsReader: read an account's recently-accepted connections by
+ * issuing a direct authenticated GET to the Voyager relationships endpoint from
+ * the account's own logged-in page (page.voyagerGet), the SAME same-origin
+ * primitive searchPeople and the inbox reader use. Sorted most-recent first so a
+ * parked target that just accepted surfaces near the top.
+ *
+ * STILL TO VERIFY LIVE: the endpoint path and the exact field names against a
+ * real relationships payload. Prior art (tomquirk/linkedin-api) hits
+ * /voyager/api/relationships/connections with count/start/sortType and reads
+ * elements[].miniProfile.{entityUrn,publicIdentifier}; the connection timestamp
+ * lives on the element (createdAt, epoch ms). These are best-effort guesses:
+ * normalizeConnectionsResponse is exported so the ops shakeout can dump a raw
+ * body and adjust the endpoint/names.
+ */
+export class LiveConnectionsReader implements ConnectionsReaderPort {
+  constructor(private readonly pages: PageProvider) {}
+
+  async readConnections(accountId: string, limit: number): Promise<AcceptedConnection[]> {
+    const page = await this.pages.pageFor(accountId);
+    await ensureOnLinkedIn(page);
+    const { status, body } = await page.voyagerGet(connectionsPath(limit), {
+      accept: 'application/json',
+    });
+    if (status !== 200) {
+      throw new Error(
+        `voyager connections returned HTTP ${status}; the session may be invalid`,
+      );
+    }
+    return normalizeConnectionsResponse(body).slice(0, limit);
+  }
+}
+
+/**
+ * Walk a Voyager relationships connections response into AcceptedConnection[].
+ * Reads both the decorated (`elements[]`) and normalized (`included[]`) shapes,
+ * drops anything missing a profile urn, and sorts most-recent first. Exported
+ * for the ops shakeout to run over a captured raw payload.
+ */
+export function normalizeConnectionsResponse(body: unknown): AcceptedConnection[] {
+  const root = body as VoyagerConnectionsResponse | undefined;
+  const elements =
+    root?.elements ?? root?.data?.elements ?? asConnectionElements(root?.included);
+
+  const out: AcceptedConnection[] = [];
+  for (const el of elements ?? []) {
+    const conn = normalizeConnectionElement(el);
+    if (conn) out.push(conn);
+  }
+  // Most recent first so a just-accepted invite surfaces near the top.
+  out.sort((a, b) => (b.connectedAt?.getTime() ?? 0) - (a.connectedAt?.getTime() ?? 0));
+  return out;
+}
+
+/** Pull connection entities out of a normalized `included[]` list (those that
+ * carry a miniProfile). */
+function asConnectionElements(
+  included: ConnectionEntity[] | undefined,
+): ConnectionElement[] | undefined {
+  if (!Array.isArray(included)) return undefined;
+  return included.filter((el) => !!el?.miniProfile || !!el?.connectedMemberResolutionResult);
+}
+
+function normalizeConnectionElement(
+  el: ConnectionElement | undefined,
+): AcceptedConnection | null {
+  if (!el) return null;
+  const profile = el.miniProfile ?? el.connectedMemberResolutionResult;
+  const entityUrn = profile?.entityUrn ?? el.entityUrn;
+  if (!entityUrn) return null;
+
+  const publicId = profile?.publicIdentifier;
+  const connectedAt = el.createdAt;
+  return {
+    entityUrn,
+    ...(publicId ? { profileUrl: `https://www.linkedin.com/in/${publicId}/` } : {}),
+    ...(typeof connectedAt === 'number' ? { connectedAt: new Date(connectedAt) } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // LiveObserve
 // ---------------------------------------------------------------------------
 
@@ -649,6 +775,32 @@ interface MessagingEvent {
 /** Any entity in the normalized `included[]`; only conversations carry events. */
 type MessagingEntity = Conversation & Record<string, unknown>;
 
+// --- relationships connections response (connections reader) --------------
+
+interface VoyagerConnectionsResponse {
+  elements?: ConnectionElement[];
+  data?: { elements?: ConnectionElement[] };
+  /** Flat entity list in the normalized response shape. */
+  included?: ConnectionEntity[];
+}
+
+interface ConnectionMiniProfile {
+  entityUrn?: string;
+  publicIdentifier?: string;
+}
+
+interface ConnectionElement {
+  entityUrn?: string;
+  /** Connection timestamp, epoch ms. */
+  createdAt?: number;
+  miniProfile?: ConnectionMiniProfile;
+  /** Newer dash shape names the resolved profile differently. // GUESS. */
+  connectedMemberResolutionResult?: ConnectionMiniProfile;
+}
+
+/** Any entity in the normalized `included[]`; connections carry a miniProfile. */
+type ConnectionEntity = ConnectionElement & Record<string, unknown>;
+
 // ---------------------------------------------------------------------------
 // STILL TO VERIFY LIVE
 // ---------------------------------------------------------------------------
@@ -666,3 +818,11 @@ type MessagingEntity = Conversation & Record<string, unknown>;
 // from.*.miniProfile.entityUrn, deliveredAt), and the inbound/outbound marker
 // all need one real run to confirm. normalizeInboxResponse is exported so the
 // ops shakeout can dump a raw body and adjust the names.
+//
+// The connections reader (readConnections / normalizeConnectionsResponse) is
+// UNPROVEN too: the /voyager/api/relationships/connections path + params
+// (count/start/sortType=RECENTLY_ADDED, q=search), the element field names
+// (miniProfile.{entityUrn,publicIdentifier}, createdAt epoch ms), and whether
+// the dash build renamed miniProfile all need one real run.
+// normalizeConnectionsResponse is exported so the shakeout can dump a raw body
+// and adjust the endpoint/names.

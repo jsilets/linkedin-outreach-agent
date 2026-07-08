@@ -32,6 +32,7 @@ import type { db as shared } from '@loa/shared';
 import type { ReplyRouter } from '@loa/orchestrator';
 import type { TargetRepoPort } from '@loa/orchestrator';
 import type { InboundMessage, InboxReaderPort } from '../adapters/observe-live.js';
+import { matchesIdentity } from './match-target.js';
 
 type TargetProgressRow = shared.TargetProgressRow;
 type TargetRow = shared.TargetRow;
@@ -77,39 +78,13 @@ export interface ReplyTickDeps {
   onOutcome?: (o: ReplyOutcome) => void;
 }
 
-/** Trailing id of a urn (urn:li:person:ABC -> abc), lowercased for comparison. */
-function urnTail(urn: string): string {
-  const inner = urn.includes(':') ? urn.slice(urn.lastIndexOf(':') + 1) : urn;
-  // fsd_entityResult wraps a parenthesised inner urn; strip parens/quotes.
-  return inner.replace(/[()"]/g, '').toLowerCase();
-}
-
-/** /in/<slug> vanity from a profile url, lowercased. */
-function vanityOf(url: string): string | undefined {
-  const m = url.match(/\/in\/([^/?#]+)/);
-  return m?.[1] ? decodeURIComponent(m[1]).toLowerCase() : undefined;
-}
-
 /**
- * True if an inbound message's sender is this target. A target's linkedinUrn is
- * either a urn (urn:li:person:... / a profile url) captured at sourcing; the
- * inbound carries a sender urn and sometimes a /in/ profile url. Match on any of
- * the identities we can compare: exact urn, urn-tail id, or vanity slug.
+ * True if an inbound message's sender is this target. Delegates to the shared
+ * identity matcher (the acceptance tick uses the same one against accepted
+ * connections) so reply-mapping and accept-mapping stay identical.
  */
 export function matchesTarget(msg: InboundMessage, target: TargetRow): boolean {
-  const ref = target.linkedinUrn.trim();
-  const senderTail = urnTail(msg.senderUrn);
-  const refTail = urnTail(ref);
-  if (senderTail && senderTail === refTail) return true;
-
-  // Compare vanity slugs when either side is a profile url.
-  const refVanity = ref.includes('/in/') ? vanityOf(ref) : undefined;
-  const msgVanity = msg.profileUrl ? vanityOf(msg.profileUrl) : undefined;
-  if (refVanity && msgVanity && refVanity === msgVanity) return true;
-  // The ref may be a bare public id and the sender a matching /in/ vanity.
-  if (msgVanity && refTail && msgVanity === refTail) return true;
-  if (refVanity && senderTail && refVanity === senderTail) return true;
-  return false;
+  return matchesIdentity(msg.senderUrn, msg.profileUrl, target);
 }
 
 /** Stable identity for a single inbound message, for the seen-set. */

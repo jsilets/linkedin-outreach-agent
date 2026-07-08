@@ -54,6 +54,14 @@ export interface RuntimeConfig {
    * that should watch for prospect replies and pull them out of the funnel.
    */
   replyPollIntervalMs?: number;
+  /**
+   * Poll interval (ms) for the acceptance-detection tick. Unset means it does
+   * NOT auto-start (same opt-in rule as the reply tick): composing the runtime
+   * never reads the connections list on its own. Set LOA_ACCEPTANCE_POLL_INTERVAL_MS
+   * on a host that should watch for accepted invites and release parked cursors
+   * from a connect step into the next step.
+   */
+  acceptancePollIntervalMs?: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -77,5 +85,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
   if (env.LOA_DISPATCH_INTERVAL_MS) cfg.dispatchIntervalMs = Number(env.LOA_DISPATCH_INTERVAL_MS);
   if (env.LOA_REPLY_POLL_INTERVAL_MS)
     cfg.replyPollIntervalMs = Number(env.LOA_REPLY_POLL_INTERVAL_MS);
+  if (env.LOA_ACCEPTANCE_POLL_INTERVAL_MS)
+    cfg.acceptancePollIntervalMs = Number(env.LOA_ACCEPTANCE_POLL_INTERVAL_MS);
   return cfg;
 }

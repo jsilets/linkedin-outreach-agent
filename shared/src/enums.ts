@@ -107,7 +107,10 @@ export type CampaignStepType = (typeof CAMPAIGN_STEP_TYPES)[number];
 // manual handling and stops any further steps. 'awaiting_approval' is a park
 // state: a step routed to human approval waits here (not due) so the dispatch
 // tick does not re-enqueue an approval on every pass; it resolves back to
-// 'in_progress' on approve, or terminal 'skipped' on reject.
+// 'in_progress' on approve, or terminal 'skipped' on reject. 'awaiting_connection'
+// is a park state after a connect step (not due): the invite was sent and the
+// cursor waits for it to be accepted. The acceptance tick releases it to the next
+// step once the target connects, or a reply pulls it out.
 export const PROGRESS_STATES = [
   'pending',
   'in_progress',
@@ -116,5 +119,6 @@ export const PROGRESS_STATES = [
   'skipped',
   'replied',
   'awaiting_approval',
+  'awaiting_connection',
 ] as const;
 export type ProgressState = (typeof PROGRESS_STATES)[number];
