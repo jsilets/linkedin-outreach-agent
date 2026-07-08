@@ -74,13 +74,24 @@ async function isPresent(ctx: ActionContext, selector: string): Promise<boolean>
  * candidate and keep the one whose menu actually exposes a Connect entry rather
  * than blindly clicking the first. Throws if none do.
  */
-async function openConnectMenu(ctx: ActionContext): Promise<void> {
+async function openConnectMenu(ctx: ActionContext): Promise<'connect' | 'pending'> {
   const candidates: LocatorPort = ctx.page.locator(SELECTORS.moreActionsButton);
   const n = await candidates.count();
   for (let i = 0; i < n; i++) {
-    await clickLoc(ctx, candidates.nth(i));
+    const cand = candidates.nth(i);
+    // Only click candidates that actually become visible; a scoped selector can
+    // still match a hidden/stale "More" and clickLoc's default wait would hang.
+    const visible = await cand
+      .waitFor({ state: 'visible', timeout: 1500 })
+      .then(() => true)
+      .catch(() => false);
+    if (!visible) continue;
+    await clickLoc(ctx, cand);
     await gap(ctx);
-    if (await isPresent(ctx, SELECTORS.connectInMenu)) return;
+    // Check Pending before Connect: an already-invited profile shows "Pending"
+    // in this menu and no Connect entry.
+    if (await isPresent(ctx, SELECTORS.pendingInMenu)) return 'pending';
+    if (await isPresent(ctx, SELECTORS.connectInMenu)) return 'connect';
   }
   throw new Error('connect: no "More" menu exposed a Connect entry');
 }
@@ -97,7 +108,19 @@ async function sendWithoutNote(ctx: ActionContext): Promise<void> {
   // render (an instant presence check can miss it mid-animation). The suggested
   // note is a contenteditable div we simply decline — never typed into here.
   const loc = ctx.page.locator(SELECTORS.sendWithoutNoteButton).first();
-  await loc.waitFor({ state: 'visible' });
+  const appeared = await loc
+    .waitFor({ state: 'visible', timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!appeared) {
+    // No modal appeared. Some profiles create the invite immediately on Connect
+    // with no confirmation modal; if the profile is now Pending the invite went
+    // through, so treat that as success rather than a false failure (the old
+    // behavior hard-timed-out here and reported a send that had succeeded as an
+    // error).
+    if (await isPresent(ctx, SELECTORS.pendingIndicator)) return;
+    throw new Error('connect: invite modal did not appear and no pending state followed');
+  }
   await clickLoc(ctx, loc);
 }
 
@@ -126,6 +149,21 @@ export async function connect(
   guard(ctx);
   await ctx.page.goto(params.profileUrl, { waitUntil: 'domcontentloaded' });
   await gap(ctx);
+  // The action bar hydrates progressively, so probing too early reads 0 matches
+  // for every control and races us into the wrong branch. Wait for the "More"
+  // overflow — present on essentially every profile — to appear before probing.
+  await ctx.page
+    .locator(SELECTORS.moreActionsButton)
+    .first()
+    .waitFor({ state: 'visible', timeout: 10_000 })
+    .catch(() => {});
+  // Never re-invite. If an invite is already outstanding, the profile shows a
+  // "Pending" action instead of Connect; stop cleanly and report it rather than
+  // hunting for a Connect that isn't there (which previously fell through to a
+  // recommendation card or timed out on a modal that never opens).
+  if (await isPresent(ctx, SELECTORS.pendingIndicator)) {
+    return { ok: true, detail: 'already pending; no invite sent' };
+  }
   // Two ways in: a top-level Connect button, or — on Follow-by-default
   // profiles that hide it — the "More" overflow menu holding Connect. Probe
   // for the direct button first and fall back to the menu.
@@ -135,7 +173,10 @@ export async function connect(
     await humanClick(ctx, SELECTORS.connectButton);
   } else {
     via = 'more-menu';
-    await openConnectMenu(ctx);
+    const menu = await openConnectMenu(ctx);
+    if (menu === 'pending') {
+      return { ok: true, detail: 'already pending; no invite sent (more-menu)' };
+    }
     await humanClick(ctx, SELECTORS.connectInMenu);
   }
   await gap(ctx);

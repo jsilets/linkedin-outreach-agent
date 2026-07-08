@@ -14,25 +14,50 @@ export const SELECTORS = {
   // open-source runners, then re-verified live via `npm run selector-scan`.
   //
   // Primary top-level "Connect" button, present when the profile offers it.
+  // Scoped to the profile action bar: inside <main> but NOT inside any <aside>.
+  // Critical (live-verified 2026-07): LinkedIn renders "People you may know"
+  // recommendation cards inside an <aside> WITHIN <main>, and each card has its
+  // own "Connect" button. An unscoped selector matched those and made the flow
+  // click a stranger's Connect when the real profile was Follow-by-default or
+  // already Pending. Class names are hashed, so anchor on aria-label + the
+  // aside exclusion (XPath ancestor axis) rather than any class or the h1
+  // (obfuscated profiles ship no <h1>). Matches OpenOutreach's top-card scope.
   connectButton:
-    'button[aria-label*="Invite"][aria-label*="connect"], ' +
-    'button[aria-label*="Invite"][aria-label*="to connect"], ' +
-    'button:has(span:text-is("Connect"))',
+    'xpath=//main//*[(self::button or self::a) and not(ancestor::aside) and (' +
+    '(contains(@aria-label,"Invite") and contains(@aria-label,"connect")) or ' +
+    './/span[normalize-space(.)="Connect"])]',
   // "More" overflow ("...") button on the profile card. Holds the Connect
   // entry when there is no top-level Connect button (e.g. Follow-by-default
-  // profiles). The bare aria-label="More" is what live LinkedIn ships today;
-  // scoped to <main> because the global nav and messaging overlay carry their
-  // own "More" buttons (live scan: 5 page-wide, 2 inside main). The executor
-  // clicks .first — the profile action bar renders first within main.
+  // profiles). Scoped the same way as connectButton (main, never an <aside>
+  // recommendation card); the global nav and messaging overlay live outside
+  // <main> so they are excluded too. The executor tries each visible match.
   moreActionsButton:
-    'main button[aria-label="More"], ' +
-    'main button[aria-label*="More actions"]',
+    'xpath=//main//button[not(ancestor::aside) and ' +
+    '(@aria-label="More" or contains(@aria-label,"More actions"))]',
   // "Connect" entry inside the opened More menu. The dropdown renders as a
   // portal outside the profile card, so this is matched page-wide, not scoped.
   connectInMenu:
     'div[role="button"][aria-label^="Invite"][aria-label*="to connect"], ' +
     '[role="menuitem"]:has-text("Connect"), ' +
     'div[role="button"]:has-text("Connect")',
+  // Already-invited signal on the profile action bar: LinkedIn shows a "Pending"
+  // control in place of Connect once an invite is outstanding. Live-verified
+  // (2026-07-08, authenticated): it is an <a>, NOT a <button>, with
+  // aria-label="Pending, click to withdraw invitation sent to <Name>" — an
+  // earlier button-only selector missed it entirely. Match anchor OR button.
+  // Scoped like connectButton (main, never an <aside> card) so a recommendation
+  // card's state never reads as this profile's. connect() checks this FIRST and
+  // stops without re-inviting — the fix for "didn't notice the invite was
+  // pending".
+  pendingIndicator:
+    'xpath=//main//*[(self::a or self::button) and not(ancestor::aside) and ' +
+    '(contains(@aria-label,"Pending") or normalize-space(.)="Pending")]',
+  // "Pending" entry inside the opened More menu (a body-level portal, so matched
+  // page-wide like connectInMenu). The menu-path twin of pendingIndicator;
+  // mirrors Linki's pending check before it clicks Connect.
+  pendingInMenu:
+    '[role="menuitem"]:has-text("Pending"), ' +
+    'div[role="button"][aria-label*="Pending"]',
   // "Add a note" button in the invite modal.
   addNoteButton: 'button[aria-label*="Add a note"]',
   // Note field in the invite modal. Live-observed (2026-07): modern LinkedIn
