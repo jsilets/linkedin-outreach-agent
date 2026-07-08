@@ -63,8 +63,7 @@ describe('list_accounts tool', () => {
     await store.account.create({
       id: ACCT,
       handle: 'josh-silets',
-      state: 'Warming',
-      warmupDay: 5,
+      state: 'Active',
       proxyBinding: { proxyId: 'p', region: 'us-east', sticky: true },
       health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: new Date() },
       budget: { date: today, caps, used },
@@ -79,7 +78,7 @@ describe('list_accounts tool', () => {
     }>;
 
     expect(accounts).toHaveLength(1);
-    expect(accounts[0]).toMatchObject({ id: ACCT, handle: 'josh-silets', state: 'Warming' });
+    expect(accounts[0]).toMatchObject({ id: ACCT, handle: 'josh-silets', state: 'Active' });
   });
 });
 

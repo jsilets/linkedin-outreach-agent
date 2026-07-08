@@ -21,8 +21,6 @@ function caps(partial: Partial<CapTable>): CapTable {
 export interface SafetyConfig {
   /** Steady-state caps for an Active account. */
   active: CapTable;
-  /** Warmup caps keyed by week (1..4). Week 4 equals steady state. */
-  warmupByWeek: Record<1 | 2 | 3 | 4, CapTable>;
   /**
    * Multiplier applied to the current caps when an account is Throttled.
    * 0.5 means budgets are halved.
@@ -40,16 +38,26 @@ export interface SafetyConfig {
    * escalate an account into Cooldown.
    */
   softSignalCooldownThreshold: number;
-  /** Length of the warmup ramp in days before an account may go Active. */
-  warmupRampDays: number;
+  /**
+   * Minimum gap between any two outbound actions on one account, in ms. The
+   * daily caps and the weekly ceiling bound totals; this bounds spacing so
+   * activity looks human, not a burst of back-to-back sends.
+   */
+  minActionGapMs: number;
+  /**
+   * Extra random spread added on top of minActionGapMs, in ms. The effective
+   * gap for each action is minActionGapMs + rand(0, actionGapJitterMs), so a
+   * fixed cadence never emerges.
+   */
+  actionGapJitterMs: number;
 }
 
-// Caps follow the architecture's safety model:
-//   Warming: connect 5-15, message 5-15, view_profile 15-25, follow 3-10
-//            (ramped by warmup week; week 1 is organic-only).
-//   Active:  connect 20, message 20, view_profile 40-60, follow 15.
+// Steady-state daily caps for an Active account:
+//   connect 20, message 20, view_profile 60, follow 15.
 // view_profile/follow are set at the top of their documented ranges since
-// they are the lowest-risk actions.
+// they are the lowest-risk actions. There is no warmup ramp: an established
+// account operates at these caps from the start, bounded by the weekly invite
+// ceiling and the per-action pacing gap below.
 export const DEFAULT_CONFIG: SafetyConfig = {
   active: caps({
     connect: 20,
@@ -59,45 +67,11 @@ export const DEFAULT_CONFIG: SafetyConfig = {
     withdraw_invite: 10,
     react: 30,
   }),
-  warmupByWeek: {
-    // Week 1: organic only. No connects, no messages.
-    1: caps({
-      connect: 0,
-      message: 0,
-      view_profile: 15,
-      follow: 3,
-      react: 10,
-    }),
-    // Week 2: 5-10 connects/day, no note (messages still off).
-    2: caps({
-      connect: 10,
-      message: 0,
-      view_profile: 20,
-      follow: 6,
-      react: 15,
-    }),
-    // Week 3: 10-15 connects/day with notes (messages allowed).
-    3: caps({
-      connect: 15,
-      message: 10,
-      view_profile: 25,
-      follow: 10,
-      withdraw_invite: 5,
-      react: 20,
-    }),
-    // Week 4+: ramp to steady state; account becomes eligible for Active.
-    4: caps({
-      connect: 20,
-      message: 20,
-      view_profile: 40,
-      follow: 15,
-      withdraw_invite: 10,
-      react: 30,
-    }),
-  },
   throttleMultiplier: 0.5,
   weeklyInviteCeiling: 100,
   acceptanceRateFloor: 0.35,
   softSignalCooldownThreshold: 2,
-  warmupRampDays: 28,
+  // 4 min floor + up to 6 min jitter => a 4-10 min gap between any two actions.
+  minActionGapMs: 240_000,
+  actionGapJitterMs: 360_000,
 };

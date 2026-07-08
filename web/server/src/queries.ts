@@ -208,7 +208,6 @@ export interface AccountRow {
   id: string;
   handle: string;
   state: string;
-  warmupDay: number;
 }
 
 export async function listAccounts(): Promise<AccountRow[]> {
@@ -217,7 +216,6 @@ export async function listAccounts(): Promise<AccountRow[]> {
       id: accounts.id,
       handle: accounts.handle,
       state: accounts.state,
-      warmupDay: accounts.warmupDay,
     })
     .from(accounts)
     .orderBy(asc(accounts.handle));
@@ -261,8 +259,7 @@ export async function linkAccount(input: LinkAccountInput): Promise<LinkAccountR
     .insert(accounts)
     .values({
       handle: input.handle,
-      state: 'Warming',
-      warmupDay: 0,
+      state: 'Active',
       proxyBinding: { proxyId: `paste-${input.handle}`, region: 'local', sticky: false },
       health: { acceptanceRate: 0, replyRate: 0, challengesLast7d: 0, lastCheckedAt: new Date() },
       budget: { date: today, caps: emptyUsed(), used: emptyUsed() },

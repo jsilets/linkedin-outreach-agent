@@ -24,7 +24,6 @@ function makeAccount(): Account {
       caps: { connect: 20, message: 20, view_profile: 20, follow: 20, withdraw_invite: 20, react: 20 },
       used: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },
     },
-    warmupDay: 5,
     createdAt: new Date(),
     updatedAt: new Date(),
   };

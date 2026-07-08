@@ -35,6 +35,10 @@ import {
   withdrawInvite as runnerWithdrawInvite,
 } from '@loa/account-runner';
 import type { RuntimeStore } from '../store/index.js';
+import type {
+  StoreBackedActionPacer,
+  StoreBackedWeeklyInviteCounter,
+} from '../adapters/safety-state.js';
 import { rowToAccount, rowToTarget } from '../mappers.js';
 
 /** Resolves the live browser session for an account. In P0 this comes from
@@ -50,6 +54,12 @@ export interface AccountRunnerExecutorDeps {
   store: RuntimeStore;
   runnerSafety: RunnerSafetyPort;
   session: SessionProvider;
+  /** Weekly-invite counter kept warm on each successful connect (matches the
+   * fake executor). Optional so a wiring test can omit it. */
+  weekly?: StoreBackedWeeklyInviteCounter;
+  /** Action pacer kept warm on every successful action so the gate spaces the
+   * next one apart. Optional so a wiring test can omit it. */
+  pacer?: StoreBackedActionPacer;
   now?: () => Date;
   /** Between-step sleeper for the human-paced actions. Real (randomized 8-20s)
    * gaps by default; a test injects a no-op to run the wiring without waiting. */
@@ -62,6 +72,8 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
   private readonly store: RuntimeStore;
   private readonly runnerSafety: RunnerSafetyPort;
   private readonly session: SessionProvider;
+  private readonly weekly?: StoreBackedWeeklyInviteCounter;
+  private readonly pacer?: StoreBackedActionPacer;
   private readonly now: () => Date;
   private readonly sleep?: Sleeper;
   private readonly rng?: () => number;
@@ -70,6 +82,8 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     this.store = deps.store;
     this.runnerSafety = deps.runnerSafety;
     this.session = deps.session;
+    this.weekly = deps.weekly;
+    this.pacer = deps.pacer;
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep;
     this.rng = deps.rng;
@@ -162,6 +176,12 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     // runtime store surface yet, so we append an audit event; the executed
     // Action is returned with executedAt set for callers.
     const executedAt = this.now();
+    // Keep the in-memory safety state warm exactly like the fake executor: the
+    // weekly ceiling counts connects, the pacer spaces every action type. This
+    // was previously missing on the real path, so live sends never advanced
+    // either counter until the next boot-time rehydrate.
+    if (type === 'connect') this.weekly?.record(accountId, executedAt);
+    this.pacer?.record(accountId, executedAt);
     await this.store.event.append({
       accountId,
       kind: 'action_executed',

@@ -16,7 +16,7 @@
 // so the in-memory streak and account state are reconstructed from the log.
 
 import type { Account, Signal, SignalKind } from '@loa/shared';
-import type { WeeklyInviteCounter } from '@loa/safety';
+import type { RecentActionClock, WeeklyInviteCounter } from '@loa/safety';
 import type { RuntimeStore } from '../store/index.js';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -63,6 +63,42 @@ export class StoreBackedWeeklyInviteCounter implements WeeklyInviteCounter {
     const fresh = list.filter((t) => t > cutoff);
     if (fresh.length !== list.length) this.connects.set(accountId, fresh);
     return fresh.length;
+  }
+}
+
+/**
+ * Synchronous action pacer backed by the single most-recent executed-action
+ * timestamp per account, across ALL action types. The gate reads lastActionAt
+ * to space actions apart. rehydrate() fills it from the most recent persisted
+ * action row per account so the spacing survives a restart; record() keeps it
+ * warm as actions execute (both executors call it).
+ */
+export class StoreBackedActionPacer implements RecentActionClock {
+  private readonly last = new Map<string, number>();
+
+  /** Rebuild each account's most-recent action time from persisted rows. */
+  async rehydrate(store: RuntimeStore, accountIds: string[]): Promise<void> {
+    for (const accountId of accountIds) {
+      const rows = await store.action.listByAccount(accountId);
+      let max = -Infinity;
+      for (const r of rows) {
+        const t = (r.executedAt ?? r.scheduledAt).getTime();
+        if (t > max) max = t;
+      }
+      if (max > -Infinity) this.last.set(accountId, max);
+    }
+  }
+
+  /** Note that an action ran at `executedAt` for this account; keep the max. */
+  record(accountId: string, executedAt: Date): void {
+    const t = executedAt.getTime();
+    const prev = this.last.get(accountId);
+    if (prev === undefined || t > prev) this.last.set(accountId, t);
+  }
+
+  lastActionAt(accountId: string): Date | undefined {
+    const t = this.last.get(accountId);
+    return t === undefined ? undefined : new Date(t);
   }
 }
 

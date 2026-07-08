@@ -81,7 +81,6 @@ export function fakeAccount(overrides: Partial<Account> = {}): Account {
     state: 'Active',
     health,
     budget,
-    warmupDay: 10,
     createdAt: now,
     updatedAt: now,
     ...overrides,

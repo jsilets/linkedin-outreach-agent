@@ -62,7 +62,6 @@ export function rowToAccount(row: shared.AccountRow): Account {
     state: row.state,
     health: row.health as AccountHealth,
     budget: row.budget as DailyBudget,
-    warmupDay: row.warmupDay,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

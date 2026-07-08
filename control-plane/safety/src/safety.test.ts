@@ -11,8 +11,13 @@ import type {
 
 import { DEFAULT_CONFIG } from './config.js';
 import { transition, isTerminal } from './state-machine.js';
-import { warmupWeek, warmupCaps, warmupComplete } from './warmup.js';
-import { DefaultSafetyGate, isoDate, type WeeklyInviteCounter, type Clock } from './safety-gate.js';
+import {
+  DefaultSafetyGate,
+  isoDate,
+  type RecentActionClock,
+  type WeeklyInviteCounter,
+  type Clock,
+} from './safety-gate.js';
 
 const FIXED_NOW = new Date('2026-07-06T12:00:00.000Z'); // a Monday, noon UTC
 const fixedClock: Clock = { now: () => FIXED_NOW };
@@ -46,7 +51,6 @@ function account(over: Partial<Account> = {}): Account {
       lastCheckedAt: FIXED_NOW,
     },
     budget: budget('Active'),
-    warmupDay: 0,
     createdAt: FIXED_NOW,
     updatedAt: FIXED_NOW,
     ...over,
@@ -75,18 +79,6 @@ function signal(kind: SignalKind): Signal {
 }
 
 describe('state machine transitions', () => {
-  it('Cold -> Warming on start', () => {
-    expect(transition('Cold', 'start')).toEqual({
-      fromState: 'Cold',
-      toState: 'Warming',
-      reason: expect.any(String),
-    });
-  });
-
-  it('Warming -> Active on ramp_complete', () => {
-    expect(transition('Warming', 'ramp_complete')?.toState).toBe('Active');
-  });
-
   it('Active -> Throttled on soft signal', () => {
     expect(transition('Active', 'soft_signal')?.toState).toBe('Throttled');
   });
@@ -99,8 +91,12 @@ describe('state machine transitions', () => {
     expect(transition('Throttled', 'repeated_soft_signal')?.toState).toBe('Cooldown');
   });
 
-  it('Cooldown -> Warming on rewarm', () => {
-    expect(transition('Cooldown', 'rewarm')?.toState).toBe('Warming');
+  it('Cooldown -> Active on recovered', () => {
+    expect(transition('Cooldown', 'recovered')?.toState).toBe('Active');
+  });
+
+  it('legacy Cold -> Active on recovered', () => {
+    expect(transition('Cold', 'recovered')?.toState).toBe('Active');
   });
 
   it('Active -> Restricted on hard signal', () => {
@@ -114,57 +110,12 @@ describe('state machine transitions', () => {
   it('Restricted is terminal', () => {
     expect(isTerminal('Restricted')).toBe(true);
     expect(transition('Restricted', 'recovered')).toBeNull();
-    expect(transition('Restricted', 'start')).toBeNull();
+    expect(transition('Restricted', 'hard_signal')).toBeNull();
   });
 
   it('rejects illegal edges', () => {
     expect(transition('Cold', 'soft_signal')).toBeNull();
-    expect(transition('Active', 'start')).toBeNull();
-    expect(transition('Warming', 'soft_signal')).toBeNull();
-  });
-});
-
-describe('warmup ramp', () => {
-  it('maps days to weeks', () => {
-    expect(warmupWeek(1)).toBe(1);
-    expect(warmupWeek(7)).toBe(1);
-    expect(warmupWeek(8)).toBe(2);
-    expect(warmupWeek(14)).toBe(2);
-    expect(warmupWeek(15)).toBe(3);
-    expect(warmupWeek(21)).toBe(3);
-    expect(warmupWeek(22)).toBe(4);
-    expect(warmupWeek(60)).toBe(4);
-  });
-
-  it('week 1 is organic-only: no connects, no messages', () => {
-    const w1 = warmupCaps(3, DEFAULT_CONFIG);
-    expect(w1.connect).toBe(0);
-    expect(w1.message).toBe(0);
-    expect(w1.view_profile).toBeGreaterThan(0);
-    expect(w1.follow).toBeGreaterThan(0);
-  });
-
-  it('week 2 opens connects but not messages', () => {
-    const w2 = warmupCaps(10, DEFAULT_CONFIG);
-    expect(w2.connect).toBeGreaterThan(0);
-    expect(w2.connect).toBeLessThanOrEqual(10);
-    expect(w2.message).toBe(0);
-  });
-
-  it('week 3 opens messages', () => {
-    const w3 = warmupCaps(18, DEFAULT_CONFIG);
-    expect(w3.connect).toBeGreaterThan(0);
-    expect(w3.message).toBeGreaterThan(0);
-  });
-
-  it('week 4 reaches steady-state connect cap', () => {
-    const w4 = warmupCaps(25, DEFAULT_CONFIG);
-    expect(w4.connect).toBe(DEFAULT_CONFIG.active.connect);
-  });
-
-  it('completes only after the ramp length', () => {
-    expect(warmupComplete(27, DEFAULT_CONFIG)).toBe(false);
-    expect(warmupComplete(28, DEFAULT_CONFIG)).toBe(true);
+    expect(transition('Active', 'recovered')).toBeNull();
   });
 });
 
@@ -177,9 +128,9 @@ describe('budget by state', () => {
     expect(b.caps.message).toBe(20);
   });
 
-  it('Warming returns warmup caps for the day', () => {
-    const b = gate.budget(account({ state: 'Warming', warmupDay: 3 }));
-    expect(b.caps.connect).toBe(0);
+  it('legacy Cold/Warming are treated as Active caps', () => {
+    expect(gate.budget(account({ state: 'Cold' })).caps.connect).toBe(20);
+    expect(gate.budget(account({ state: 'Warming' })).caps.connect).toBe(20);
   });
 
   it('Throttled halves the Active caps', () => {
@@ -220,15 +171,14 @@ describe('canAct enforcement', () => {
     if (d.kind === 'defer') expect(d.until.getTime()).toBeGreaterThan(FIXED_NOW.getTime());
   });
 
-  it('denies actions the state forbids (connects during warmup week 1)', () => {
-    const acct = account({ state: 'Warming', warmupDay: 2, budget: budget('Warming') });
-    expect(gate.canAct(acct, action('connect')).kind).toBe('deny');
+  it('allows legacy Cold/Warming accounts (treated as Active, no warmup)', () => {
+    expect(gate.canAct(account({ state: 'Cold' }), action('connect')).kind).toBe('allow');
+    expect(gate.canAct(account({ state: 'Warming' }), action('connect')).kind).toBe('allow');
   });
 
   it('denies all outbound in Cooldown and Restricted', () => {
     expect(gate.canAct(account({ state: 'Cooldown' }), action('view_profile')).kind).toBe('deny');
     expect(gate.canAct(account({ state: 'Restricted' }), action('message')).kind).toBe('deny');
-    expect(gate.canAct(account({ state: 'Cold' }), action('connect')).kind).toBe('deny');
   });
 
   it('enforces the rolling weekly invite ceiling on connects', () => {
@@ -239,6 +189,63 @@ describe('canAct enforcement', () => {
     expect(g.canAct(acct, action('connect')).kind).toBe('defer');
     // Non-connect actions are unaffected by the invite ceiling.
     expect(g.canAct(acct, action('view_profile')).kind).toBe('allow');
+  });
+});
+
+describe('action pacing', () => {
+  // Fixed rng => gap is exactly minActionGapMs (jitter term floors to 0).
+  const zeroJitterRng = () => 0;
+  const gapMs = DEFAULT_CONFIG.minActionGapMs;
+
+  function pacer(last: Date | undefined): RecentActionClock {
+    return { lastActionAt: () => last };
+  }
+
+  it('allows the first action (no prior timestamp)', () => {
+    const g = new DefaultSafetyGate({
+      clock: fixedClock,
+      recentActions: pacer(undefined),
+      rng: zeroJitterRng,
+    });
+    const acct = account({ state: 'Active', budget: budget('Active') });
+    expect(g.canAct(acct, action('connect')).kind).toBe('allow');
+  });
+
+  it('defers a second action inside the gap, until last + gap', () => {
+    const last = new Date(FIXED_NOW.getTime() - (gapMs - 1)); // 1ms short of the gap
+    const g = new DefaultSafetyGate({
+      clock: fixedClock,
+      recentActions: pacer(last),
+      rng: zeroJitterRng,
+    });
+    const acct = account({ state: 'Active', budget: budget('Active') });
+    const d = g.canAct(acct, action('connect'));
+    expect(d.kind).toBe('defer');
+    if (d.kind === 'defer') expect(d.until.getTime()).toBe(last.getTime() + gapMs);
+  });
+
+  it('allows once the gap has elapsed', () => {
+    const last = new Date(FIXED_NOW.getTime() - gapMs); // exactly at the boundary
+    const g = new DefaultSafetyGate({
+      clock: fixedClock,
+      recentActions: pacer(last),
+      rng: zeroJitterRng,
+    });
+    const acct = account({ state: 'Active', budget: budget('Active') });
+    expect(g.canAct(acct, action('connect')).kind).toBe('allow');
+  });
+
+  it('applies across action types (spacing is per account, not per type)', () => {
+    const last = new Date(FIXED_NOW.getTime() - (gapMs - 1));
+    const g = new DefaultSafetyGate({
+      clock: fixedClock,
+      recentActions: pacer(last),
+      rng: zeroJitterRng,
+    });
+    const acct = account({ state: 'Active', budget: budget('Active') });
+    // A view_profile is paced by the same last-action timestamp as a connect.
+    expect(g.canAct(acct, action('view_profile')).kind).toBe('defer');
+    expect(g.canAct(acct, action('message')).kind).toBe('defer');
   });
 });
 
@@ -293,23 +300,16 @@ describe('onSignal back-off escalation', () => {
 describe('lifecycle helpers', () => {
   const gate = new DefaultSafetyGate({ clock: fixedClock });
 
-  it('startWarmup only from Cold', () => {
-    expect(gate.startWarmup(account({ state: 'Cold' }))?.toState).toBe('Warming');
-    expect(gate.startWarmup(account({ state: 'Active' }))).toBeNull();
-  });
-
-  it('promoteIfReady requires a completed ramp', () => {
-    expect(gate.promoteIfReady(account({ state: 'Warming', warmupDay: 10 }))).toBeNull();
-    expect(gate.promoteIfReady(account({ state: 'Warming', warmupDay: 28 }))?.toState).toBe('Active');
-  });
-
-  it('recover only from Throttled', () => {
+  it('recover from Throttled -> Active', () => {
     expect(gate.recover(account({ state: 'Throttled' }))?.toState).toBe('Active');
-    expect(gate.recover(account({ state: 'Active' }))).toBeNull();
   });
 
-  it('rewarm only from Cooldown', () => {
-    expect(gate.rewarm(account({ state: 'Cooldown' }))?.toState).toBe('Warming');
-    expect(gate.rewarm(account({ state: 'Active' }))).toBeNull();
+  it('recover from Cooldown -> Active', () => {
+    expect(gate.recover(account({ state: 'Cooldown' }))?.toState).toBe('Active');
+  });
+
+  it('recover is a no-op from other states', () => {
+    expect(gate.recover(account({ state: 'Active' }))).toBeNull();
+    expect(gate.recover(account({ state: 'Cold' }))).toBeNull();
   });
 });

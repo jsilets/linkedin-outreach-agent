@@ -15,7 +15,6 @@ import type {
 
 import { DEFAULT_CONFIG, type CapTable, type SafetyConfig } from './config.js';
 import { isTerminal, transition, type StateEvent } from './state-machine.js';
-import { warmupCaps, warmupComplete } from './warmup.js';
 
 /**
  * Port for reading the rolling 7-day count of invites (connect actions) sent
@@ -25,6 +24,16 @@ import { warmupCaps, warmupComplete } from './warmup.js';
  */
 export interface WeeklyInviteCounter {
   invitesLast7d(accountId: string): number;
+}
+
+/**
+ * Port for reading the timestamp of the most recent outbound action on an
+ * account, across ALL action types. The runtime owns this state (kept warm as
+ * actions execute, rehydrated from action rows on boot); the gate only reads it
+ * to space actions apart. If not provided, no pacing constraint is applied.
+ */
+export interface RecentActionClock {
+  lastActionAt(accountId: string): Date | undefined;
 }
 
 /**
@@ -40,6 +49,9 @@ export interface SafetyGateOptions {
   config?: SafetyConfig;
   weeklyInvites?: WeeklyInviteCounter;
   clock?: Clock;
+  recentActions?: RecentActionClock;
+  /** RNG seam for the action-gap jitter. Defaults to Math.random. */
+  rng?: () => number;
 }
 
 /** ISO date (YYYY-MM-DD) for a Date, in UTC. */
@@ -79,6 +91,8 @@ export class DefaultSafetyGate implements SafetyGate {
   private readonly cfg: SafetyConfig;
   private readonly weeklyInvites?: WeeklyInviteCounter;
   private readonly clock: Clock;
+  private readonly recentActions?: RecentActionClock;
+  private readonly rng: () => number;
 
   // Consecutive soft-signal counter per account. Reset when the account
   // recovers or a non-soft signal lands. Drives soft -> cooldown escalation.
@@ -88,13 +102,17 @@ export class DefaultSafetyGate implements SafetyGate {
     this.cfg = opts.config ?? DEFAULT_CONFIG;
     this.weeklyInvites = opts.weeklyInvites;
     this.clock = opts.clock ?? REAL_CLOCK;
+    this.recentActions = opts.recentActions;
+    this.rng = opts.rng ?? Math.random;
   }
 
-  /** Caps that apply given the account's state and warmup day. */
+  /** Caps that apply given the account's state. */
   private capsForState(acct: Account): CapTable {
     switch (acct.state) {
+      // Cold/Warming are legacy labels with no warmup ramp any more; treat them
+      // as steady-state Active.
+      case 'Cold':
       case 'Warming':
-        return warmupCaps(acct.warmupDay, this.cfg);
       case 'Active':
         return this.cfg.active;
       case 'Throttled':
@@ -102,7 +120,6 @@ export class DefaultSafetyGate implements SafetyGate {
         // account is conceptually still at its Active steady-state ceiling, so
         // scale the Active caps.
         return scaleCaps(this.cfg.active, this.cfg.throttleMultiplier);
-      case 'Cold':
       case 'Cooldown':
       case 'Restricted':
         // No outbound work in these states.
@@ -139,15 +156,12 @@ export class DefaultSafetyGate implements SafetyGate {
     if (acct.state === 'Cooldown') {
       return { kind: 'deny', reason: 'account in cooldown; no outbound actions' };
     }
-    if (acct.state === 'Cold') {
-      return { kind: 'deny', reason: 'account not warmed up; start warmup first' };
-    }
 
     const b = this.budget(acct);
     const cap = b.caps[type];
     const used = b.used[type] ?? 0;
 
-    // State forbids this action entirely (e.g. connects in warmup week 1).
+    // State forbids this action entirely (cap of 0 for this type).
     if (cap <= 0) {
       return { kind: 'deny', reason: `action ${type} not permitted in state ${acct.state}` };
     }
@@ -163,6 +177,22 @@ export class DefaultSafetyGate implements SafetyGate {
       const weekInvites = this.invitesLast7d(acct, used);
       if (weekInvites >= this.cfg.weeklyInviteCeiling) {
         return { kind: 'defer', until: nextDay(this.clock.now()) };
+      }
+    }
+
+    // Per-account spacing across ALL action types: the caps bound the daily
+    // count but not the cadence, so a dispatch tick could otherwise fire every
+    // due action back-to-back. Space each action by a jittered gap. The first
+    // action (no prior timestamp) is always allowed.
+    if (this.recentActions) {
+      const last = this.recentActions.lastActionAt(acct.id);
+      if (last) {
+        const gap =
+          this.cfg.minActionGapMs + Math.floor(this.rng() * this.cfg.actionGapJitterMs);
+        const readyAt = last.getTime() + gap;
+        if (this.clock.now().getTime() < readyAt) {
+          return { kind: 'defer', until: new Date(readyAt) };
+        }
       }
     }
 
@@ -262,31 +292,11 @@ export class DefaultSafetyGate implements SafetyGate {
 
   // -- Lifecycle helpers the orchestrator calls explicitly (not signal-driven).
 
-  /** Cold -> Warming. Returns null if not applicable. */
-  startWarmup(acct: Account): Transition | null {
-    return transition(acct.state, 'start');
-  }
-
-  /** Warming -> Active once the ramp is complete. Returns null otherwise. */
-  promoteIfReady(acct: Account): Transition | null {
-    if (acct.state !== 'Warming') return null;
-    if (!warmupComplete(acct.warmupDay, this.cfg)) return null;
-    this.softStreak.delete(acct.id);
-    return transition(acct.state, 'ramp_complete');
-  }
-
-  /** Throttled -> Active after health recovers. Returns null otherwise. */
+  /** Throttled or Cooldown -> Active after health recovers. Null otherwise. */
   recover(acct: Account): Transition | null {
-    if (acct.state !== 'Throttled') return null;
+    if (acct.state !== 'Throttled' && acct.state !== 'Cooldown') return null;
     this.softStreak.delete(acct.id);
     return transition(acct.state, 'recovered');
-  }
-
-  /** Cooldown -> Warming to restart the ramp. Returns null otherwise. */
-  rewarm(acct: Account): Transition | null {
-    if (acct.state !== 'Cooldown') return null;
-    this.softStreak.delete(acct.id);
-    return transition(acct.state, 'rewarm');
   }
 }
 

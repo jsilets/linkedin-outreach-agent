@@ -24,7 +24,6 @@ function account(): Account {
     state: 'Active',
     health: { acceptanceRate: 0.8, replyRate: 0.4, challengesLast7d: 0, lastCheckedAt: MON_NOON },
     budget: dailyBudget({ connect: 20 }),
-    warmupDay: 0,
     createdAt: MON_NOON,
     updatedAt: MON_NOON,
   };

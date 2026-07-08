@@ -1,13 +1,15 @@
 // Account safety state machine. Pure functions, no side effects, exported so
-// they can be exercised directly in tests.
+// they can be exercised directly in tests. There is no warmup ramp: an
+// established account is treated as steady-state Active, and only reactive
+// signals move it. Cold is a legacy/unused label that recovers straight to
+// Active.
 //
 // Transitions (the only legal edges):
-//   Cold       -> Warming     (start: begin the warmup ramp)
-//   Warming    -> Active      (ramp complete)
+//   Cold       -> Active      (recovered: legacy label, treated as Active)
 //   Active     -> Throttled   (soft signal)
 //   Throttled  -> Active      (recovered)
 //   Throttled  -> Cooldown    (repeated soft signal)
-//   Cooldown   -> Warming     (re-warm)
+//   Cooldown   -> Active      (recovered)
 //   Active     -> Restricted  (ban_banner / hard signal)
 //   Throttled  -> Restricted  (hard signal)
 //   Restricted -> (terminal)  (halt; raise a human task)
@@ -16,12 +18,9 @@ import type { AccountState, Transition } from '@loa/shared';
 
 /** The event vocabulary the state machine reacts to. */
 export type StateEvent =
-  | 'start' // begin warmup
-  | 'ramp_complete' // warmup ramp finished
   | 'soft_signal' // recoverable risk signal
   | 'repeated_soft_signal' // soft signal while already throttled
   | 'recovered' // health restored
-  | 'rewarm' // leave cooldown, warm again
   | 'hard_signal'; // ban banner or equivalent; terminal
 
 export interface StateStep {
@@ -31,12 +30,15 @@ export interface StateStep {
 
 // Adjacency map: for each state, which events are legal and where they lead.
 const TABLE: Record<AccountState, Partial<Record<StateEvent, StateStep>>> = {
+  // Legacy label; kept only so old rows resolve. Recovers straight to Active.
   Cold: {
-    start: { toState: 'Warming', reason: 'warmup started' },
+    recovered: { toState: 'Active', reason: 'legacy Cold account promoted to Active' },
   },
+  // Legacy label; no account is produced in this state any more. Included for
+  // exhaustiveness so an old row can still recover to Active.
   Warming: {
-    ramp_complete: { toState: 'Active', reason: 'warmup ramp complete' },
-    hard_signal: { toState: 'Restricted', reason: 'hard signal during warmup' },
+    recovered: { toState: 'Active', reason: 'legacy Warming account promoted to Active' },
+    hard_signal: { toState: 'Restricted', reason: 'hard signal, restricting' },
   },
   Active: {
     soft_signal: { toState: 'Throttled', reason: 'soft signal, throttling' },
@@ -48,7 +50,7 @@ const TABLE: Record<AccountState, Partial<Record<StateEvent, StateStep>>> = {
     hard_signal: { toState: 'Restricted', reason: 'hard signal, restricting' },
   },
   Cooldown: {
-    rewarm: { toState: 'Warming', reason: 're-warming after cooldown' },
+    recovered: { toState: 'Active', reason: 'recovered after cooldown' },
   },
   Restricted: {
     // Terminal. No outbound edges; a human must intervene.

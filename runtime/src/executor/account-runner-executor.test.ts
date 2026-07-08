@@ -98,7 +98,6 @@ async function seedAccount(store: InMemoryStore): Promise<void> {
     id: ACCT,
     handle: 'op',
     state: 'Active',
-    warmupDay: 28,
     proxyBinding: { proxyId: 'p', region: 'us-east', sticky: true },
     health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: new Date() },
     budget: { date: today, caps, used },
