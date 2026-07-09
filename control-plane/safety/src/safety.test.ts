@@ -13,13 +13,16 @@ import { DEFAULT_CONFIG } from './config.js';
 import { transition, isTerminal } from './state-machine.js';
 import {
   DefaultSafetyGate,
+  activeHoursDefer,
   isoDate,
   type RecentActionClock,
   type WeeklyInviteCounter,
   type Clock,
 } from './safety-gate.js';
 
-const FIXED_NOW = new Date('2026-07-06T12:00:00.000Z'); // a Monday, noon UTC
+// Local noon (not UTC) so it sits inside the default 8am-8pm active-hours
+// window in any timezone the tests run in; the window is exercised separately.
+const FIXED_NOW = new Date(2026, 6, 6, 12, 0, 0); // a Monday, local noon
 const fixedClock: Clock = { now: () => FIXED_NOW };
 
 function budget(state: AccountState, used: Partial<Record<ActionType, number>> = {}): DailyBudget {
@@ -311,5 +314,45 @@ describe('lifecycle helpers', () => {
   it('recover is a no-op from other states', () => {
     expect(gate.recover(account({ state: 'Active' }))).toBeNull();
     expect(gate.recover(account({ state: 'Cold' }))).toBeNull();
+  });
+});
+
+describe('active-hours window', () => {
+  // Local-time constructors so getHours() is deterministic regardless of the
+  // machine timezone: new Date(y,m,d,H) and getHours() are both local.
+  const at = (hour: number) => new Date(2026, 6, 6, hour, 0, 0);
+
+  it('no defer inside the window', () => {
+    expect(activeHoursDefer(at(8), DEFAULT_CONFIG)).toBeNull(); // inclusive start
+    expect(activeHoursDefer(at(12), DEFAULT_CONFIG)).toBeNull();
+    expect(activeHoursDefer(at(19), DEFAULT_CONFIG)).toBeNull(); // last active hour
+  });
+
+  it('before the window defers to today at start', () => {
+    const d = activeHoursDefer(at(6), DEFAULT_CONFIG);
+    expect(d).not.toBeNull();
+    expect(d!.getHours()).toBe(8);
+    expect(d!.getDate()).toBe(6); // same day
+  });
+
+  it('at/after the window end defers to tomorrow at start', () => {
+    const d = activeHoursDefer(at(20), DEFAULT_CONFIG); // end is exclusive
+    expect(d).not.toBeNull();
+    expect(d!.getHours()).toBe(8);
+    expect(d!.getDate()).toBe(7); // next day
+  });
+
+  it('is disabled when start === end', () => {
+    const cfg = { ...DEFAULT_CONFIG, activeHoursStart: 0, activeHoursEnd: 0 };
+    expect(activeHoursDefer(at(3), cfg)).toBeNull();
+  });
+
+  it('canAct defers an otherwise-allowed action when outside the window', () => {
+    const nightClock: Clock = { now: () => at(3) };
+    const gate = new DefaultSafetyGate({ clock: nightClock });
+    const acct = account({ state: 'Active' });
+    const d = gate.canAct(acct, action('connect'));
+    expect(d.kind).toBe('defer');
+    if (d.kind === 'defer') expect(d.until.getHours()).toBe(8);
   });
 });
