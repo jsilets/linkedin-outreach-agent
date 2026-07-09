@@ -180,6 +180,14 @@ export class DefaultSafetyGate implements SafetyGate {
       }
     }
 
+    // Working-hours window: a self-running engine should not send overnight.
+    // Outside the local window, defer to the next window start (this is a
+    // coarser gate than the daily cap, so it runs before pacing).
+    const windowDefer = activeHoursDefer(this.clock.now(), this.cfg);
+    if (windowDefer) {
+      return { kind: 'defer', until: windowDefer };
+    }
+
     // Per-account spacing across ALL action types: the caps bound the daily
     // count but not the cadence, so a dispatch tick could otherwise fire every
     // due action back-to-back. Space each action by a jittered gap. The first
@@ -306,4 +314,21 @@ export function nextDay(d: Date): Date {
   n.setUTCHours(0, 0, 0, 0);
   n.setUTCDate(n.getUTCDate() + 1);
   return n;
+}
+
+/**
+ * If `now` (host local time) is outside the config's working-hours window,
+ * return the next window-start Date; otherwise return null (inside the window,
+ * or the window is disabled). Hours are read and built in local time so the
+ * comparison matches the operator's own clock. Only non-wrapping windows
+ * (start < end) are honored; any other config disables the window.
+ */
+export function activeHoursDefer(now: Date, cfg: SafetyConfig): Date | null {
+  const { activeHoursStart: start, activeHoursEnd: end } = cfg;
+  if (start >= end) return null; // disabled (start === end) or invalid wrap.
+  const hour = now.getHours();
+  if (hour >= start && hour < end) return null; // inside the window.
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), start, 0, 0, 0);
+  if (hour >= end) next.setDate(next.getDate() + 1); // past today's window -> tomorrow.
+  return next;
 }

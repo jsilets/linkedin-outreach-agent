@@ -50,6 +50,17 @@ export interface SafetyConfig {
    * fixed cadence never emerges.
    */
   actionGapJitterMs: number;
+  /**
+   * Local-time hour window [activeHoursStart, activeHoursEnd) during which
+   * outbound actions may run, on a 24h clock in the HOST's local timezone. The
+   * account runs from the operator's own IP, so host-local hours match the
+   * account's plausible working hours. Outside the window the gate defers to
+   * the next window start, so a self-running engine does not send overnight.
+   * Set activeHoursStart === activeHoursEnd to disable the window (act any
+   * hour). Only non-wrapping windows are supported (start < end).
+   */
+  activeHoursStart: number; // 0-23
+  activeHoursEnd: number; // 1-24
 }
 
 // Steady-state daily caps for an Active account:
@@ -74,4 +85,7 @@ export const DEFAULT_CONFIG: SafetyConfig = {
   // 4 min floor + up to 6 min jitter => a 4-10 min gap between any two actions.
   minActionGapMs: 240_000,
   actionGapJitterMs: 360_000,
+  // Send only during local working hours, 8am-8pm; defer anything else to 8am.
+  activeHoursStart: 8,
+  activeHoursEnd: 20,
 };
