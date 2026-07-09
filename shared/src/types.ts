@@ -47,8 +47,6 @@ export interface Account {
   health: AccountHealth;
   /** Remaining budget for the current day, per action type. */
   budget: DailyBudget;
-  /** Day index into the warmup ramp; 0 before warmup begins. */
-  warmupDay: number;
   createdAt: Date;
   updatedAt: Date;
 }

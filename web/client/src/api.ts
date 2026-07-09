@@ -47,7 +47,6 @@ export interface Account {
   id: string;
   handle: string;
   state: string;
-  warmupDay: number;
 }
 
 export interface ListSummary {

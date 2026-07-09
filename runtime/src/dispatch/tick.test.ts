@@ -51,7 +51,6 @@ function fakeAccount(id: string): Account {
       caps: { connect: 10, message: 10, view_profile: 10, follow: 10, withdraw_invite: 10, react: 10 },
       used: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },
     },
-    warmupDay: 28,
     createdAt: new Date(),
     updatedAt: new Date(),
   };

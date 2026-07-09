@@ -20,11 +20,10 @@ function emptyUsed(): Record<ActionType, number> {
 export interface SeedAccountInput {
   handle: string;
   state?: AccountState;
-  warmupDay?: number;
   region?: string;
 }
 
-/** Create an account row with healthy defaults. Active or Warming as requested. */
+/** Create an account row with healthy defaults. Active by default. */
 export async function seedAccount(
   store: RuntimeStore,
   input: SeedAccountInput,
@@ -33,7 +32,6 @@ export async function seedAccount(
   return store.account.create({
     handle: input.handle,
     state: input.state ?? 'Active',
-    warmupDay: input.warmupDay ?? 28,
     proxyBinding: {
       proxyId: `proxy-${input.handle}`,
       region: input.region ?? 'us-east',

@@ -107,7 +107,6 @@ export function AccountsView() {
             <tr>
               <th>Handle</th>
               <th>State</th>
-              <th>Warmup day</th>
             </tr>
           </thead>
           <tbody>
@@ -115,12 +114,11 @@ export function AccountsView() {
               <tr key={a.id}>
                 <td>{a.handle}</td>
                 <td>{a.state}</td>
-                <td>{a.warmupDay}</td>
               </tr>
             ))}
             {accounts.length === 0 && (
               <tr>
-                <td colSpan={3} className="muted">
+                <td colSpan={2} className="muted">
                   No accounts linked yet.
                 </td>
               </tr>

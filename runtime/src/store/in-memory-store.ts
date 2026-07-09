@@ -60,10 +60,9 @@ class InMemAccountStore implements AccountStorePort {
       id: row.id ?? nextId('acct'),
       handle: row.handle,
       proxyBinding: row.proxyBinding,
-      state: row.state ?? 'Cold',
+      state: row.state ?? 'Active',
       health: row.health,
       budget: row.budget,
-      warmupDay: row.warmupDay ?? 0,
       createdAt: now,
       updatedAt: now,
     };

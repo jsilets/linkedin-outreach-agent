@@ -33,6 +33,7 @@ import {
   type RuntimeStore,
 } from './store/index.js';
 import {
+  StoreBackedActionPacer,
   StoreBackedWeeklyInviteCounter,
   replaySignals,
 } from './adapters/safety-state.js';
@@ -158,9 +159,11 @@ function chooseLlm(config: RuntimeConfig): { llm: LLMProvider; name: LlmProvider
 export function compose(config: RuntimeConfig = loadConfig()): Runtime {
   const store = chooseStore(config);
 
-  // ONE safety gate, backed by a store-aware weekly-invite counter.
+  // ONE safety gate, backed by a store-aware weekly-invite counter and an
+  // action pacer that spaces every account's actions apart (anti-burst).
   const weekly = new StoreBackedWeeklyInviteCounter();
-  const gate = new DefaultSafetyGate({ weeklyInvites: weekly });
+  const pacer = new StoreBackedActionPacer();
+  const gate = new DefaultSafetyGate({ weeklyInvites: weekly, recentActions: pacer });
 
   // Scheduler is the paced follow-up source; it reads the gate for pacing.
   const scheduler = new SchedulerService({ safety: gate });
@@ -171,7 +174,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
   // Executor + LLM. The fake executor is always built (smoke drives it via
   // feedInbound); the wired executor is the real account-runner when
   // LOA_EXECUTOR=real, else the fake.
-  const fakeExecutor = new FakeExecutor({ store, weekly });
+  const fakeExecutor = new FakeExecutor({ store, weekly, pacer });
   let sessionProvider: LiveSessionProvider | undefined;
   let executor: McpExecutorPort & AgentExecutorPort = fakeExecutor;
   if (config.executorMode === 'real') {
@@ -187,6 +190,8 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
       store,
       runnerSafety: makeRunnerSafetyPort(gate),
       session: sessionProvider,
+      weekly,
+      pacer,
     });
   }
   const { llm, name: llmProvider } = chooseLlm(config);
@@ -319,6 +324,7 @@ export function compose(config: RuntimeConfig = loadConfig()): Runtime {
       const accounts = await store.account.all();
       const ids = accounts.map((a) => a.id);
       await weekly.rehydrate(store, ids);
+      await pacer.rehydrate(store, ids);
       await replaySignals(
         store,
         gate,

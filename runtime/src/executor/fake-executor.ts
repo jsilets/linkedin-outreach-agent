@@ -5,7 +5,8 @@
 //
 // Every act persists an Action row (result 'success', executedAt set now),
 // records the connect into the weekly-invite counter so the safety ceiling sees
-// it, and appends an audit event. observe() returns canned profile/post context
+// it, records the action time into the pacer so the gate can space the next
+// action apart, and appends an audit event. observe() returns canned profile/post context
 // and drains any inbound messages queued for a target (smoke injects replies
 // this way). This is what dev and smoke use to prove the wiring without a page.
 
@@ -18,17 +19,22 @@ import type {
   ObservedMessage,
 } from '@loa/agent';
 import type { RuntimeStore } from '../store/index.js';
-import type { StoreBackedWeeklyInviteCounter } from '../adapters/safety-state.js';
+import type {
+  StoreBackedActionPacer,
+  StoreBackedWeeklyInviteCounter,
+} from '../adapters/safety-state.js';
 
 export interface FakeExecutorDeps {
   store: RuntimeStore;
   weekly: StoreBackedWeeklyInviteCounter;
+  pacer: StoreBackedActionPacer;
   now?: () => Date;
 }
 
 export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
   private readonly store: RuntimeStore;
   private readonly weekly: StoreBackedWeeklyInviteCounter;
+  private readonly pacer: StoreBackedActionPacer;
   private readonly now: () => Date;
   /** Inbound messages queued per target id, drained on the next observe(). */
   private readonly inboxByTarget = new Map<string, ObservedMessage[]>();
@@ -36,6 +42,7 @@ export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
   constructor(deps: FakeExecutorDeps) {
     this.store = deps.store;
     this.weekly = deps.weekly;
+    this.pacer = deps.pacer;
     this.now = deps.now ?? (() => new Date());
   }
 
@@ -91,6 +98,8 @@ export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
     if (type === 'connect') {
       this.weekly.record(accountId, executedAt);
     }
+    // Pace every action type, so the gate spaces the next action apart.
+    this.pacer.record(accountId, executedAt);
     await this.store.event.append({
       accountId,
       kind: 'action_executed',

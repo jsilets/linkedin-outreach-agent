@@ -17,6 +17,9 @@ import {
 
 // --- enums -----------------------------------------------------------------
 
+// 'Cold' and 'Warming' are legacy/unused: there is no warmup ramp any more and
+// nothing produces these states. They are kept in the enum (dropping a pg enum
+// value requires recreating the type) and treated as Active by the safety gate.
 export const accountStateEnum = pgEnum('account_state', [
   'Cold',
   'Warming',
@@ -112,10 +115,9 @@ export const accounts = pgTable('accounts', {
   // ProxyBinding + AccountHealth + DailyBudget are stored as jsonb blobs; the
   // domain layer owns their shape.
   proxyBinding: jsonb('proxy_binding').notNull(),
-  state: accountStateEnum('state').notNull().default('Cold'),
+  state: accountStateEnum('state').notNull().default('Active'),
   health: jsonb('health').notNull(),
   budget: jsonb('budget').notNull(),
-  warmupDay: integer('warmup_day').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
