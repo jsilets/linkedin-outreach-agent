@@ -36,6 +36,9 @@ export interface MessageRepoPort {
   setStatus(id: string, status: MessageRow['status']): Promise<MessageRow>;
   setBody(id: string, body: string): Promise<MessageRow>;
   listByThread(threadRef: string): Promise<MessageRow[]>;
+  /** Every draft (pending) message across all threads. Backs the durable
+   * pending queue: after a restart the binding is rebuilt from these rows. */
+  listDrafts(): Promise<MessageRow[]>;
 }
 
 export interface ApprovalRepoPort {

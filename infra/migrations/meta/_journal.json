@@ -57,6 +57,13 @@
       "when": 1783691028028,
       "tag": "0007_ambitious_falcon",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1783714198302,
+      "tag": "0008_material_gateway",
+      "breakpoints": true
     }
   ]
 }

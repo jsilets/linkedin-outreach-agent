@@ -228,6 +228,14 @@ export class MessageRepo {
       .from(messages)
       .where(eq(messages.threadRef, threadRef));
   }
+
+  async listDrafts(): Promise<MessageRow[]> {
+    return this.db.handle
+      .select()
+      .from(messages)
+      .where(eq(messages.status, 'draft'))
+      .orderBy(asc(messages.createdAt));
+  }
 }
 
 export class ApprovalRepo {

@@ -5,9 +5,11 @@
 // Approval reconciliation: the orchestrator ApprovalService speaks in
 // pendingItemRef + Message rows; the mcp ApprovalPort speaks in PendingItem
 // {id, req, ...} and its approve/editAndApprove DISPATCH the underlying action
-// via the executor. We bridge by keeping the originating ActRequest keyed by the
-// draft message id, so approve can (a) mark the draft sent through the service,
-// which writes the approval row + event, then (b) dispatch the real action.
+// via the executor. We bridge by PERSISTING the originating ActRequest on the
+// draft message row (pendingReq), so approve can (a) mark the draft sent through
+// the service, which writes the approval row + event, then (b) dispatch the real
+// action. Persisting rather than holding it in memory is what lets list_pending
+// and approve keep working after a runtime restart.
 
 import { extractCompany } from '@loa/shared';
 import type {
@@ -72,23 +74,17 @@ function sendThreadRef(req: ActRequest): string {
 }
 
 /**
- * Bridges the mcp ApprovalPort onto the orchestrator ApprovalService. Keeps the
- * ActRequest for each queued draft so approve() can dispatch it.
+ * Bridges the mcp ApprovalPort onto the orchestrator ApprovalService. The
+ * ActRequest for each queued draft is PERSISTED on the message row (pendingReq),
+ * not held in memory, so list_pending and approve/reject keep working after a
+ * runtime restart. Every read of the binding goes back to the store.
  */
 export class ApprovalAdapter implements ApprovalPort {
-  private readonly reqByRef = new Map<string, ActRequest>();
-
   constructor(
     private readonly services: OrchestratorServices,
     private readonly executor: ExecutorPort,
     private readonly store: RuntimeStore,
   ) {}
-
-  /** Register a ref -> ActRequest binding (used by the loop persistence path
-   * too, so an approved loop-drafted send can also dispatch). */
-  bind(pendingItemRef: string, req: ActRequest): void {
-    this.reqByRef.set(pendingItemRef, req);
-  }
 
   async enqueue(
     req: ActRequest,
@@ -101,8 +97,8 @@ export class ApprovalAdapter implements ApprovalPort {
       campaignId: req.campaignId,
       threadRef: sendThreadRef(req),
       draft: { body: draftBody ?? bodyFromPayload(req) },
+      pendingReq: req,
     });
-    this.reqByRef.set(item.pendingItemRef, req);
     return {
       id: item.pendingItemRef,
       req,
@@ -113,19 +109,21 @@ export class ApprovalAdapter implements ApprovalPort {
   }
 
   async listPending(campaignId?: string): Promise<PendingItem[]> {
-    // Drafts are looked up by thread ref; we hold the req map, so enumerate it.
+    // Sourced from the store, so a restart does not empty the queue. Each draft
+    // carries its persisted ActRequest; skip any that predates the binding
+    // column (it can no longer be dispatched) and filter by campaign.
+    const items = await this.services.approvals.listAllPending();
     const out: PendingItem[] = [];
-    for (const [ref, req] of this.reqByRef) {
+    for (const item of items) {
+      const req = item.pendingReq as ActRequest | undefined;
+      if (!req) continue;
       if (campaignId && req.campaignId !== campaignId) continue;
-      const items = await this.services.approvals.listPending(sendThreadRef(req));
-      const match = items.find((i) => i.pendingItemRef === ref);
-      if (!match) continue; // already decided
       out.push({
-        id: ref,
+        id: item.pendingItemRef,
         req,
         autonomyLevel: 'supervised',
-        draftBody: match.message.body,
-        createdAt: match.message.createdAt,
+        draftBody: item.message.body,
+        createdAt: item.message.createdAt,
       });
     }
     return out;
@@ -146,9 +144,8 @@ export class ApprovalAdapter implements ApprovalPort {
   }
 
   async reject(pendingId: string, editor: string, _reason: string): Promise<void> {
-    const req = this.reqByRef.get(pendingId);
+    const req = (await this.services.approvals.getPendingReq(pendingId)) as ActRequest | undefined;
     await this.services.approvals.reject(pendingId, editor);
-    this.reqByRef.delete(pendingId);
     if (req) await this.onApprovalResolved(req.targetId, 'rejected');
   }
 
@@ -189,13 +186,14 @@ export class ApprovalAdapter implements ApprovalPort {
     } else await this.services.approvals.reject(pendingId, editor);
   }
 
-  /** Dispatch the underlying action through the executor after sign-off. */
+  /** Dispatch the underlying action through the executor after sign-off. The
+   * ActRequest is read back from the store (it was persisted at enqueue time),
+   * so this works even on the first approval after a restart. */
   private async dispatch(pendingId: string) {
-    const req = this.reqByRef.get(pendingId);
+    const req = (await this.services.approvals.getPendingReq(pendingId)) as ActRequest | undefined;
     if (!req) {
       throw new Error(`no ActRequest bound to pending item ${pendingId}`);
     }
-    this.reqByRef.delete(pendingId);
     return this.executor.execute(req);
   }
 }
