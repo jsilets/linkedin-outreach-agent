@@ -10,7 +10,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import type { ActionType, Target } from '@loa/shared';
 import type { ActRequest } from '@loa/mcp';
 import type { LocatorPort, PagePort } from '@loa/account-runner';
-import { DefaultSafetyGate } from '@loa/safety';
+import { DefaultSafetyGate, NO_ACTIVE_HOURS_CONFIG } from '@loa/safety';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { StoreBackedWeeklyInviteCounter } from '../adapters/safety-state.js';
 import { makeRunnerSafetyPort } from '../adapters/safety.js';
@@ -129,7 +129,12 @@ describe('AccountRunnerExecutor real path', () => {
     await seedAccount(store);
     await seedTarget(store);
     session = new StubSessionProvider();
-    const gate = new DefaultSafetyGate({ weeklyInvites: new StoreBackedWeeklyInviteCounter() });
+    // Windowless config so the gate never defers on time of day: this suite
+    // must pass whether it runs at noon or at 3am.
+    const gate = new DefaultSafetyGate({
+      weeklyInvites: new StoreBackedWeeklyInviteCounter(),
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
     executor = new AccountRunnerExecutor({
       store,
       runnerSafety: makeRunnerSafetyPort(gate),
