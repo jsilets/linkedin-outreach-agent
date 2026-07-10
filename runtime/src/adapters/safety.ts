@@ -22,6 +22,7 @@ import type {
   DailyBudget,
   Decision,
 } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import { DefaultSafetyGate } from '@loa/safety';
 import type { SafetyPort as SchedulerSafetyPort } from '@loa/scheduler';
 import type { ActRequest, SafetyPort as McpSafetyPort } from '@loa/mcp';
@@ -116,9 +117,14 @@ export function makeRunnerSafetyPort(gate: DefaultSafetyGate): RunnerSafetyPort 
     async mintToken(acct: Account, action: Action): Promise<AllowToken> {
       const decision = gate.canAct(acct, action);
       if (decision.kind !== 'allow') {
-        throw new Error(
-          `refusing to mint allow token: gate decision was ${decision.kind}`,
-        );
+        // The double-check is deliberate defense-in-depth: the executor must
+        // never touch the page without a valid allow token. But a non-allow
+        // here is typically the anti-burst pacer flipping allow->defer in the
+        // gap since the gate's first check — a transient "retry later", not a
+        // failure. Raise a TYPED deferral (not a plain Error) so gateAct maps it
+        // to a deferred/denied outcome and the caller retries, instead of the
+        // throw bubbling up and permanently failing the target cursor.
+        throw new SafetyDeferredError(decision);
       }
       return mintAllowToken(action, acct.id);
     },

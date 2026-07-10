@@ -7,7 +7,8 @@
 // gate-backed one, so the minted allow token really authorizes the action.
 
 import { describe, expect, it, beforeEach } from 'vitest';
-import type { ActionType, Target } from '@loa/shared';
+import type { Account, Action, ActionType, Decision, Target } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import type { ActRequest } from '@loa/mcp';
 import type { LocatorPort, PagePort } from '@loa/account-runner';
 import { DefaultSafetyGate, NO_ACTIVE_HOURS_CONFIG } from '@loa/safety';
@@ -196,5 +197,68 @@ describe('AccountRunnerExecutor real path', () => {
     await expect(denyExecutor.execute(actRequest('connect'))).rejects.toThrow(/allow token/);
     expect(denySession.requested).toEqual([]);
     expect(denySession.page.gotos).toEqual([]);
+  });
+});
+
+// The real gate-backed runner SafetyPort. Its mintToken re-checks the gate at
+// token-mint time (defense in depth) and, on a non-allow, must raise a TYPED
+// SafetyDeferredError carrying the decision — not a plain Error — so gateAct can
+// map it back to a retryable deferred/denied outcome instead of a fatal failure.
+describe('makeRunnerSafetyPort.mintToken', () => {
+  const now = new Date('2026-07-06T12:00:00Z');
+  const acct: Account = {
+    id: ACCT,
+    handle: 'op',
+    proxyBinding: { proxyId: 'p', region: 'us', sticky: true },
+    state: 'Active',
+    health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: now },
+    budget: {
+      date: now.toISOString().slice(0, 10),
+      caps: { connect: 10, message: 10, view_profile: 10, follow: 10, withdraw_invite: 10, react: 10 },
+      used: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },
+    },
+    createdAt: now,
+    updatedAt: now,
+  };
+  const action: Action = {
+    id: 'action-1',
+    type: 'connect',
+    scheduledAt: now,
+    executedAt: null,
+    result: 'pending',
+    dedupKey: `${ACCT}:${TGT}:connect`,
+    accountId: ACCT,
+    targetId: TGT,
+    campaignId: CAMP,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  // makeRunnerSafetyPort only calls gate.canAct; a minimal stub stands in for the
+  // full DefaultSafetyGate so we can force a defer/deny/allow deterministically.
+  function gateReturning(decision: Decision) {
+    return { canAct: () => decision } as unknown as DefaultSafetyGate;
+  }
+
+  it('throws a typed SafetyDeferredError when the re-check defers', async () => {
+    const until = new Date('2026-07-06T12:05:00Z');
+    const port = makeRunnerSafetyPort(gateReturning({ kind: 'defer', until }));
+    await expect(port.mintToken(acct, action)).rejects.toBeInstanceOf(SafetyDeferredError);
+    await port.mintToken(acct, action).catch((err) => {
+      expect(err).toBeInstanceOf(SafetyDeferredError);
+      expect((err as SafetyDeferredError).decision).toEqual({ kind: 'defer', until });
+    });
+  });
+
+  it('throws a typed SafetyDeferredError when the re-check denies', async () => {
+    const port = makeRunnerSafetyPort(gateReturning({ kind: 'deny', reason: 'paused' }));
+    await expect(port.mintToken(acct, action)).rejects.toBeInstanceOf(SafetyDeferredError);
+  });
+
+  it('mints an allow token when the re-check allows', async () => {
+    const port = makeRunnerSafetyPort(gateReturning({ kind: 'allow' }));
+    const token = await port.mintToken(acct, action);
+    expect(token.kind).toBe('allow');
+    expect(token.actionId).toBe('action-1');
   });
 });
