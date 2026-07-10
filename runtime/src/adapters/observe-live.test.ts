@@ -512,7 +512,83 @@ function connectionsPayload(
   };
 }
 
-describe('normalizeConnectionsResponse (relationships shapes)', () => {
+/**
+ * A trimmed but REAL-shaped normalized dash connections payload, sanitized from a
+ * live capture (2026-07-10). The live endpoint
+ * /voyager/api/relationships/dash/connections?decorationId=…ConnectionListWithProfile-16
+ * returns `data.*elements` (RECENTLY_ADDED order) + an `included[]` of Connection
+ * stubs and their resolved Profiles. No cookies/tokens are present. Ids are fake.
+ */
+function dashConnectionsPayload(
+  people: Array<{ id: string; publicId: string; first: string; last: string; headline: string; at: number }>,
+) {
+  const connUrn = (id: string) => `urn:li:fsd_connection:${id}`;
+  const profUrn = (id: string) => `urn:li:fsd_profile:${id}`;
+  const connections = people.map((p) => ({
+    $type: 'com.linkedin.voyager.dash.relationships.Connection',
+    createdAt: p.at,
+    connectedMember: profUrn(p.id),
+    entityUrn: connUrn(p.id),
+    '*connectedMemberResolutionResult': profUrn(p.id),
+  }));
+  const profiles = people.map((p) => ({
+    $type: 'com.linkedin.voyager.dash.identity.profile.Profile',
+    entityUrn: profUrn(p.id),
+    publicIdentifier: p.publicId,
+    firstName: p.first,
+    lastName: p.last,
+    headline: p.headline,
+  }));
+  return {
+    data: {
+      $type: 'com.linkedin.restli.common.CollectionResponse',
+      '*elements': people.map((p) => connUrn(p.id)),
+      paging: { count: people.length, start: 0, links: [] },
+    },
+    included: [...connections, ...profiles],
+  };
+}
+
+describe('normalizeConnectionsResponse (modern dash shape)', () => {
+  it('resolves Connection stubs against included[] Profiles', () => {
+    const body = dashConnectionsPayload([
+      {
+        id: 'AAA',
+        publicId: 'daniel-fanavoll',
+        first: 'Daniel',
+        last: 'Fanavoll',
+        headline: 'Head of Ops',
+        at: 1_783_697_318_000,
+      },
+    ]);
+    const conns = normalizeConnectionsResponse(body);
+    expect(conns).toHaveLength(1);
+    expect(conns[0]).toMatchObject({
+      entityUrn: 'urn:li:fsd_profile:AAA',
+      profileUrl: 'https://www.linkedin.com/in/daniel-fanavoll/',
+      name: 'Daniel Fanavoll',
+      headline: 'Head of Ops',
+    });
+    expect(conns[0]!.connectedAt?.getTime()).toBe(1_783_697_318_000);
+  });
+
+  it('keeps most-recent-first order and populates names + headlines', () => {
+    const body = dashConnectionsPayload([
+      { id: 'NEW', publicId: 'ann-new', first: 'Ann', last: 'New', headline: 'CTO', at: 30 },
+      { id: 'OLD', publicId: 'bob-old', first: 'Bob', last: 'Old', headline: 'CEO', at: 10 },
+      { id: 'MID', publicId: 'cid-mid', first: 'Cid', last: 'Mid', headline: 'CFO', at: 20 },
+    ]);
+    const conns = normalizeConnectionsResponse(body);
+    expect(conns.map((c) => c.entityUrn)).toEqual([
+      'urn:li:fsd_profile:NEW',
+      'urn:li:fsd_profile:MID',
+      'urn:li:fsd_profile:OLD',
+    ]);
+    expect(conns.map((c) => c.name)).toEqual(['Ann New', 'Cid Mid', 'Bob Old']);
+  });
+});
+
+describe('normalizeConnectionsResponse (legacy relationships shapes)', () => {
   it('reads entity urn, profile url, and connectedAt', () => {
     const body = connectionsPayload([{ urn: 'p1', publicId: 'alice-ng', at: 1_700_000_000_000 }]);
     const conns = normalizeConnectionsResponse(body);
@@ -540,12 +616,17 @@ describe('normalizeConnectionsResponse (relationships shapes)', () => {
 });
 
 describe('LiveConnectionsReader.readConnections', () => {
-  it('drives voyagerGet and normalizes the connections payload', async () => {
-    const page = new SearchFakePage([connectionsPayload([{ urn: 'p1', at: 5 }])]);
+  it('drives voyagerGet and normalizes the dash connections payload', async () => {
+    const page = new SearchFakePage([
+      dashConnectionsPayload([
+        { id: 'p1', publicId: 'p-one', first: 'P', last: 'One', headline: 'Eng', at: 5 },
+      ]),
+    ]);
     const reader = new LiveConnectionsReader({ pageFor: async () => page });
     const conns = await reader.readConnections('acct', 40);
     expect(conns.map((c) => c.entityUrn)).toEqual(['urn:li:fsd_profile:p1']);
-    // It hit the relationships connections endpoint.
-    expect(page.calls[0]).toContain('/voyager/api/relationships/connections');
+    // It hit the modern dash relationships connections endpoint with the decoration.
+    expect(page.calls[0]).toContain('/voyager/api/relationships/dash/connections');
+    expect(page.calls[0]).toContain('ConnectionListWithProfile');
   });
 });

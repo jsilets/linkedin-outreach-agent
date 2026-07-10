@@ -175,6 +175,22 @@ const observeTools: ToolDef[] = [
     },
     handler: (a, p) => p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit),
   },
+  {
+    name: 'list_recent_connections',
+    family: 'observe',
+    description:
+      "List the account's recently-accepted 1st-degree connections, most-recent " +
+      'first, from its own network (a live Voyager relationships read). Each item ' +
+      'carries entityUrn, profileUrl, name, headline, and connectedAt when present. ' +
+      'Read-only; does not charge the people-search budget. Use it to find someone ' +
+      'to message or to confirm an invite was accepted.',
+    privileged: false,
+    inputShape: {
+      accountId: z.string(),
+      limit: z.number().int().positive().max(100).default(25),
+    },
+    handler: (a, p) => p.observe.listRecentConnections(a.accountId, a.limit),
+  },
 ];
 
 // ---------------------------------------------------------------------------

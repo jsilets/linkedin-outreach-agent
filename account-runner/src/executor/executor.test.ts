@@ -129,7 +129,8 @@ describe('executor acts when allowed', () => {
     expect(page.gotos).toContain('https://www.linkedin.com/in/jane/');
     expect(page.clicked(SELECTORS.connectButton)).toBe(true);
     expect(page.clicked(SELECTORS.addNoteButton)).toBe(true);
-    expect(page.typedInto(SELECTORS.noteTextarea)).toContain('Hi Jane, great to connect.');
+    expect(page.focused(SELECTORS.noteTextarea)).toBe(true);
+    expect(page.composed).toContain('Hi Jane, great to connect.');
     expect(page.clicked(SELECTORS.sendInviteButton)).toBe(true);
   });
 
@@ -273,15 +274,59 @@ describe('executor acts when allowed', () => {
     expect(page.clicked(SELECTORS.connectInMenu)).toBe(false);
   });
 
-  it('message types into the compose box and sends', async () => {
+  it('message enters the body into the recipient conversation and sends', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'message' });
+    const res = await message(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/jane/',
+      body: 'Thanks for connecting!',
+    });
+    expect(res.ok).toBe(true);
+    expect(page.composed).toContain('Thanks for connecting!');
+    // Send is activated via focus + Enter (the button is off-viewport), not click.
+    expect(page.keysPressed).toContain('Enter');
+  });
+
+  it('REFUSES to send when the recipient conversation is not open (wrong-recipient guard)', async () => {
+    // No conversation bubble links to /in/jane/, so the recipient can't be
+    // verified — the runner must not type or send anywhere.
+    const convo = '.msg-overlay-conversation-bubble:has(a[href*="/in/jane/"])';
+    const page = new FakePage({ counts: { [convo]: 0 } });
+    const action = makeAction({ type: 'message' });
+    const res = await message(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/jane/',
+      body: 'Thanks for connecting!',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/refus/i);
+    expect(page.composed).toBe(''); // nothing typed
+    expect(page.keysPressed).not.toContain('Enter'); // nothing sent
+  });
+
+  it('refuses to send when the profile URL has no /in/ id', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'message' });
+    const res = await message(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/feed/',
+      body: 'Hello',
+    });
+    expect(res.ok).toBe(false);
+    expect(page.composed).toBe('');
+  });
+
+  it('preserves paragraph breaks with Shift+Enter (not plain Enter, which sends)', async () => {
     const page = new FakePage();
     const action = makeAction({ type: 'message' });
     await message(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/jane/',
-      body: 'Thanks for connecting!',
+      body: 'Line one.\n\nLine two.',
     });
-    expect(page.typedInto(SELECTORS.messageComposeBox)).toContain('Thanks for connecting!');
-    expect(page.clicked(SELECTORS.messageSendButton)).toBe(true);
+    // Composed text carries the blank line between paragraphs.
+    expect(page.composed).toBe('Line one.\n\nLine two.');
+    // Two Shift+Enter breaks compose the blank line; a single bare Enter sends.
+    // A bare Enter is NEVER used for a newline (that would submit early).
+    expect(page.keysPressed.filter((k) => /shift\+enter/i.test(k)).length).toBe(2);
+    expect(page.keysPressed.filter((k) => /^enter$/i.test(k)).length).toBe(1);
   });
 
   it('react LIKE single-clicks the trigger, no flyout', async () => {

@@ -9,7 +9,6 @@ import {
   actionGapMs,
   clickDelayMs,
   realSleep,
-  typingDelayMs,
   type Sleeper,
 } from '../human.js';
 import { assertAllowed } from './gate.js';
@@ -59,13 +58,72 @@ async function humanClick(ctx: ActionContext, selector: string): Promise<void> {
 async function humanType(ctx: ActionContext, selector: string, text: string): Promise<void> {
   const loc = ctx.page.locator(selector).first();
   await loc.waitFor({ state: 'visible' });
-  await loc.click();
-  await loc.type(text, { delay: typingDelayMs(ctx.rng) });
+  // The message composer (and connect-note box) open in an overlay that can
+  // render OUTSIDE the viewport, where a pointer click and per-key type() both
+  // stall ("element is outside of the viewport"). focus() needs no viewport.
+  await loc.focus();
+  // Clear anything already in the box before typing. LinkedIn pre-fills a
+  // recent-connection composer with a suggested/AI icebreaker ("Hi X, it's great
+  // to connect…"); without this our text would be APPENDED to it. fill('') clears
+  // a contenteditable; the keyboard path then inserts our body from empty.
+  await loc.fill('');
+  const page = ctx.page;
+  if (page.insertText && page.pressKey) {
+    // Enter the body as discrete lines so blank-line paragraph breaks survive:
+    // insert each line, then Shift+Enter for the newline. Plain Enter would SEND
+    // the message, so it must be Shift+Enter. insertText is paste-like (one
+    // input event, no per-key stall) and dispatches the event LinkedIn's editor
+    // needs to enable Send. The between-actions pacer, not per-key cadence, is
+    // the anti-burst defense.
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) await page.pressKey('Shift+Enter');
+      if (lines[i]) await page.insertText(lines[i]!);
+    }
+  } else {
+    // Fallback for fakes/ports without keyboard access: atomic fill (no line
+    // breaks, but the input event still enables Send).
+    await loc.fill(text);
+  }
+}
+
+/**
+ * Activate a button that may render OUTSIDE the viewport (the message-composer
+ * overlay's Send button). A pointer hover/click there fails the viewport
+ * actionability check, so focus it and press Enter — a focused button activates
+ * on Enter with no viewport requirement. Falls back to a normal click when the
+ * page has no keyboard access (lightweight fakes).
+ */
+async function pressButton(ctx: ActionContext, selector: string): Promise<void> {
+  const loc = ctx.page.locator(selector).first();
+  await loc.waitFor({ state: 'visible' });
+  if (ctx.page.pressKey) {
+    await loc.focus();
+    await ctx.page.pressKey('Enter');
+  } else {
+    await clickLoc(ctx, loc);
+  }
 }
 
 /** True if at least one element matches; lets connect() branch without throwing. */
 async function isPresent(ctx: ActionContext, selector: string): Promise<boolean> {
   return (await ctx.page.locator(selector).count()) > 0;
+}
+
+/** Prefix every comma-part of a (possibly multi-part) selector with an ancestor
+ * scope, confining the whole OR-chain to one container. */
+function scopeSelector(scope: string, sel: string): string {
+  return sel
+    .split(',')
+    .map((s) => `${scope} ${s.trim()}`)
+    .join(', ');
+}
+
+/** The /in/<publicId> slug from a profile URL, or undefined. Used to scope the
+ * message composer to the intended recipient's conversation. */
+function publicIdFromProfileUrl(url: string): string | undefined {
+  const m = url.match(/\/in\/([^/?#]+)/);
+  return m?.[1] ? decodeURIComponent(m[1]) : undefined;
 }
 
 /**
@@ -266,18 +324,50 @@ export async function connect(
   return { ok: true, detail: `${how} (${via})` };
 }
 
-/** Send a direct message in an open/available conversation. */
+/**
+ * Send a direct message to the person at `profileUrl`.
+ *
+ * SAFETY: LinkedIn keeps multiple chat overlays open at once, so the compose box
+ * and Send button must be scoped to the ONE conversation that provably belongs
+ * to this recipient — matched by a link to their /in/<publicId> inside the
+ * overlay bubble. If that scoped conversation is not open, we REFUSE to send
+ * (ok:false) rather than risk typing into a different person's conversation
+ * (which once mis-sent a message to the wrong connection). The composer is also
+ * cleared first, because LinkedIn pre-fills a suggested/AI icebreaker.
+ */
 export async function message(
   ctx: ActionContext,
   params: { profileUrl: string; body: string },
 ): Promise<ActionResultOut> {
   guard(ctx);
+  const publicId = publicIdFromProfileUrl(params.profileUrl);
+  if (!publicId) {
+    return {
+      ok: false,
+      detail: `no /in/ id in ${params.profileUrl}; refusing to send (cannot verify recipient)`,
+    };
+  }
   await ctx.page.goto(params.profileUrl, { waitUntil: 'domcontentloaded' });
   await gap(ctx);
   await humanClick(ctx, SELECTORS.messageButton);
-  await humanType(ctx, SELECTORS.messageComposeBox, params.body);
+
+  // The overlay bubble for THIS recipient: the conversation bubble that contains
+  // a link to their profile. Scoping the box + Send to it makes a wrong-recipient
+  // send impossible even when other conversations are open.
+  const convo = `${SELECTORS.messageConversationBubble}:has(a[href*="/in/${publicId}/"])`;
+  await ctx.page.waitForTimeout(1500);
+  if (!(await isPresent(ctx, convo))) {
+    return {
+      ok: false,
+      detail: `recipient conversation for /in/${publicId} did not open; refusing to send to avoid a wrong recipient`,
+    };
+  }
+
+  await humanType(ctx, scopeSelector(convo, SELECTORS.messageComposeBox), params.body);
   await gap(ctx);
-  await humanClick(ctx, SELECTORS.messageSendButton);
+  // The Send button lives in the same off-viewport overlay as the composer, so
+  // activate it via focus+Enter rather than a pointer click (see pressButton).
+  await pressButton(ctx, scopeSelector(convo, SELECTORS.messageSendButton));
   return { ok: true, detail: 'message sent' };
 }
 

@@ -41,6 +41,7 @@ import type {
   StoreBackedWeeklyInviteCounter,
 } from '../adapters/safety-state.js';
 import { rowToAccount, rowToTarget } from '../mappers.js';
+import { personalizeBody } from './session-provider.js';
 
 /** Resolves the live browser session for an account. In P0 this comes from
  * @loa/account-runner session.resume(); dev/smoke never construct one. */
@@ -162,6 +163,10 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     // account); it resumes the vaulted browser session for accountId.
     const page = await this.session.pageFor(accountId);
     const profileUrl = this.session.profileUrlFor(target);
+    // Merge the target's first name into a message body ({First} -> "Kenney").
+    // Only messages are personalized; this campaign sends bare connect invites.
+    const outboundBody =
+      type === 'message' && body !== undefined ? personalizeBody(body, target) : body;
     const ctx: ActionContext = {
       page,
       token,
@@ -171,7 +176,7 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       ...(this.rng ? { rng: this.rng } : {}),
     };
 
-    const outcome = await this.drive(ctx, type, profileUrl, body);
+    const outcome = await this.drive(ctx, type, profileUrl, outboundBody);
 
     const executedAt = this.now();
     // The pacer spaces any browser activity, so record it whether or not the

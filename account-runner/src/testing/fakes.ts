@@ -20,6 +20,7 @@ export interface LocatorLog {
   typed: string[];
   filled: string[];
   hovers: number;
+  focuses: number;
   waits: number;
 }
 
@@ -57,6 +58,9 @@ export class FakeLocator implements LocatorPort {
   }
   async hover(): Promise<void> {
     this.log.hovers += 1;
+  }
+  async focus(): Promise<void> {
+    this.log.focuses += 1;
   }
   async waitFor(): Promise<void> {
     this.log.waits += 1;
@@ -124,7 +128,7 @@ export class FakePage implements PagePort {
   locator(selector: string): LocatorPort {
     let log = this.locators.get(selector);
     if (!log) {
-      log = { selector, clicks: 0, typed: [], filled: [], hovers: 0, waits: 0 };
+      log = { selector, clicks: 0, typed: [], filled: [], hovers: 0, focuses: 0, waits: 0 };
       this.locators.set(selector, log);
     }
     const count = this.opts.counts?.[selector] ?? 1;
@@ -138,6 +142,25 @@ export class FakePage implements PagePort {
 
   async waitForTimeout(): Promise<void> {
     // no-op in tests
+  }
+
+  /** Text entered via keyboard.insertText, with Shift+Enter recorded as '\n', so
+   * a test can assert the composed message including its paragraph breaks. */
+  composed = '';
+  readonly keysPressed: string[] = [];
+  async insertText(text: string): Promise<void> {
+    this.composed += text;
+  }
+  async pressKey(key: string): Promise<void> {
+    this.keysPressed.push(key);
+    // Only Shift+Enter inserts a newline into the body; a bare Enter is a submit
+    // (the Send button activation), not composed text.
+    if (/shift\+enter/i.test(key)) this.composed += '\n';
+  }
+
+  /** Convenience: was a selector focused at least once? */
+  focused(selector: string): boolean {
+    return (this.locators.get(selector)?.focuses ?? 0) > 0;
   }
 
   /** Canned Voyager response; set by a test that exercises a direct API call. */

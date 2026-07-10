@@ -46,6 +46,7 @@ function stubLocator(count: number): LocatorPort {
       return loc;
     },
     async hover() {},
+    async focus() {},
     async waitFor() {},
   };
   return loc;

@@ -24,6 +24,7 @@
 // open-source clients. buildVoyagerSearchUrl() is retained as the human-facing
 // results-page URL (e.g. to open the same search in a real browser).
 
+import { extractCompany } from '@loa/shared';
 import type { PagePort } from '@loa/account-runner';
 import type {
   ObservePort,
@@ -34,6 +35,7 @@ import type {
   EngagerSummary,
   JobSummary,
   ConversationSummary,
+  RecentConnection,
 } from '@loa/mcp';
 
 /**
@@ -406,6 +408,10 @@ export interface AcceptedConnection {
   entityUrn: string;
   /** https://www.linkedin.com/in/<publicId>/ when the payload carries one. */
   profileUrl?: string;
+  /** Full name (firstName + lastName), when the payload carries them. */
+  name?: string;
+  /** The connection's headline/occupation, when present. */
+  headline?: string;
   /** When LinkedIn timestamps the connection (createdAt). */
   connectedAt?: Date;
 }
@@ -427,30 +433,51 @@ export class StaticConnectionsReader implements ConnectionsReaderPort {
   }
 }
 
-/** Voyager relationships connections endpoint. Returns the account's own
+/**
+ * The Rest.li decoration that tells the connections endpoint to INLINE each
+ * connection's Profile (name, headline, publicIdentifier) into `included[]`.
+ * Without it the response carries only bare Connection stubs (createdAt +
+ * connectedMember urn), so names/headlines would be blank. LinkedIn bumps the
+ * trailing version (…WithProfile-16) as it ships new web builds; older versions
+ * still resolved live (−14…−16 all returned 200), but override with
+ * LOA_CONNECTIONS_DECORATION_ID if a future bump ever 400s. Captured live
+ * 2026-07-10. Named a decorationId, not a queryId, because this is the Rest.li
+ * REST endpoint (not GraphQL) — the modern replacement for the deprecated
+ * /voyager/api/relationships/connections, which now 400s.
+ */
+const DEFAULT_CONNECTIONS_DECORATION_ID =
+  'com.linkedin.voyager.dash.deco.web.mynetwork.ConnectionListWithProfile-16';
+
+function connectionsDecorationId(): string {
+  return process.env.LOA_CONNECTIONS_DECORATION_ID?.trim() || DEFAULT_CONNECTIONS_DECORATION_ID;
+}
+
+/** Voyager relationships DASH connections endpoint. Returns the account's own
  * 1st-degree connections most-recently-added first; free on a normal session.
- * The count caps how many come back. */
+ * The count caps how many come back. The `dash` path + ConnectionListWithProfile
+ * decoration is the modern replacement for /voyager/api/relationships/connections
+ * (that legacy REST path now returns HTTP 400). */
 function connectionsPath(count: number): string {
   return (
-    `/voyager/api/relationships/connections` +
-    `?count=${count}&q=search&sortType=RECENTLY_ADDED&start=0`
+    `/voyager/api/relationships/dash/connections` +
+    `?decorationId=${connectionsDecorationId()}` +
+    `&count=${count}&q=search&sortType=RECENTLY_ADDED&start=0`
   );
 }
 
 /**
  * LiveConnectionsReader: read an account's recently-accepted connections by
- * issuing a direct authenticated GET to the Voyager relationships endpoint from
- * the account's own logged-in page (page.voyagerGet), the SAME same-origin
+ * issuing a direct authenticated GET to the Voyager relationships DASH endpoint
+ * from the account's own logged-in page (page.voyagerGet), the SAME same-origin
  * primitive searchPeople and the inbox reader use. Sorted most-recent first so a
  * parked target that just accepted surfaces near the top.
  *
- * STILL TO VERIFY LIVE: the endpoint path and the exact field names against a
- * real relationships payload. Prior art (tomquirk/linkedin-api) hits
- * /voyager/api/relationships/connections with count/start/sortType and reads
- * elements[].miniProfile.{entityUrn,publicIdentifier}; the connection timestamp
- * lives on the element (createdAt, epoch ms). These are best-effort guesses:
- * normalizeConnectionsResponse is exported so the ops shakeout can dump a raw
- * body and adjust the endpoint/names.
+ * Verified live 2026-07-10 against the seeded account: the legacy REST path
+ * /voyager/api/relationships/connections now returns HTTP 400, so this hits the
+ * modern /voyager/api/relationships/dash/connections with the
+ * ConnectionListWithProfile decoration. The normalized+json response carries a
+ * `data.*elements` order (RECENTLY_ADDED) plus an `included[]` of Connection and
+ * Profile entities; normalizeConnectionsResponse resolves the two together.
  */
 export class LiveConnectionsReader implements ConnectionsReaderPort {
   constructor(private readonly pages: PageProvider) {}
@@ -458,12 +485,16 @@ export class LiveConnectionsReader implements ConnectionsReaderPort {
   async readConnections(accountId: string, limit: number): Promise<AcceptedConnection[]> {
     const page = await this.pages.pageFor(accountId);
     await ensureOnLinkedIn(page);
+    // Request the NORMALIZED shape: the dash endpoint returns Connection stubs
+    // and their resolved Profiles as separate `included[]` entities keyed by urn,
+    // which is how the profile (name/headline/publicId) attaches to each row.
     const { status, body } = await page.voyagerGet(connectionsPath(limit), {
-      accept: 'application/json',
+      accept: 'application/vnd.linkedin.normalized+json+2.1',
     });
     if (status !== 200) {
       throw new Error(
-        `voyager connections returned HTTP ${status}; the session may be invalid`,
+        `voyager connections returned HTTP ${status}; the session may be invalid ` +
+          `or the decoration stale (set LOA_CONNECTIONS_DECORATION_ID to a current one)`,
       );
     }
     return normalizeConnectionsResponse(body).slice(0, limit);
@@ -472,27 +503,102 @@ export class LiveConnectionsReader implements ConnectionsReaderPort {
 
 /**
  * Walk a Voyager relationships connections response into AcceptedConnection[].
- * Reads both the decorated (`elements[]`) and normalized (`included[]`) shapes,
- * drops anything missing a profile urn, and sorts most-recent first. Exported
- * for the ops shakeout to run over a captured raw payload.
+ *
+ * The live dash endpoint returns the NORMALIZED shape (captured 2026-07-10):
+ *   { data: { "*elements": [ "urn:li:fsd_connection:<id>", … ] },
+ *     included: [ Connection…, Profile… ] }
+ * Each `Connection` carries createdAt (epoch ms) + connectedMember (the person's
+ * `urn:li:fsd_profile:<id>`) + a `*connectedMemberResolutionResult` reference to
+ * the resolved `Profile` entity (firstName/lastName/headline/publicIdentifier).
+ * `data.*elements` is already RECENTLY_ADDED order. We resolve each Connection to
+ * its Profile via the `included[]` urn map, key identity on the fsd_profile urn
+ * (so the acceptance matcher's urn-tail still matches a sourced target), and sort
+ * most-recent-first as a belt-and-braces guarantee.
+ *
+ * A legacy decorated fallback (`elements[].miniProfile`) is retained for older
+ * response forms and the unit fixtures. Exported for the ops shakeout.
  */
 export function normalizeConnectionsResponse(body: unknown): AcceptedConnection[] {
   const root = body as VoyagerConnectionsResponse | undefined;
-  const elements =
-    root?.elements ?? root?.data?.elements ?? asConnectionElements(root?.included);
 
+  // --- Modern normalized shape: data.*elements + included[Connection|Profile] ---
+  const included = root?.included;
+  if (Array.isArray(included) && included.length) {
+    const byUrn = new Map<string, ConnectionEntity>();
+    for (const el of included) if (el?.entityUrn) byUrn.set(el.entityUrn, el);
+
+    // Prefer the server's RECENTLY_ADDED order in data.*elements; fall back to
+    // every Connection entity in included when that ordering list is absent.
+    const order = root?.data?.['*elements'];
+    const conns = Array.isArray(order)
+      ? order.map((u) => byUrn.get(u)).filter((e): e is ConnectionEntity => !!e)
+      : included.filter(isConnectionEntity);
+
+    const modern: AcceptedConnection[] = [];
+    for (const conn of conns) {
+      const c = normalizeDashConnection(conn, byUrn);
+      if (c) modern.push(c);
+    }
+    if (modern.length) {
+      modern.sort((a, b) => (b.connectedAt?.getTime() ?? 0) - (a.connectedAt?.getTime() ?? 0));
+      return modern;
+    }
+  }
+
+  // --- Legacy decorated fallback: elements[].miniProfile ------------------------
+  const elements =
+    root?.elements ?? root?.data?.elements ?? asConnectionElements(included);
   const out: AcceptedConnection[] = [];
   for (const el of elements ?? []) {
     const conn = normalizeConnectionElement(el);
     if (conn) out.push(conn);
   }
-  // Most recent first so a just-accepted invite surfaces near the top.
   out.sort((a, b) => (b.connectedAt?.getTime() ?? 0) - (a.connectedAt?.getTime() ?? 0));
   return out;
 }
 
+/** True when a normalized `included[]` entity is a relationships Connection
+ * stub (has connectedMember, or a $type/_type tag ending in `.Connection`). */
+function isConnectionEntity(el: ConnectionEntity | undefined): boolean {
+  if (!el) return false;
+  if (typeof el.connectedMember === 'string') return true;
+  const t = el.$type ?? el._type ?? '';
+  return typeof t === 'string' && t.endsWith('.Connection');
+}
+
+/**
+ * Resolve one dash Connection stub against the `included[]` urn map into an
+ * AcceptedConnection. Identity keys on the connectedMember fsd_profile urn (the
+ * one the acceptance/reply matcher can tail-match); name/headline/profileUrl come
+ * from the resolved Profile entity.
+ */
+function normalizeDashConnection(
+  conn: ConnectionEntity | undefined,
+  byUrn: Map<string, ConnectionEntity>,
+): AcceptedConnection | null {
+  if (!conn) return null;
+  const profileRef = conn['*connectedMemberResolutionResult'] ?? conn.connectedMember;
+  const profile = typeof profileRef === 'string' ? byUrn.get(profileRef) : undefined;
+
+  // Key identity on the person's profile urn, not the fsd_connection urn.
+  const entityUrn = conn.connectedMember ?? profile?.entityUrn ?? conn.entityUrn;
+  if (!entityUrn) return null;
+
+  const publicId = profile?.publicIdentifier;
+  const name = [profile?.firstName, profile?.lastName].filter(Boolean).join(' ').trim();
+  const headline = profile?.headline?.trim() || profile?.occupation?.trim();
+  const connectedAt = conn.createdAt;
+  return {
+    entityUrn,
+    ...(publicId ? { profileUrl: `https://www.linkedin.com/in/${publicId}/` } : {}),
+    ...(name ? { name } : {}),
+    ...(headline ? { headline } : {}),
+    ...(typeof connectedAt === 'number' ? { connectedAt: new Date(connectedAt) } : {}),
+  };
+}
+
 /** Pull connection entities out of a normalized `included[]` list (those that
- * carry a miniProfile). */
+ * carry a miniProfile). Legacy decorated shape only. */
 function asConnectionElements(
   included: ConnectionEntity[] | undefined,
 ): ConnectionElement[] | undefined {
@@ -510,9 +616,12 @@ function normalizeConnectionElement(
 
   const publicId = profile?.publicIdentifier;
   const connectedAt = el.createdAt;
+  const name = [profile?.firstName, profile?.lastName].filter(Boolean).join(' ').trim();
   return {
     entityUrn,
     ...(publicId ? { profileUrl: `https://www.linkedin.com/in/${publicId}/` } : {}),
+    ...(name ? { name } : {}),
+    ...(profile?.occupation ? { headline: profile.occupation } : {}),
     ...(typeof connectedAt === 'number' ? { connectedAt: new Date(connectedAt) } : {}),
   };
 }
@@ -526,6 +635,21 @@ export class LiveObserve implements ObservePort {
     private readonly pages: PageProvider,
     private readonly budget: SearchBudget,
   ) {}
+
+  /** Recently-accepted connections, most-recent first. Reads the same live
+   * Voyager relationships endpoint the acceptance tick uses. Not a people-search,
+   * so it does NOT charge the search budget. */
+  async listRecentConnections(accountId: string, limit: number): Promise<RecentConnection[]> {
+    const reader = new LiveConnectionsReader(this.pages);
+    const connections = await reader.readConnections(accountId, limit);
+    return connections.map((c) => ({
+      entityUrn: c.entityUrn,
+      ...(c.profileUrl ? { profileUrl: c.profileUrl } : {}),
+      ...(c.name ? { name: c.name } : {}),
+      ...(c.headline ? { headline: c.headline } : {}),
+      ...(c.connectedAt ? { connectedAt: c.connectedAt.toISOString() } : {}),
+    }));
+  }
 
   async searchPeople(
     accountId: string,
@@ -688,9 +812,11 @@ function normalizeEntityResult(er: EntityResult): PersonSearchResult | null {
     profileUrl,
     degree: er.entityCustomTrackingInfo?.memberDistance ?? er.badgeText?.text,
     location: textOf(er.secondarySubtitle),
-    // free-tier entityResult does not reliably split out current company; it is
-    // usually embedded in the headline. // GUESS: verify live.
-    currentCompany: undefined,
+    // Free-tier search carries NO structured company (verified live 2026-07-10:
+    // no fsd_company, null company logos, no embedded object). The only company
+    // signal is when the occupation line names it ("Director at Voltera"), so we
+    // conservatively parse it from primarySubtitle — undefined when unmarked.
+    currentCompany: extractCompany(textOf(er.primarySubtitle)),
   };
 }
 
@@ -794,14 +920,21 @@ type MessagingEntity = Conversation & Record<string, unknown>;
 
 interface VoyagerConnectionsResponse {
   elements?: ConnectionElement[];
-  data?: { elements?: ConnectionElement[] };
-  /** Flat entity list in the normalized response shape. */
+  data?: {
+    elements?: ConnectionElement[];
+    /** Ordered connection urns (RECENTLY_ADDED) in the normalized dash shape. */
+    '*elements'?: string[];
+  };
+  /** Flat entity list in the normalized response shape (Connection + Profile). */
   included?: ConnectionEntity[];
 }
 
 interface ConnectionMiniProfile {
   entityUrn?: string;
   publicIdentifier?: string;
+  firstName?: string;
+  lastName?: string;
+  occupation?: string;
 }
 
 interface ConnectionElement {
@@ -809,12 +942,32 @@ interface ConnectionElement {
   /** Connection timestamp, epoch ms. */
   createdAt?: number;
   miniProfile?: ConnectionMiniProfile;
-  /** Newer dash shape names the resolved profile differently. // GUESS. */
+  /** Legacy inline resolved profile (older decorated shape). */
   connectedMemberResolutionResult?: ConnectionMiniProfile;
 }
 
-/** Any entity in the normalized `included[]`; connections carry a miniProfile. */
-type ConnectionEntity = ConnectionElement & Record<string, unknown>;
+/**
+ * An entity in the normalized dash `included[]`: either a relationships
+ * `Connection` stub or a resolved identity `Profile`. Fields are optional because
+ * a given entity is only one of the two. Verified live 2026-07-10:
+ *   Connection: createdAt, connectedMember (urn:li:fsd_profile:<id>),
+ *               *connectedMemberResolutionResult (urn ref into included[]).
+ *   Profile:    entityUrn, publicIdentifier, firstName, lastName, headline.
+ */
+interface ConnectionEntity extends ConnectionElement {
+  $type?: string;
+  _type?: string;
+  /** Connection stub: the connected person's urn:li:fsd_profile:<id>. */
+  connectedMember?: string;
+  /** Connection stub: urn reference to the resolved Profile in included[]. */
+  '*connectedMemberResolutionResult'?: string;
+  /** Profile-entity fields (present on Profile, absent on Connection). */
+  publicIdentifier?: string;
+  firstName?: string;
+  lastName?: string;
+  headline?: string;
+  occupation?: string;
+}
 
 // ---------------------------------------------------------------------------
 // STILL TO VERIFY LIVE
@@ -835,9 +988,9 @@ type ConnectionEntity = ConnectionElement & Record<string, unknown>;
 // ops shakeout can dump a raw body and adjust the names.
 //
 // The connections reader (readConnections / normalizeConnectionsResponse) is
-// UNPROVEN too: the /voyager/api/relationships/connections path + params
-// (count/start/sortType=RECENTLY_ADDED, q=search), the element field names
-// (miniProfile.{entityUrn,publicIdentifier}, createdAt epoch ms), and whether
-// the dash build renamed miniProfile all need one real run.
-// normalizeConnectionsResponse is exported so the shakeout can dump a raw body
-// and adjust the endpoint/names.
+// VERIFIED live 2026-07-10 against the seeded account: the legacy
+// /voyager/api/relationships/connections REST path returns HTTP 400, so it now
+// uses /voyager/api/relationships/dash/connections with the
+// ConnectionListWithProfile decoration and parses the normalized
+// data.*elements + included[Connection|Profile] shape. The only rotatable piece
+// is the decoration version (LOA_CONNECTIONS_DECORATION_ID overrides the default).

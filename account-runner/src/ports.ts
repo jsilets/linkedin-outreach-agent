@@ -23,6 +23,10 @@ export interface LocatorPort {
   nth(index: number): LocatorPort;
   // Human-style hover before a click.
   hover(): Promise<void>;
+  // DOM focus. Unlike click(), needs no viewport hit-test, so it reaches an
+  // editable that renders outside the viewport (e.g. the message composer
+  // overlay). Typing then lands on the focused element.
+  focus(): Promise<void>;
   // Wait until the element is present/visible.
   waitFor(options?: { state?: 'visible' | 'attached'; timeout?: number }): Promise<void>;
 }
@@ -76,6 +80,19 @@ export interface PagePort {
     pathWithQuery: string,
     opts?: { accept?: string },
   ): Promise<{ status: number; body: unknown }>;
+  /**
+   * Insert text at the focused element's caret (paste-like: one input event, no
+   * per-key events, no viewport hit-test). Reaches an editor that renders
+   * outside the viewport, where click+type stalls. Optional so lightweight test
+   * fakes need not implement it; callers fall back to fill() when absent.
+   */
+  insertText?(text: string): Promise<void>;
+  /**
+   * Press a key or chord on the focused element, e.g. "Shift+Enter" for a
+   * newline that does NOT submit the message (plain Enter sends). Optional; see
+   * insertText.
+   */
+  pressKey?(key: string): Promise<void>;
 }
 
 /**

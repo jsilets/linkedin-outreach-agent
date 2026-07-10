@@ -75,6 +75,65 @@ export function profileUrlForTarget(target: Target): string {
   return `https://www.linkedin.com/in/${encodeURIComponent(profileIdFromUrn(ref))}/`;
 }
 
+/** Matches a first-name merge token in a step body: {First}, {first_name},
+ * {FirstName}, {first name}. Case-insensitive, tolerant of inner spacing. */
+const FIRST_NAME_TOKEN = /\{\s*first(?:[\s_-]?name)?\s*\}/gi;
+
+/** Matches a company merge token: {Company}. Case-insensitive. */
+const COMPANY_TOKEN = /\{\s*company\s*\}/gi;
+/** A company token WITH its leading connector ("at {Company}", "@ {Company}").
+ * When the company is unknown we drop the whole clause so "your work at
+ * {Company}" degrades to "your work" rather than "your work at". The (?:^|\s)
+ * lets it also strip a clause at the very start of the body. */
+const COMPANY_WITH_CONNECTOR = /(?:^|\s)(?:at|@)\s+\{\s*company\s*\}/gi;
+
+/** The target's first name from the sourced identity (externalContext.name),
+ * or undefined when no usable name was captured. Exported for unit tests. */
+export function firstNameFromTarget(target: Target): string | undefined {
+  const ext = target.externalContext as { name?: unknown } | null | undefined;
+  const name = typeof ext?.name === 'string' ? ext.name.trim() : '';
+  if (!name) return undefined;
+  const first = name.split(/\s+/)[0];
+  return first || undefined;
+}
+
+/** The target's current company (externalContext.currentCompany), or undefined
+ * when none was captured/classified. Exported for unit tests. */
+export function companyFromTarget(target: Target): string | undefined {
+  const ext = target.externalContext as { currentCompany?: unknown } | null | undefined;
+  const company = typeof ext?.currentCompany === 'string' ? ext.currentCompany.trim() : '';
+  return company || undefined;
+}
+
+/**
+ * Substitute merge tokens in a message body.
+ *   {First}   -> the target's first name, or "there" when unknown.
+ *   {Company} -> the target's company; when unknown, the token AND a leading
+ *                "at "/"@" connector are dropped so the sentence stays clean
+ *                ("your work at {Company}" -> "your work"). This is the "honest"
+ *                rule: never print a blank or guessed company.
+ * Exported for unit tests.
+ */
+export function personalizeBody(body: string, target: Target): string {
+  let out = body;
+
+  FIRST_NAME_TOKEN.lastIndex = 0;
+  if (FIRST_NAME_TOKEN.test(out)) {
+    const first = firstNameFromTarget(target) ?? 'there';
+    out = out.replace(FIRST_NAME_TOKEN, first);
+  }
+
+  COMPANY_TOKEN.lastIndex = 0;
+  if (COMPANY_TOKEN.test(out)) {
+    const company = companyFromTarget(target);
+    out = company
+      ? out.replace(COMPANY_TOKEN, company)
+      : out.replace(COMPANY_WITH_CONNECTOR, '').replace(COMPANY_TOKEN, '');
+  }
+
+  return out;
+}
+
 export class LiveSessionProvider implements SessionProvider {
   private readonly factory = new BrowserContextFactory(createPatchrightLauncher());
   private readonly sessions = new Map<string, Promise<LiveSession>>();

@@ -124,16 +124,16 @@ export const SELECTORS = {
     'main button[aria-label^="Message"], ' +
     'main a[aria-label^="Message"], ' +
     'main button:has(span:text-is("Message"))',
+  // The chat overlay bubble for ONE conversation. LinkedIn keeps several open at
+  // once and they live in a shadow subtree; the runner scopes the compose box +
+  // Send to the bubble that provably links to the intended recipient
+  // (`${messageConversationBubble}:has(a[href*="/in/<publicId>/"])`) so a message
+  // can never land in a different open conversation. Verified live 2026-07-10.
+  messageConversationBubble: '.msg-overlay-conversation-bubble',
   messageComposeBox:
-    'div[role="textbox"][aria-label*="message" i], ' +
     'div[contenteditable="true"][aria-label*="message" i], ' +
-    'div[class*="msg-form__contenteditable"][contenteditable="true"], ' +
     'div.msg-form__contenteditable[contenteditable="true"]',
-  messageSendButton:
-    'button[type="submit"][aria-label*="Send" i], ' +
-    'button.msg-form__send-button, ' +
-    'button[class*="msg-form__send"], ' +
-    'form.msg-form button[type="submit"]',
+  messageSendButton: 'button.msg-form__send-button, button[type="submit"][aria-label*="Send" i]',
   // A single conversation row in the inbox list.
   inboxConversationRow: 'li.msg-conversation-listitem',
   // Message bubbles within an open conversation.

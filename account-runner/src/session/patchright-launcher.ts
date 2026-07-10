@@ -44,6 +44,7 @@ function adaptLocator(loc: PwLocator): LocatorPort {
     first: () => adaptLocator(loc.first()),
     nth: (index) => adaptLocator(loc.nth(index)),
     hover: () => loc.hover(),
+    focus: () => loc.focus(),
     waitFor: (options) => loc.waitFor(options),
   };
 }
@@ -57,6 +58,8 @@ function adaptPage(page: PwPage): PagePort {
     $$count: (selector) => page.locator(selector).count(),
     url: () => page.url(),
     waitForTimeout: (ms) => page.waitForTimeout(ms),
+    insertText: (text) => page.keyboard.insertText(text),
+    pressKey: (key) => page.keyboard.press(key),
     waitForResponse: async (urlSubstring, opts) => {
       const needles = Array.isArray(urlSubstring) ? urlSubstring : [urlSubstring];
       const res = await page.waitForResponse(
