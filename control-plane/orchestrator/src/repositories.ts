@@ -170,6 +170,12 @@ export class ActionRepo {
     return out!;
   }
 
+  /** Remove an action row. Used to clean up a just-created pending row when a
+   * mint-time safety re-check defers, so no orphan pending row is left behind. */
+  async deleteById(id: string): Promise<void> {
+    await this.db.handle.delete(actions).where(eq(actions.id, id));
+  }
+
   /** Every action for one account. Backs the weekly-invite counter. */
   async listByAccount(accountId: string): Promise<ActionRow[]> {
     return this.db.handle

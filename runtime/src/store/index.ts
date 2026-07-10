@@ -31,6 +31,17 @@ export interface ActionStorePort {
   create(row: shared.NewActionRow): Promise<shared.ActionRow>;
   findById(id: string): Promise<shared.ActionRow | undefined>;
   listByAccount(accountId: string): Promise<shared.ActionRow[]>;
+  /** Persist the final outcome onto an action row: its result plus the time it
+   * executed. The executor calls this after driving the action so the row no
+   * longer reads 'pending'. */
+  setResult(
+    id: string,
+    result: shared.ActionRow['result'],
+    executedAt: Date | null,
+  ): Promise<shared.ActionRow>;
+  /** Remove an action row. Used to clean up a just-created pending row when a
+   * mint-time safety re-check defers, so no orphan pending row is left behind. */
+  deleteById(id: string): Promise<void>;
 }
 
 /** Event reads the admin audit-log adapter needs on top of EventRepoPort. */

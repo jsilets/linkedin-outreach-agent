@@ -54,6 +54,16 @@ class PgActionStore implements ActionStorePort {
   async listByAccount(accountId: string): Promise<shared.ActionRow[]> {
     return this.repos.action.listByAccount(accountId);
   }
+  async setResult(
+    id: string,
+    result: shared.ActionRow['result'],
+    executedAt: Date | null,
+  ): Promise<shared.ActionRow> {
+    return this.repos.action.setResult(id, result, executedAt);
+  }
+  async deleteById(id: string): Promise<void> {
+    return this.repos.action.deleteById(id);
+  }
 }
 
 class PgEventRead implements EventReadPort {

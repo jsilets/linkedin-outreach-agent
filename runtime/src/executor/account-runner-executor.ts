@@ -13,6 +13,7 @@
 // enforcement is real.
 
 import type { Account, Action, ActionType, Target } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import type { ActRequest, ExecutorPort as McpExecutorPort } from '@loa/mcp';
 import type {
   ExecIntent,
@@ -155,8 +156,19 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     };
 
     // Mint the allow token bound to this exact action. The runner SafetyPort
-    // re-checks canAct and refuses to mint unless the decision is allow.
-    const token: AllowToken = await this.runnerSafety.mintToken(account, action);
+    // re-checks canAct and refuses to mint unless the decision is allow. When
+    // that re-check defers (SafetyDeferredError, since #34), nothing drove the
+    // page: drop the pending row we just created so a retried tick does not leave
+    // an orphan behind, then rethrow so gateAct maps it to a deferred outcome.
+    let token: AllowToken;
+    try {
+      token = await this.runnerSafety.mintToken(account, action);
+    } catch (err) {
+      if (err instanceof SafetyDeferredError) {
+        await this.store.action.deleteById(action.id);
+      }
+      throw err;
+    }
 
     // Obtain the live Page from the resumed session. LiveSessionProvider.pageFor
     // is wired and proven (people-search runs over this same call on a real
@@ -187,14 +199,20 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     // or found no Connect control returns ok:false and must be recorded as a
     // failure — never a false success. Only a genuinely-sent invite counts.
     if (!outcome.ok) {
+      // Persist the failure onto the row so getQueue no longer reports it as a
+      // still-pending action and the row is not left orphaned as 'pending'.
+      const failedRow = await this.store.action.setResult(action.id, 'failed', executedAt);
       await this.store.event.append({
         accountId,
         kind: 'action_failed',
         payload: { actionId: action.id, type, targetId, campaignId, detail: outcome.detail },
       });
-      return { ...action, executedAt, result: 'failed', updatedAt: executedAt };
+      return { ...action, executedAt: failedRow.executedAt, result: failedRow.result, updatedAt: failedRow.updatedAt };
     }
 
+    // Persist the success onto the row (result + executedAt) so getQueue stops
+    // reporting it as pending. Do this before warming the safety state / event.
+    const successRow = await this.store.action.setResult(action.id, 'success', executedAt);
     // Keep the in-memory safety state warm exactly like the fake executor: the
     // weekly ceiling counts connects that actually went out.
     if (type === 'connect') this.weekly?.record(accountId, executedAt);
@@ -203,7 +221,7 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       kind: 'action_executed',
       payload: { actionId: action.id, type, targetId, campaignId, via: 'account_runner' },
     });
-    return { ...action, executedAt, result: 'success', updatedAt: executedAt };
+    return { ...action, executedAt: successRow.executedAt, result: successRow.result, updatedAt: successRow.updatedAt };
   }
 
   /** Dispatch to the matching runner action function, returning its outcome. */
