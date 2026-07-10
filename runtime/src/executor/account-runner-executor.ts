@@ -33,6 +33,7 @@ import {
   react as runnerReact,
   visitProfile as runnerVisitProfile,
   withdrawInvite as runnerWithdrawInvite,
+  type ActionResultOut,
 } from '@loa/account-runner';
 import type { RuntimeStore } from '../store/index.js';
 import type {
@@ -170,18 +171,28 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       ...(this.rng ? { rng: this.rng } : {}),
     };
 
-    await this.drive(ctx, type, profileUrl, body);
+    const outcome = await this.drive(ctx, type, profileUrl, body);
 
-    // Mark the row executed. AccountRepo/ActionRepo expose no setResult on the
-    // runtime store surface yet, so we append an audit event; the executed
-    // Action is returned with executedAt set for callers.
     const executedAt = this.now();
-    // Keep the in-memory safety state warm exactly like the fake executor: the
-    // weekly ceiling counts connects, the pacer spaces every action type. This
-    // was previously missing on the real path, so live sends never advanced
-    // either counter until the next boot-time rehydrate.
-    if (type === 'connect') this.weekly?.record(accountId, executedAt);
+    // The pacer spaces any browser activity, so record it whether or not the
+    // action landed (we did drive the session either way).
     this.pacer?.record(accountId, executedAt);
+
+    // Honor the action's own ok flag: a connect that was refused, email-gated,
+    // or found no Connect control returns ok:false and must be recorded as a
+    // failure — never a false success. Only a genuinely-sent invite counts.
+    if (!outcome.ok) {
+      await this.store.event.append({
+        accountId,
+        kind: 'action_failed',
+        payload: { actionId: action.id, type, targetId, campaignId, detail: outcome.detail },
+      });
+      return { ...action, executedAt, result: 'failed', updatedAt: executedAt };
+    }
+
+    // Keep the in-memory safety state warm exactly like the fake executor: the
+    // weekly ceiling counts connects that actually went out.
+    if (type === 'connect') this.weekly?.record(accountId, executedAt);
     await this.store.event.append({
       accountId,
       kind: 'action_executed',
@@ -190,32 +201,26 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     return { ...action, executedAt, result: 'success', updatedAt: executedAt };
   }
 
-  /** Dispatch to the matching runner action function. */
+  /** Dispatch to the matching runner action function, returning its outcome. */
   private async drive(
     ctx: ActionContext,
     type: ActionType,
     profileUrl: string,
     body?: string,
-  ): Promise<void> {
+  ): Promise<ActionResultOut> {
     switch (type) {
       case 'connect':
-        await runnerConnect(ctx, { profileUrl, note: body });
-        return;
+        return runnerConnect(ctx, { profileUrl, note: body });
       case 'message':
-        await runnerMessage(ctx, { profileUrl, body: body ?? '' });
-        return;
+        return runnerMessage(ctx, { profileUrl, body: body ?? '' });
       case 'view_profile':
-        await runnerVisitProfile(ctx, profileUrl);
-        return;
+        return runnerVisitProfile(ctx, profileUrl);
       case 'follow':
-        await runnerFollow(ctx, profileUrl);
-        return;
+        return runnerFollow(ctx, profileUrl);
       case 'withdraw_invite':
-        await runnerWithdrawInvite(ctx, { profileUrl });
-        return;
+        return runnerWithdrawInvite(ctx, { profileUrl });
       case 'react':
-        await runnerReact(ctx, profileUrl);
-        return;
+        return runnerReact(ctx, profileUrl);
       default: {
         const never: never = type;
         throw new Error(`unhandled action type: ${String(never)}`);

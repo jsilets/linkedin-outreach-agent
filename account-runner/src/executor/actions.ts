@@ -74,9 +74,10 @@ async function isPresent(ctx: ActionContext, selector: string): Promise<boolean>
  * candidate and keep the one whose menu actually exposes a Connect entry rather
  * than blindly clicking the first. Throws if none do.
  */
-async function openConnectMenu(ctx: ActionContext): Promise<'connect' | 'pending'> {
+async function openConnectMenu(ctx: ActionContext): Promise<'connect' | 'pending' | 'none'> {
   const candidates: LocatorPort = ctx.page.locator(SELECTORS.moreActionsButton);
   const n = await candidates.count();
+  const sleep = ctx.sleep ?? realSleep;
   for (let i = 0; i < n; i++) {
     const cand = candidates.nth(i);
     // Only click candidates that actually become visible; a scoped selector can
@@ -87,13 +88,70 @@ async function openConnectMenu(ctx: ActionContext): Promise<'connect' | 'pending
       .catch(() => false);
     if (!visible) continue;
     await clickLoc(ctx, cand);
-    await gap(ctx);
-    // Check Pending before Connect: an already-invited profile shows "Pending"
-    // in this menu and no Connect entry.
-    if (await isPresent(ctx, SELECTORS.pendingInMenu)) return 'pending';
-    if (await isPresent(ctx, SELECTORS.connectInMenu)) return 'connect';
+    // The dropdown renders (and animates) AFTER the click, so a single immediate
+    // probe races it and reads 0 — the bug that made Follow-by-default profiles
+    // fail. Poll for the menu's Pending/Connect entry before moving on. Pending
+    // is checked first: an already-invited profile shows it and no Connect.
+    for (let t = 0; t < 12; t++) {
+      if (await isPresent(ctx, SELECTORS.pendingInMenu)) return 'pending';
+      if (await isPresent(ctx, SELECTORS.connectInMenu)) return 'connect';
+      await sleep(300);
+    }
+    // This "More" candidate's menu never exposed Connect; try the next one.
   }
-  throw new Error('connect: no "More" menu exposed a Connect entry');
+  // No inline Connect AND no Connect in any "More" menu: the profile is
+  // Follow-by-default with Connect withheld, or Follow-only. Report 'none' so
+  // the caller can skip it cleanly rather than throwing an error.
+  return 'none';
+}
+
+/**
+ * Wait for the profile action bar to expose a terminal connect signal. The bar
+ * is client-rendered and attaches AFTER domcontentloaded, so probing it once
+ * immediately races hydration: the "More" button can attach a beat before the
+ * inline Connect control, so a single early probe reads 0 Connect matches and
+ * wrongly falls through to the Follow-by-default (More-menu) path. Poll until an
+ * inline Connect control appears, an already-Pending state appears, or the
+ * budget of attempts is spent (treated as "no inline Connect" — the caller then
+ * tries the More-overflow menu). Attempt-bounded (not wall-clock) so injected
+ * no-op sleeps in tests terminate deterministically.
+ */
+async function waitForConnectSignal(
+  ctx: ActionContext,
+  timeoutMs: number,
+): Promise<'connect' | 'pending' | 'none'> {
+  // The "More" button is on essentially every profile; wait for it first so we
+  // do not spin the whole budget on a page that is still blank.
+  await ctx.page
+    .locator(SELECTORS.moreActionsButton)
+    .first()
+    .waitFor({ state: 'visible', timeout: timeoutMs })
+    .catch(() => {});
+  const sleep = ctx.sleep ?? realSleep;
+  const attempts = Math.max(1, Math.ceil(timeoutMs / 300));
+  for (let i = 0; i < attempts; i++) {
+    // Pending is checked first: an already-invited profile shows Pending in
+    // place of Connect, and we must never re-invite.
+    if (await isPresent(ctx, SELECTORS.pendingIndicator)) return 'pending';
+    if (await isPresent(ctx, SELECTORS.connectButton)) return 'connect';
+    await sleep(300);
+  }
+  // Diagnostic: record what the live page exposed so a persistent 'none' can be
+  // told apart from a stale selector vs. a logged-out / challenged render.
+  try {
+    const [cBtn, more, pend, mainCount] = await Promise.all([
+      ctx.page.locator(SELECTORS.connectButton).count(),
+      ctx.page.locator(SELECTORS.moreActionsButton).count(),
+      ctx.page.locator(SELECTORS.pendingIndicator).count(),
+      ctx.page.locator('main').count(),
+    ]);
+    console.error(
+      `[connect-debug] signal=none url=${ctx.page.url()} connectButton=${cBtn} more=${more} pending=${pend} main=${mainCount}`,
+    );
+  } catch (err) {
+    console.error(`[connect-debug] diag failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return 'none';
 }
 
 /**
@@ -149,26 +207,19 @@ export async function connect(
   guard(ctx);
   await ctx.page.goto(params.profileUrl, { waitUntil: 'domcontentloaded' });
   await gap(ctx);
-  // The action bar hydrates progressively, so probing too early reads 0 matches
-  // for every control and races us into the wrong branch. Wait for the "More"
-  // overflow — present on essentially every profile — to appear before probing.
-  await ctx.page
-    .locator(SELECTORS.moreActionsButton)
-    .first()
-    .waitFor({ state: 'visible', timeout: 10_000 })
-    .catch(() => {});
-  // Never re-invite. If an invite is already outstanding, the profile shows a
-  // "Pending" action instead of Connect; stop cleanly and report it rather than
-  // hunting for a Connect that isn't there (which previously fell through to a
-  // recommendation card or timed out on a modal that never opens).
-  if (await isPresent(ctx, SELECTORS.pendingIndicator)) {
+  // The action bar is client-rendered and attaches AFTER domcontentloaded. Poll
+  // for a terminal signal (inline Connect, or already-Pending) instead of
+  // probing once — a single early probe races hydration and misreads a normal
+  // Connect-inline profile as Follow-by-default, then throws in the menu path.
+  const signal = await waitForConnectSignal(ctx, 12_000);
+  if (signal === 'pending') {
     return { ok: true, detail: 'already pending; no invite sent' };
   }
-  // Two ways in: a top-level Connect button, or — on Follow-by-default
-  // profiles that hide it — the "More" overflow menu holding Connect. Probe
-  // for the direct button first and fall back to the menu.
+  // Two ways in: the inline Connect control, or — on Follow-by-default profiles
+  // that keep it in the "More" overflow — the menu entry. Fall to the menu only
+  // after hydration settled and no inline Connect appeared.
   let via: 'direct' | 'more-menu';
-  if (await isPresent(ctx, SELECTORS.connectButton)) {
+  if (signal === 'connect') {
     via = 'direct';
     await humanClick(ctx, SELECTORS.connectButton);
   } else {
@@ -177,9 +228,22 @@ export async function connect(
     if (menu === 'pending') {
       return { ok: true, detail: 'already pending; no invite sent (more-menu)' };
     }
+    if (menu === 'none') {
+      return {
+        ok: false,
+        detail: 'no inline Connect and none in the More menu (Follow-by-default/Follow-only); no invite sent',
+      };
+    }
     await humanClick(ctx, SELECTORS.connectInMenu);
   }
   await gap(ctx);
+  // Email-gated invite: for some members LinkedIn demands the recipient's email
+  // before it will send, showing an email input in place of the normal Send
+  // controls. We do not have their email, so flag it rather than hang on a Send
+  // that never enables.
+  if (await isPresent(ctx, SELECTORS.emailRequiredModal)) {
+    return { ok: false, detail: 'needs recipient email to connect (email-gated); no invite sent' };
+  }
   if (params.note && params.note.length > 0) {
     await humanClick(ctx, SELECTORS.addNoteButton);
     await humanType(ctx, SELECTORS.noteTextarea, params.note);
