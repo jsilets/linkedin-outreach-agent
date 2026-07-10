@@ -233,6 +233,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       getCompanyJobs: fakeObserve.getCompanyJobs.bind(fakeObserve),
       getConversation: fakeObserve.getConversation.bind(fakeObserve),
       searchPeople: (id, q, limit) => live.searchPeople(id, q, limit),
+      listRecentConnections: (id, limit) => live.listRecentConnections(id, limit),
     };
   }
   // --- sourcing-mcp-tools: lead lists over the store (read by the web UI) ----

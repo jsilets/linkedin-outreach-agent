@@ -9,6 +9,7 @@
 // draft message id, so approve can (a) mark the draft sent through the service,
 // which writes the approval row + event, then (b) dispatch the real action.
 
+import { extractCompany } from '@loa/shared';
 import type {
   Account,
   AutonomyLevel,
@@ -249,6 +250,12 @@ export class CampaignAdapter implements CampaignPort {
         for (const [k, v] of Object.entries(rest)) {
           if (v !== undefined) externalContext[k] = v;
         }
+        // Auto-classify company from the headline when the source didn't carry
+        // one (free-tier search has no company field; it's in the headline).
+        if (!externalContext.currentCompany && externalContext.headline) {
+          const c = extractCompany(externalContext.headline);
+          if (c) externalContext.currentCompany = c;
+        }
         return { prospectRef, linkedinUrn, externalContext: externalContext as Json };
       }),
     );
@@ -425,7 +432,7 @@ function memberRowFromPerson(
     profileUrl: p.profileUrl ?? null,
     degree: p.degree ?? null,
     location: p.location ?? null,
-    currentCompany: p.currentCompany ?? null,
+    currentCompany: p.currentCompany ?? extractCompany(p.headline) ?? null,
   };
 }
 
@@ -532,6 +539,12 @@ export class FakeObserve implements ObservePort {
     _query: import('@loa/mcp').PeopleQuery,
     _limit: number,
   ): Promise<PersonSearchResult[]> {
+    return [];
+  }
+  async listRecentConnections(
+    _accountId: string,
+    _limit: number,
+  ): Promise<import('@loa/mcp').RecentConnection[]> {
     return [];
   }
 }

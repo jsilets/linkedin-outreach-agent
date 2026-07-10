@@ -108,6 +108,16 @@ export interface PersonSearchResult {
   linkedinUrn?: string;
 }
 
+/** A recently-accepted 1st-degree connection, from the live relationships read.
+ * Most-recent first. `connectedAt` is an ISO timestamp when LinkedIn carries it. */
+export interface RecentConnection {
+  entityUrn: string;
+  profileUrl?: string;
+  name?: string;
+  headline?: string;
+  connectedAt?: string;
+}
+
 export interface ObservePort {
   getProfile(accountId: string, linkedinUrn: string): Promise<ProfileSummary>;
   getRecentPosts(accountId: string, linkedinUrn: string, limit: number): Promise<PostSummary[]>;
@@ -119,6 +129,9 @@ export interface ObservePort {
     query: PeopleQuery,
     limit: number,
   ): Promise<PersonSearchResult[]>;
+  /** Recently-accepted connections from the account's own network, most-recent
+   * first. Read-only; does not charge the people-search budget. */
+  listRecentConnections(accountId: string, limit: number): Promise<RecentConnection[]>;
 }
 
 // ---------------------------------------------------------------------------

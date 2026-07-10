@@ -30,6 +30,7 @@ export type {
   ConversationSummary,
   PeopleQuery,
   PersonSearchResult,
+  RecentConnection,
   ListSummary,
   ListMember,
   ListDetail,
