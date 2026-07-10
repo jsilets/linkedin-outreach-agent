@@ -13,3 +13,7 @@ export type {
   RecentActionClock,
   Clock,
 } from './safety-gate.js';
+
+// Test-only helpers (see test-support.ts) for keeping gate-backed tests off the
+// wall clock. Exported here so consumer packages can import them from @loa/safety.
+export { NO_ACTIVE_HOURS_CONFIG, MID_WINDOW_NOW, midWindowClock } from './test-support.js';
