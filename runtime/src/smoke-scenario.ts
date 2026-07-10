@@ -15,6 +15,7 @@
 // It returns a structured trace plus a list of assertion failures so the caller
 // can print a PASS/FAIL and the test can assert on it.
 
+import { NO_ACTIVE_HOURS_CONFIG } from '@loa/safety';
 import { compose } from './compose.js';
 import { loadConfig } from './config.js';
 import { seedAccount } from './seed.js';
@@ -35,9 +36,11 @@ export interface SmokeTrace {
 
 /** Run the scenario against a freshly composed in-memory runtime. */
 export async function runSmoke(): Promise<SmokeTrace> {
-  // Force in-memory + fake LLM by composing with an empty-ish config.
+  // Force in-memory + fake LLM by composing with an empty-ish config. Disable
+  // the active-hours window so the scenario is deterministic at any hour (the
+  // send would otherwise defer overnight and never queue an approval item).
   const config = loadConfig({ MCP_PORT: '0' } as NodeJS.ProcessEnv);
-  const runtime = compose(config);
+  const runtime = compose(config, { safetyConfig: NO_ACTIVE_HOURS_CONFIG });
   const { store, ports, orchestrator } = runtime;
   const failures: string[] = [];
   const check = (cond: boolean, msg: string): void => {

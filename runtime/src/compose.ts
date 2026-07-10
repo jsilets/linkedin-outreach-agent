@@ -15,7 +15,7 @@
 // available for P0 once a live session exists.
 
 import type { Account, Campaign, LLMProvider, Target } from '@loa/shared';
-import { DefaultSafetyGate } from '@loa/safety';
+import { DefaultSafetyGate, type SafetyConfig } from '@loa/safety';
 import { ClaudeLLMProvider, OpenRouterLLMProvider } from '@loa/agent';
 import {
   initialState,
@@ -156,14 +156,27 @@ function chooseLlm(config: RuntimeConfig): { llm: LLMProvider; name: LlmProvider
   return { llm: new FakeLLMProvider(), name };
 }
 
-export function compose(config: RuntimeConfig = loadConfig()): Runtime {
+/** Test-injection seams for compose(). Empty in production. */
+export interface ComposeDeps {
+  /**
+   * Override the gate's SafetyConfig. Tests pass a windowless config so the
+   * active-hours gate does not defer when the suite runs before 8am / after 8pm.
+   */
+  safetyConfig?: SafetyConfig;
+}
+
+export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps = {}): Runtime {
   const store = chooseStore(config);
 
   // ONE safety gate, backed by a store-aware weekly-invite counter and an
   // action pacer that spaces every account's actions apart (anti-burst).
   const weekly = new StoreBackedWeeklyInviteCounter();
   const pacer = new StoreBackedActionPacer();
-  const gate = new DefaultSafetyGate({ weeklyInvites: weekly, recentActions: pacer });
+  const gate = new DefaultSafetyGate({
+    weeklyInvites: weekly,
+    recentActions: pacer,
+    ...(deps.safetyConfig ? { config: deps.safetyConfig } : {}),
+  });
 
   // Scheduler is the paced follow-up source; it reads the gate for pacing.
   const scheduler = new SchedulerService({ safety: gate });
