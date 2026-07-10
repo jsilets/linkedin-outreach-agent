@@ -212,7 +212,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // mcp ports, all backed by the single orchestrator + gate + store + executor.
   const approvals = new ApprovalAdapter(orchestrator, executor, store);
   const admin = new AccountAdminAdapter(store, gate, orchestrator);
-  const campaign = new CampaignAdapter(orchestrator, store);
+  const campaign = new CampaignAdapter(orchestrator, store, gate);
   const safety = makeMcpSafetyPort(gate, store);
   // Observe: reads run open (no gating). With a real session, people-search
   // goes live (a direct authenticated /voyager/api/graphql call from the page);

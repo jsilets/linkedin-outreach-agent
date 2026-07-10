@@ -3,6 +3,7 @@
 // store.sequence, so the orchestrator services are stubbed.
 
 import { describe, expect, it, beforeEach } from 'vitest';
+import { DefaultSafetyGate } from '@loa/safety';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter } from './mcp-ports.js';
 import type { OrchestratorServices } from './orchestrator.js';
@@ -23,7 +24,7 @@ describe('CampaignAdapter.addTargets mapping', () => {
         },
       },
     } as unknown as OrchestratorServices;
-    const adapter = new CampaignAdapter(services, new InMemoryStore());
+    const adapter = new CampaignAdapter(services, new InMemoryStore(), new DefaultSafetyGate());
 
     await adapter.addTargets(CAMP, [
       'manual-ref',
@@ -58,7 +59,7 @@ describe('CampaignAdapter sequence surface', () => {
 
   beforeEach(() => {
     store = new InMemoryStore();
-    campaign = new CampaignAdapter(noServices, store);
+    campaign = new CampaignAdapter(noServices, store, new DefaultSafetyGate());
   });
 
   it('defines an ordered sequence and reads it back', async () => {

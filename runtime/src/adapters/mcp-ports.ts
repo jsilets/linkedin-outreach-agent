@@ -208,7 +208,18 @@ export class CampaignAdapter implements CampaignPort {
   constructor(
     private readonly services: OrchestratorServices,
     private readonly store: RuntimeStore,
+    private readonly gate: DefaultSafetyGate,
   ) {}
+
+  /**
+   * Attach the LIVE budget to an account for display: caps from the account's
+   * limits (via the gate), used reset for today. The persisted row.budget only
+   * stores yesterday's counters and a caps blob seeded to zero at creation, so
+   * returning it raw shows a misleading "all caps 0". Callers see enforced caps.
+   */
+  private withLiveBudget(acct: Account): Account {
+    return { ...acct, budget: this.gate.budget(acct) };
+  }
 
   async createCampaign(input: {
     goal: string;
@@ -249,13 +260,13 @@ export class CampaignAdapter implements CampaignPort {
 
   async listAccounts(): Promise<Account[]> {
     const rows = await this.store.account.all();
-    return rows.map(rowToAccount);
+    return rows.map((r) => this.withLiveBudget(rowToAccount(r)));
   }
 
   async getAccountState(accountId: string): Promise<Account> {
     const row = await this.store.account.findById(accountId);
     if (!row) throw new Error(`account not found: ${accountId}`);
-    return rowToAccount(row);
+    return this.withLiveBudget(rowToAccount(row));
   }
 
   async getQueue(accountId: string): Promise<QueueEntry[]> {

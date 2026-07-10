@@ -7,6 +7,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
 import type { PeopleQuery, PersonSearchResult, Ports } from '@loa/mcp';
+import { DefaultSafetyGate } from '@loa/safety';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter, LeadListAdapter } from './mcp-ports.js';
 import { sourceToList } from '../tools/source-to-list.js';
@@ -69,7 +70,9 @@ describe('list_accounts tool', () => {
       budget: { date: today, caps, used },
     });
     // Only the store is exercised; the orchestrator services are unused here.
-    const ports = { campaign: new CampaignAdapter({} as never, store) } as unknown as Ports;
+    const ports = {
+      campaign: new CampaignAdapter({} as never, store, new DefaultSafetyGate()),
+    } as unknown as Ports;
 
     const accounts = (await run('list_accounts', {}, ports)) as Array<{
       id: string;
