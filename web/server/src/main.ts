@@ -19,11 +19,13 @@ import {
   getVolume,
   launchCampaign,
   LaunchError,
+  LimitsError,
   linkAccount,
   listAccounts,
   listCampaigns,
   listLists,
   replaceSteps,
+  updateAccountLimits,
 } from './queries.js';
 import { StepValidationError } from './steps.js';
 
@@ -231,6 +233,22 @@ api.post('/accounts/link', async (req, res, next) => {
     res.json({ ok: true, ...result });
   } catch (err) {
     if (err instanceof VaultError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+// Edit an account's automation limits (per-action daily caps). A bad cap value
+// surfaces as a 400; unknown account also 400s via LimitsError.
+api.patch('/accounts/:id/limits', async (req, res, next) => {
+  try {
+    const caps = (req.body ?? {}).caps;
+    const limits = await updateAccountLimits(req.params.id, caps);
+    res.json({ ok: true, limits });
+  } catch (err) {
+    if (err instanceof LimitsError) {
       res.status(400).json({ error: err.message });
       return;
     }

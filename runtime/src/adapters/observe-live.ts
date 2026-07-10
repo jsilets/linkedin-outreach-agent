@@ -116,12 +116,27 @@ function todayIso(): string {
  * There is NO free-text title/company facet on free tier; title and company
  * keywords fold into the keyword box.
  */
+/**
+ * Default geography when a search specifies none: United States + Canada. Bare
+ * Voyager geo facet ids (not full urns), the same form callers pass explicitly.
+ * A free-tier keyword search with no geo otherwise returns a worldwide mix
+ * (Paris, Madrid, Bergen), so we constrain to North America by default; a caller
+ * that supplies any geo (geoUrn or geoUrns) overrides this entirely.
+ */
+export const DEFAULT_GEO_URNS = [
+  '103644278', // United States
+  '101174742', // Canada
+] as const;
+
 /** All geo facet ids for a query: the legacy single geoUrn plus the geoUrns
  * array, in that order, deduped. Lets a search target multiple geographies
- * (e.g. US + Canada) in one pass, mirroring how companyUrns is a plain list. */
+ * (e.g. US + Canada) in one pass, mirroring how companyUrns is a plain list.
+ * When the caller supplies NO geo at all, defaults to US + Canada
+ * (DEFAULT_GEO_URNS) so sourcing does not drift worldwide. */
 export function collectGeoUrns(query: PeopleQuery): string[] {
   const all = [...(query.geoUrn ? [query.geoUrn] : []), ...(query.geoUrns ?? [])];
-  return [...new Set(all)];
+  const deduped = [...new Set(all)];
+  return deduped.length > 0 ? deduped : [...DEFAULT_GEO_URNS];
 }
 
 export function buildVoyagerSearchUrl(query: PeopleQuery, start: number): string {

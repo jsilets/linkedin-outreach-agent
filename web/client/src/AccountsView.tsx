@@ -1,5 +1,15 @@
 import { useEffect, useState } from 'react';
-import { api, type Account } from './api';
+import { ACTION_TYPES, api, type Account, type ActionType } from './api';
+
+// Human-readable labels for the per-action daily caps.
+const CAP_LABELS: Record<ActionType, string> = {
+  connect: 'Connection requests',
+  message: 'Messages',
+  view_profile: 'Profile views',
+  follow: 'Follows',
+  withdraw_invite: 'Withdraw invites',
+  react: 'Reactions',
+};
 
 export function AccountsView() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -102,30 +112,90 @@ export function AccountsView() {
 
       <div className="card">
         <strong>Linked accounts</strong>
-        <table style={{ marginTop: 10 }}>
-          <thead>
-            <tr>
-              <th>Handle</th>
-              <th>State</th>
-            </tr>
-          </thead>
-          <tbody>
-            {accounts.map((a) => (
-              <tr key={a.id}>
-                <td>{a.handle}</td>
-                <td>{a.state}</td>
-              </tr>
-            ))}
-            {accounts.length === 0 && (
-              <tr>
-                <td colSpan={2} className="muted">
-                  No accounts linked yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        {accounts.length === 0 && (
+          <p className="muted" style={{ marginTop: 10 }}>
+            No accounts linked yet.
+          </p>
+        )}
+        <div className="grid" style={{ gap: 16, marginTop: 10 }}>
+          {accounts.map((a) => (
+            <AccountCard key={a.id} account={a} />
+          ))}
+        </div>
       </div>
+    </div>
+  );
+}
+
+// One account's identity plus its editable daily automation limits. Each cap is
+// a plain number field; Save persists the whole set through the SafetyGate.
+function AccountCard({ account }: { account: Account }) {
+  const [caps, setCaps] = useState<Record<ActionType, number>>(account.limits.caps);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const dirty = ACTION_TYPES.some((t) => caps[t] !== account.limits.caps[t]);
+
+  function setCap(type: ActionType, value: string) {
+    const n = value === '' ? 0 : Math.max(0, Math.floor(Number(value)));
+    setCaps((prev) => ({ ...prev, [type]: Number.isFinite(n) ? n : 0 }));
+    setSaved(false);
+  }
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      const limits = await api.updateAccountLimits(account.id, caps);
+      setCaps(limits.caps);
+      setSaved(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={{ border: '1px solid var(--border, #333)', borderRadius: 8, padding: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <strong>{account.handle}</strong>
+        <span className="muted">{account.state}</span>
+      </div>
+      <div style={{ marginTop: 6 }}>
+        <label className="muted">Daily limits (max actions per day, 0 disables)</label>
+      </div>
+      <div
+        style={{
+          marginTop: 8,
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+          gap: 10,
+        }}
+      >
+        {ACTION_TYPES.map((t) => (
+          <div key={t}>
+            <label>{CAP_LABELS[t]}</label>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={caps[t]}
+              onChange={(e) => setCap(t, e.target.value)}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="toolbar" style={{ marginTop: 10 }}>
+        <button className="btn" onClick={save} disabled={!dirty || saving}>
+          {saving ? 'Saving...' : 'Save limits'}
+        </button>
+        <span className="spacer" />
+        {saved && <span className="saved">Saved</span>}
+      </div>
+      {error && <div className="error">{error}</div>}
     </div>
   );
 }

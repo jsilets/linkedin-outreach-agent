@@ -118,6 +118,14 @@ export const accounts = pgTable('accounts', {
   state: accountStateEnum('state').notNull().default('Active'),
   health: jsonb('health').notNull(),
   budget: jsonb('budget').notNull(),
+  // Operator-set automation limits (per-action daily caps). Editable in the UI
+  // and enforced by the SafetyGate. Defaulted so existing rows backfill to the
+  // conservative caps instead of a hidden zero.
+  limits: jsonb('limits')
+    .notNull()
+    .default({
+      caps: { connect: 20, message: 20, view_profile: 60, follow: 15, withdraw_invite: 10, react: 30 },
+    }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

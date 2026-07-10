@@ -1,6 +1,7 @@
 // Safety configuration. All tunable numbers live here so the caps and
 // thresholds can be adjusted in one place without touching gate logic.
 
+import { DEFAULT_CAPS } from '@loa/shared';
 import type { ActionType } from '@loa/shared';
 
 /** Per-action-type daily caps for a given account state. */
@@ -63,21 +64,14 @@ export interface SafetyConfig {
   activeHoursEnd: number; // 1-24
 }
 
-// Steady-state daily caps for an Active account:
-//   connect 20, message 20, view_profile 60, follow 15.
-// view_profile/follow are set at the top of their documented ranges since
-// they are the lowest-risk actions. There is no warmup ramp: an established
-// account operates at these caps from the start, bounded by the weekly invite
+// Steady-state daily caps for an Active account come from DEFAULT_CAPS in
+// @loa/shared (connect 20, message 20, view_profile 60, follow 15). This is a
+// FALLBACK only: the gate prefers each account's own editable `limits.caps` and
+// uses these when a limit is absent. There is no warmup ramp: an established
+// account operates at its caps from the start, bounded by the weekly invite
 // ceiling and the per-action pacing gap below.
 export const DEFAULT_CONFIG: SafetyConfig = {
-  active: caps({
-    connect: 20,
-    message: 20,
-    view_profile: 60,
-    follow: 15,
-    withdraw_invite: 10,
-    react: 30,
-  }),
+  active: caps(DEFAULT_CAPS),
   throttleMultiplier: 0.5,
   weeklyInviteCeiling: 100,
   acceptanceRateFloor: 0.35,

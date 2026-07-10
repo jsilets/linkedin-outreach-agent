@@ -31,14 +31,29 @@ export const SELECTORS = {
   // profiles). Scoped the same way as connectButton (main, never an <aside>
   // recommendation card); the global nav and messaging overlay live outside
   // <main> so they are excluded too. The executor tries each visible match.
+  // Live-verified (2026-07-10): the profile-card More button that opens the
+  // overflow holding Connect carries the visible TEXT "More" but NO
+  // aria-label="More" (an aria-only "More" nearby opens a different menu with no
+  // Connect). Match either form; the executor tries each visible candidate and
+  // keeps the one whose menu exposes Connect. Exact text "More" avoids feed
+  // "…more" expanders.
   moreActionsButton:
     'xpath=//main//button[not(ancestor::aside) and ' +
-    '(@aria-label="More" or contains(@aria-label,"More actions"))]',
-  // "Connect" entry inside the opened More menu. The dropdown renders as a
-  // portal outside the profile card, so this is matched page-wide, not scoped.
+    '(@aria-label="More" or contains(@aria-label,"More actions") or normalize-space(.)="More")]',
+  // "Connect" entry inside the opened More menu. Live-verified (2026-07-10,
+  // Follow-by-default profile): the item is an <a role="menuitem"> wrapping a
+  // <div aria-label="Invite <Name> to connect">, inside a portal
+  // div[role="menu"]. Critically, the "People you may know" recommendation cards
+  // ALSO render Connect controls with the same "Invite <someone> to connect"
+  // aria-label — but as <button>s OUTSIDE any [role="menu"]. So the primary
+  // clause scopes to [role="menu"] to click THIS profile's Connect, never a
+  // stranger's card. Text-based and legacy clauses follow as fallbacks.
   connectInMenu:
-    'div[role="button"][aria-label^="Invite"][aria-label*="to connect"], ' +
+    '[role="menu"] [role="menuitem"]:has-text("Connect"), ' +
+    '[role="menu"] [aria-label*="Invite" i][aria-label*="to connect" i], ' +
+    '[role="menuitem"][aria-label*="Invite" i][aria-label*="to connect" i], ' +
     '[role="menuitem"]:has-text("Connect"), ' +
+    'div[role="button"][aria-label^="Invite"][aria-label*="to connect"], ' +
     'div[role="button"]:has-text("Connect")',
   // Already-invited signal on the profile action bar: LinkedIn shows a "Pending"
   // control in place of Connect once an invite is outstanding. Live-verified
@@ -81,6 +96,17 @@ export const SELECTORS = {
     'button[aria-label*="Send without"], ' +
     'button:has-text("Send without a note"), ' +
     'button:has-text("Send now")',
+  // Email-required gate: for some members LinkedIn will not send an invite until
+  // you supply the recipient's email ("To verify this member knows you, please
+  // enter their email to connect"). The invite modal then shows an email input
+  // instead of (or above) the Send controls. We detect this and flag it rather
+  // than hanging on a Send that never enables. verify-live.
+  emailRequiredModal:
+    'div[role="dialog"]:has(input[type="email"]), ' +
+    'div[role="dialog"]:has(input[name="email"]), ' +
+    'div[role="dialog"]:has-text("enter their email"), ' +
+    'div[role="dialog"]:has-text("enter the email"), ' +
+    'div[role="dialog"]:has-text("email to connect")',
   // Error toast LinkedIn shows when it REFUSES to send an invite (rate limit,
   // recently-removed connection, or transient). Live-observed text: "Sorry,
   // invitation not sent … Please try again." Lets connect() report ok:false

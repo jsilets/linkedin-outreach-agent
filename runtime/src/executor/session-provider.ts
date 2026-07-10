@@ -42,6 +42,39 @@ export interface LiveSessionProviderConfig {
 
 type LiveSession = { context: BrowserContextPort; page: PagePort };
 
+/**
+ * Extract a LinkedIn profile id from a member urn, tolerating the wrapped
+ * search-result form add_targets stores:
+ *   urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:XXX,SEARCH_SRP,DEFAULT)
+ * A naive slice on the last ':' yields "XXX,SEARCH_SRP,DEFAULT)" — junk that
+ * 404s. Pull the inner fsd_profile / person id explicitly.
+ */
+function profileIdFromUrn(ref: string): string {
+  const fsd = ref.match(/fsd_profile:([A-Za-z0-9_-]+)/);
+  if (fsd?.[1]) return fsd[1];
+  const person = ref.match(/urn:li:person:([A-Za-z0-9_-]+)/);
+  if (person?.[1]) return person[1];
+  const tail = ref.includes(':') ? ref.slice(ref.lastIndexOf(':') + 1) : ref;
+  return tail.match(/[A-Za-z0-9_-]+/)?.[0] ?? tail;
+}
+
+/**
+ * Resolve the profile URL to navigate for a target. Prefers the /in/ vanity URL
+ * captured at sourcing time (target.externalContext.profileUrl) — the reliable,
+ * cross-surface key — because the row's linkedinUrn is usually a wrapped
+ * search-result urn whose opaque id does NOT resolve as an /in/ slug. Falls back
+ * to a URL ref, then to an id extracted from the urn. Exported for unit tests.
+ */
+export function profileUrlForTarget(target: Target): string {
+  const ext = target.externalContext as { profileUrl?: unknown } | null | undefined;
+  if (typeof ext?.profileUrl === 'string' && /^https?:\/\//.test(ext.profileUrl)) {
+    return ext.profileUrl;
+  }
+  const ref = target.linkedinUrn.trim();
+  if (ref.startsWith('http://') || ref.startsWith('https://')) return ref;
+  return `https://www.linkedin.com/in/${encodeURIComponent(profileIdFromUrn(ref))}/`;
+}
+
 export class LiveSessionProvider implements SessionProvider {
   private readonly factory = new BrowserContextFactory(createPatchrightLauncher());
   private readonly sessions = new Map<string, Promise<LiveSession>>();
@@ -60,11 +93,7 @@ export class LiveSessionProvider implements SessionProvider {
   }
 
   profileUrlFor(target: Target): string {
-    const ref = target.linkedinUrn.trim();
-    if (ref.startsWith('http://') || ref.startsWith('https://')) return ref;
-    // urn:li:person:ABC123 -> use the trailing id as a public identifier.
-    const id = ref.includes(':') ? ref.slice(ref.lastIndexOf(':') + 1) : ref;
-    return `https://www.linkedin.com/in/${encodeURIComponent(id)}/`;
+    return profileUrlForTarget(target);
   }
 
   /** Close every open session. Called on runtime shutdown. */

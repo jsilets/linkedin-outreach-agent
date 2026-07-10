@@ -2,10 +2,11 @@
 // types; the domain types in @loa/shared are precise. Narrow at this one
 // boundary so the rest of the orchestrator works in domain terms.
 
-import { db as shared } from '@loa/shared';
+import { db as shared, defaultLimits } from '@loa/shared';
 import type {
   Account,
   AccountHealth,
+  AccountLimits,
   Campaign,
   DailyBudget,
   Json,
@@ -62,6 +63,7 @@ export function rowToAccount(row: shared.AccountRow): Account {
     state: row.state,
     health: row.health as AccountHealth,
     budget: row.budget as DailyBudget,
+    limits: (row.limits as AccountLimits | null) ?? defaultLimits(),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

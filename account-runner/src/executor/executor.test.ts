@@ -114,7 +114,11 @@ describe('executor refuses without an allow', () => {
 describe('executor acts when allowed', () => {
   it('connect with a note drives the centralized selectors', async () => {
     const page = new FakePage({
-      counts: { [SELECTORS.inviteErrorToast]: 0, [SELECTORS.pendingIndicator]: 0 },
+      counts: {
+        [SELECTORS.inviteErrorToast]: 0,
+        [SELECTORS.pendingIndicator]: 0,
+        [SELECTORS.emailRequiredModal]: 0,
+      },
     });
     const action = makeAction();
     const res = await connect(ctx(page, action, validToken(action)), {
@@ -131,7 +135,11 @@ describe('executor acts when allowed', () => {
 
   it('connect without a note skips the note selectors', async () => {
     const page = new FakePage({
-      counts: { [SELECTORS.inviteErrorToast]: 0, [SELECTORS.pendingIndicator]: 0 },
+      counts: {
+        [SELECTORS.inviteErrorToast]: 0,
+        [SELECTORS.pendingIndicator]: 0,
+        [SELECTORS.emailRequiredModal]: 0,
+      },
     });
     const action = makeAction();
     await connect(ctx(page, action, validToken(action)), {
@@ -150,6 +158,7 @@ describe('executor acts when allowed', () => {
         [SELECTORS.inviteErrorToast]: 0,
         [SELECTORS.pendingIndicator]: 0,
         [SELECTORS.pendingInMenu]: 0,
+        [SELECTORS.emailRequiredModal]: 0,
       },
     });
     const action = makeAction();
@@ -170,7 +179,11 @@ describe('executor acts when allowed', () => {
     // The send click succeeds but LinkedIn shows an error toast ("invitation
     // not sent"). connect() must report failure, not a false success.
     const page = new FakePage({
-      counts: { [SELECTORS.inviteErrorToast]: 1, [SELECTORS.pendingIndicator]: 0 },
+      counts: {
+        [SELECTORS.inviteErrorToast]: 1,
+        [SELECTORS.pendingIndicator]: 0,
+        [SELECTORS.emailRequiredModal]: 0,
+      },
     });
     const action = makeAction();
     const res = await connect(ctx(page, action, validToken(action)), {
@@ -178,6 +191,28 @@ describe('executor acts when allowed', () => {
     });
     expect(res.ok).toBe(false);
     expect(res.detail).toContain('refused by LinkedIn');
+  });
+
+  it('connect flags email-gated invites instead of hanging or false-success', async () => {
+    // Some members require the recipient's email before LinkedIn will send. The
+    // invite modal shows an email input; connect() must flag it (ok:false,
+    // "needs recipient email") rather than time out on a Send that never enables
+    // or report a false success.
+    const page = new FakePage({
+      counts: {
+        [SELECTORS.pendingIndicator]: 0,
+        [SELECTORS.emailRequiredModal]: 1,
+      },
+    });
+    const action = makeAction();
+    const res = await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/heidi/',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/email/i);
+    // It must not have sent anything.
+    expect(page.clicked(SELECTORS.sendWithoutNoteButton)).toBe(false);
+    expect(page.clicked(SELECTORS.sendInviteButton)).toBe(false);
   });
 
   it('connect stops without inviting when the profile is already pending', async () => {
@@ -215,10 +250,10 @@ describe('executor acts when allowed', () => {
     expect(page.clicked(SELECTORS.connectInMenu)).toBe(false);
   });
 
-  it('connect throws when no More menu exposes a Connect entry', async () => {
-    // No direct Connect button and the More menu never reveals connectInMenu:
-    // the loop tries every candidate, finds none, and refuses rather than
-    // clicking a wrong menu item.
+  it('connect skips cleanly (ok:false) when no Connect exists inline or in the More menu', async () => {
+    // Follow-by-default / Follow-only: no direct Connect button and the More
+    // menu never reveals connectInMenu. connect() must skip with ok:false rather
+    // than throw or click a wrong menu item, so a run continues past it.
     const page = new FakePage({
       counts: {
         [SELECTORS.connectButton]: 0,
@@ -229,12 +264,13 @@ describe('executor acts when allowed', () => {
       },
     });
     const action = makeAction();
-    await expect(
-      connect(ctx(page, action, validToken(action)), {
-        profileUrl: 'https://www.linkedin.com/in/dave/',
-      }),
-    ).rejects.toThrow(/no "More" menu exposed a Connect entry/);
+    const res = await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/dave/',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/Follow-by-default|no invite sent/i);
     expect(page.clicked(SELECTORS.sendInviteButton)).toBe(false);
+    expect(page.clicked(SELECTORS.connectInMenu)).toBe(false);
   });
 
   it('message types into the compose box and sends', async () => {

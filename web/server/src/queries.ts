@@ -2,7 +2,8 @@
 import { join } from 'node:path';
 import { and, asc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { buildStorageStateFromPastedCookies, saveStorageState } from '@loa/account-runner';
-import type { ActionType } from '@loa/shared';
+import { ACTION_TYPES, DEFAULT_CAPS, defaultLimits } from '@loa/shared';
+import type { AccountLimits, ActionType } from '@loa/shared';
 import { db, schema, type Db } from './db.js';
 import { normalizeSteps, type NormalizedStep } from './steps.js';
 
@@ -208,6 +209,7 @@ export interface AccountRow {
   id: string;
   handle: string;
   state: string;
+  limits: AccountLimits;
 }
 
 export async function listAccounts(): Promise<AccountRow[]> {
@@ -216,10 +218,55 @@ export async function listAccounts(): Promise<AccountRow[]> {
       id: accounts.id,
       handle: accounts.handle,
       state: accounts.state,
+      limits: accounts.limits,
     })
     .from(accounts)
     .orderBy(asc(accounts.handle));
-  return rows;
+  // Legacy rows created before the limits column backfill to the default so the
+  // UI always has caps to render and edit.
+  return rows.map((r) => ({
+    ...r,
+    limits: (r.limits as AccountLimits | null) ?? defaultLimits(),
+  }));
+}
+
+/** Thrown when a limits patch fails validation. The route maps this to a 400. */
+export class LimitsError extends Error {}
+
+/**
+ * Coerce arbitrary input into a valid caps map: every action type present, each
+ * a non-negative integer. Rejects unknown keys, negatives, and non-integers so
+ * a bad edit can never write a nonsense cap.
+ */
+function validateCaps(input: unknown): Record<ActionType, number> {
+  if (typeof input !== 'object' || input === null) {
+    throw new LimitsError('caps must be an object of action -> daily limit.');
+  }
+  const raw = input as Record<string, unknown>;
+  const out = {} as Record<ActionType, number>;
+  for (const type of ACTION_TYPES) {
+    const v = raw[type] ?? DEFAULT_CAPS[type];
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
+      throw new LimitsError(`cap for ${type} must be a non-negative integer.`);
+    }
+    out[type] = v;
+  }
+  return out;
+}
+
+/** Patch one account's editable automation limits (daily caps). */
+export async function updateAccountLimits(
+  accountId: string,
+  caps: unknown,
+): Promise<AccountLimits> {
+  const validated: AccountLimits = { caps: validateCaps(caps) };
+  const [row] = await db
+    .update(accounts)
+    .set({ limits: validated, updatedAt: new Date() })
+    .where(eq(accounts.id, accountId))
+    .returning({ limits: accounts.limits });
+  if (!row) throw new LimitsError('unknown account.');
+  return row.limits as AccountLimits;
 }
 
 // --- Account linking (paste session cookies -> sealed vault) ---------------
@@ -262,7 +309,8 @@ export async function linkAccount(input: LinkAccountInput): Promise<LinkAccountR
       state: 'Active',
       proxyBinding: { proxyId: `paste-${input.handle}`, region: 'local', sticky: false },
       health: { acceptanceRate: 0, replyRate: 0, challengesLast7d: 0, lastCheckedAt: new Date() },
-      budget: { date: today, caps: emptyUsed(), used: emptyUsed() },
+      budget: { date: today, caps: { ...DEFAULT_CAPS }, used: emptyUsed() },
+      limits: defaultLimits(),
     })
     .returning({ id: accounts.id, handle: accounts.handle });
   if (!row) throw new Error('failed to create account row');

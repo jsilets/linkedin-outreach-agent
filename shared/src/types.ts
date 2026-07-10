@@ -47,6 +47,14 @@ export interface Account {
   health: AccountHealth;
   /** Remaining budget for the current day, per action type. */
   budget: DailyBudget;
+  /**
+   * Operator-set automation limits for this account. These are the visible,
+   * editable per-account daily caps that the SafetyGate enforces. Optional on
+   * the domain type for backward-compatible fixtures; real rows always carry it
+   * (the column is NOT NULL with a default), and the mapper backfills a default
+   * when a legacy row lacks it.
+   */
+  limits?: AccountLimits;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -137,6 +145,36 @@ export interface DailyBudget {
   date: string; // ISO date, e.g. 2026-07-05
   caps: Record<ActionType, number>;
   used: Record<ActionType, number>;
+}
+
+/**
+ * Operator-set automation limits for one account. Kept separate from the daily
+ * budget (which tracks today's counters) so editing a limit never collides with
+ * usage accounting. `caps` is the per-action-type daily ceiling the SafetyGate
+ * enforces. A cap of 0 disables that action entirely.
+ */
+export interface AccountLimits {
+  caps: Record<ActionType, number>;
+}
+
+/**
+ * Default per-action-type daily caps for a fresh, established account. Single
+ * source of truth for the seed value used at account creation and the
+ * SafetyGate's fallback. Conservative: connect/message land under LinkedIn's
+ * daily and ~100/week rolling ceilings; the lower-risk reads run higher.
+ */
+export const DEFAULT_CAPS: Record<ActionType, number> = {
+  connect: 20,
+  message: 20,
+  view_profile: 60,
+  follow: 15,
+  withdraw_invite: 10,
+  react: 30,
+};
+
+/** A fresh AccountLimits seeded from DEFAULT_CAPS. */
+export function defaultLimits(): AccountLimits {
+  return { caps: { ...DEFAULT_CAPS } };
 }
 
 /** Result of SafetyGate.canAct: allow, defer until a time, or deny. */

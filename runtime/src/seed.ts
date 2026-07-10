@@ -2,7 +2,7 @@
 // smoke can create an account without hand-rolling the jsonb blobs. Not used in
 // production, where accounts are created through the bootstrap/admin flow.
 
-import { db as shared } from '@loa/shared';
+import { db as shared, DEFAULT_CAPS, defaultLimits } from '@loa/shared';
 import type { AccountState, ActionType } from '@loa/shared';
 import type { RuntimeStore } from './store/index.js';
 
@@ -45,8 +45,9 @@ export async function seedAccount(
     },
     budget: {
       date: today,
-      caps: emptyUsed(),
+      caps: { ...DEFAULT_CAPS },
       used: emptyUsed(),
     },
+    limits: defaultLimits(),
   });
 }
