@@ -79,10 +79,15 @@ class StubPage implements PagePort {
   }
 }
 
-/** SessionProvider that hands back one recording fake Page, no browser. */
+/** SessionProvider that hands back one recording fake Page, no browser. The
+ * page's locator count is configurable so a test can force an action's happy
+ * path (count 1) or a no-control path (count 0 -> the runner returns ok:false). */
 class StubSessionProvider implements SessionProvider {
-  readonly page = new StubPage();
+  readonly page: StubPage;
   readonly requested: string[] = [];
+  constructor(locatorCount = 1) {
+    this.page = new StubPage(locatorCount);
+  }
   async pageFor(accountId: string): Promise<PagePort> {
     this.requested.push(accountId);
     return this.page;
@@ -157,8 +162,13 @@ describe('AccountRunnerExecutor real path', () => {
     // The action row was persisted and returned as executed.
     expect(action.result).toBe('success');
     expect(action.executedAt).toBeInstanceOf(Date);
+    // The PERSISTED row carries the final outcome, not the initial 'pending'
+    // placeholder: result is 'success' and executedAt is set. Without this the
+    // row stays pending forever and getQueue reports the action as still queued.
     const stored = await store.action.findById(action.id);
     expect(stored?.type).toBe('view_profile');
+    expect(stored?.result).toBe('success');
+    expect(stored?.executedAt).toBeInstanceOf(Date);
 
     // An audit event marks the account_runner path.
     const events = await store.event.listByAccount(ACCT);
@@ -174,6 +184,64 @@ describe('AccountRunnerExecutor real path', () => {
   it('passes the message body through to the injected page', async () => {
     await executor.execute(actRequest('message', 'hello there'));
     expect(session.page.gotos).toContain(PROFILE);
+  });
+
+  it('persists result=failed on the row when the action returns ok:false', async () => {
+    // A page whose locators resolve to 0 elements: connect finds no Connect
+    // control inline or in the More menu, so the runner returns ok:false. The
+    // executor must record that as a failure ON THE ROW, not leave it pending.
+    const failSession = new StubSessionProvider(0);
+    const gate = new DefaultSafetyGate({
+      weeklyInvites: new StoreBackedWeeklyInviteCounter(),
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
+    const failExecutor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session: failSession,
+      sleep: noSleep,
+      rng: () => 0.5,
+    });
+
+    const action = await failExecutor.execute(actRequest('connect'));
+
+    expect(action.result).toBe('failed');
+    const stored = await store.action.findById(action.id);
+    expect(stored?.result).toBe('failed');
+    expect(stored?.executedAt).toBeInstanceOf(Date);
+    const events = await store.event.listByAccount(ACCT);
+    expect(events.some((e) => e.kind === 'action_failed')).toBe(true);
+  });
+
+  it('leaves no orphan pending row when the mint-time re-check defers, and rethrows', async () => {
+    // mintToken throws a typed SafetyDeferredError (the #34 transient-defer
+    // path). The executor creates the row before minting (the token binds to a
+    // real action id), so on defer it must delete that row and rethrow — leaving
+    // no orphan 'pending' behind while preserving the deferred/retry behavior.
+    const until = new Date('2026-07-06T12:05:00Z');
+    const deferSession = new StubSessionProvider();
+    const deferExecutor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: {
+        async authorize() {
+          return { kind: 'defer', until };
+        },
+        async mintToken() {
+          throw new SafetyDeferredError({ kind: 'defer', until });
+        },
+      },
+      session: deferSession,
+      sleep: noSleep,
+      rng: () => 0.5,
+    });
+
+    await expect(deferExecutor.execute(actRequest('connect'))).rejects.toBeInstanceOf(
+      SafetyDeferredError,
+    );
+    // No page was driven and, crucially, no pending row survives the defer.
+    expect(deferSession.page.gotos).toEqual([]);
+    const rows = await store.action.listByAccount(ACCT);
+    expect(rows).toEqual([]);
   });
 
   it('refuses to act when the gate denies (no token minted, page untouched)', async () => {

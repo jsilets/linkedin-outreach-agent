@@ -111,6 +111,20 @@ class InMemActionStore implements ActionStorePort {
   async listByAccount(accountId: string): Promise<ActionRow[]> {
     return [...this.rows.values()].filter((r) => r.accountId === accountId);
   }
+  async setResult(
+    id: string,
+    result: ActionRow['result'],
+    executedAt: Date | null,
+  ): Promise<ActionRow> {
+    const cur = this.rows.get(id);
+    if (!cur) throw new Error(`no action: ${id}`);
+    const next: ActionRow = { ...cur, result, executedAt, updatedAt: new Date() };
+    this.rows.set(id, next);
+    return next;
+  }
+  async deleteById(id: string): Promise<void> {
+    this.rows.delete(id);
+  }
 }
 
 class InMemCampaignRepo implements CampaignRepoPort {
