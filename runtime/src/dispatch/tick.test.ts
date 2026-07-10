@@ -10,6 +10,7 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import type { Account, Action, Campaign, Decision } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import type { ActRequest, ExecutorPort, GateDeps } from '@loa/mcp';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { DispatchTick } from './tick.js';
@@ -36,6 +37,19 @@ class RecordingExecutor implements ExecutorPort {
       createdAt: now,
       updatedAt: now,
     };
+  }
+}
+
+/** An executor whose execute() always throws the given error. Models the two
+ * ways the executor can fail once the gate has already allowed at step 1:
+ * a typed SafetyDeferredError (the runner re-check flipped to defer/deny at
+ * token-mint time) vs. a genuine error. */
+class ThrowingExecutor implements ExecutorPort {
+  calls = 0;
+  constructor(private readonly err: Error) {}
+  async execute(_req: ActRequest): Promise<Action> {
+    this.calls += 1;
+    throw this.err;
   }
 }
 
@@ -323,6 +337,69 @@ describe('DispatchTick', () => {
     expect(await store.sequence.dueTargetProgress(new Date())).toHaveLength(0);
     const res2 = await tick.runTick(new Date());
     expect(res2.ran).toBe(0);
+  });
+
+  it('a mint-time safety defer leaves the cursor in_progress for retry, never failed', async () => {
+    // The gate ALLOWS at step 1, but the executor re-checks safety at token-mint
+    // time and the anti-burst pacer has since flipped it to defer. The runner
+    // SafetyPort signals this with a typed SafetyDeferredError. This must behave
+    // like any other deferral: the cursor stays in_progress on the same step and
+    // is NOT marked failed (the bug this fix addresses).
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 0 });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const until = new Date('2026-07-06T12:05:00Z');
+    const executor = new ThrowingExecutor(new SafetyDeferredError({ kind: 'defer', until }));
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
+
+    const res = await tick.runTick(new Date());
+
+    expect(executor.calls).toBe(1); // the executor WAS reached (gate allowed)
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'deferred' });
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.state).toBe('in_progress'); // NOT failed
+    expect(progress.currentStep).toBe(0); // cursor left on the same step
+    expect(progress.errorMessage ?? null).toBeNull();
+
+    // A later tick that allows all the way through now advances it.
+    const okExecutor = new RecordingExecutor();
+    const tick2 = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      gate: makeGate(okExecutor, { kind: 'allow' }),
+    });
+    await tick2.runTick(new Date());
+    const [after] = await store.sequence.listTargetProgress(CAMP);
+    expect(after.currentStep).toBe(1);
+    expect(okExecutor.calls).toHaveLength(1);
+  });
+
+  it('a genuine executor error still marks the cursor failed', async () => {
+    // A non-SafetyDeferredError throw is a real failure and must NOT be swallowed:
+    // the cursor is marked failed with the error message, exactly as before.
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const executor = new ThrowingExecutor(new Error('page crashed'));
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
+
+    const res = await tick.runTick(new Date());
+
+    expect(executor.calls).toBe(1);
+    expect(res.outcomes[0]).toMatchObject({ kind: 'failed', error: 'page crashed' });
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.state).toBe('failed');
+    expect(progress.errorMessage).toBe('page crashed');
+    expect(progress.nextStepAt).toBeNull();
   });
 
   it('completes when the last step executes', async () => {

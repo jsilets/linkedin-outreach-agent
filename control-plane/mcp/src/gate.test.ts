@@ -3,6 +3,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { Account, Action, Campaign, Decision } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import { gateAct, mayExecuteDirectly, type GateDeps } from './gate.js';
 import type { ActRequest, ExecutorPort, ApprovalPort, SafetyPort, PendingItem } from './ports.js';
 import { requirePrivileged, CapabilityError } from './capability.js';
@@ -163,6 +164,32 @@ describe('gateAct', () => {
     const out = await gateAct(deps, connectReq());
     expect(out).toEqual({ kind: 'deferred', until });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('maps a mint-time SafetyDeferredError(defer) from the executor to a deferred outcome', async () => {
+    // canAct allows at step 1, but the executor re-checks safety at token-mint
+    // time and throws a typed defer (the anti-burst pacer flipped it). gateAct
+    // must translate that into the same deferred outcome the gate returns when
+    // its OWN canAct defers, so callers retry instead of treating it as fatal.
+    const until = new Date('2026-07-06T00:05:00Z');
+    const { deps, execute } = makeDeps('autonomous');
+    execute.mockRejectedValueOnce(new SafetyDeferredError({ kind: 'defer', until }));
+    const out = await gateAct(deps, connectReq());
+    expect(out).toEqual({ kind: 'deferred', until });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('maps a mint-time SafetyDeferredError(deny) from the executor to a denied outcome', async () => {
+    const { deps, execute } = makeDeps('autonomous');
+    execute.mockRejectedValueOnce(new SafetyDeferredError({ kind: 'deny', reason: 'paused' }));
+    const out = await gateAct(deps, connectReq());
+    expect(out).toEqual({ kind: 'denied', reason: 'paused' });
+  });
+
+  it('rethrows a genuine executor error (not a SafetyDeferredError)', async () => {
+    const { deps, execute } = makeDeps('autonomous');
+    execute.mockRejectedValueOnce(new Error('page crashed'));
+    await expect(gateAct(deps, connectReq())).rejects.toThrow('page crashed');
   });
 
   it('does not consult canAct when the level forces a queue', async () => {

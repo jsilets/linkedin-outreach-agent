@@ -22,6 +22,7 @@
 // defer or deny within budget.
 
 import type { AutonomyLevel, Decision } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import type { ActRequest, ApprovalPort, ExecutorPort, PendingItem, SafetyPort } from './ports.js';
 
 /** Outcome of routing an Act through the gate. */
@@ -100,8 +101,24 @@ export async function gateAct(deps: GateDeps, req: ActRequest, draftBody?: strin
   const decision: Decision = await deps.safety.canAct(account, req);
   switch (decision.kind) {
     case 'allow': {
-      const action = await deps.executor.execute(req);
-      return { kind: 'executed', actionId: action.id };
+      try {
+        const action = await deps.executor.execute(req);
+        return { kind: 'executed', actionId: action.id };
+      } catch (err) {
+        // The executor re-checks safety at token-mint time (defense in depth).
+        // If that re-check flipped to a non-allow (e.g. the anti-burst pacer
+        // deferred us since the check above), that is a transient "retry later",
+        // NOT an executor failure. Map it back to the same non-allow outcome the
+        // gate would have returned at step 1 so the caller retries instead of
+        // treating it as fatal. Any other error is a genuine failure: rethrow.
+        if (err instanceof SafetyDeferredError) {
+          const d = err.decision;
+          return d.kind === 'defer'
+            ? { kind: 'deferred', until: d.until }
+            : { kind: 'denied', reason: d.reason };
+        }
+        throw err;
+      }
     }
     case 'defer':
       return { kind: 'deferred', until: decision.until };

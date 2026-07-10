@@ -183,6 +183,28 @@ export type Decision =
   | { kind: 'defer'; until: Date }
   | { kind: 'deny'; reason: string };
 
+/** A non-allow decision (defer or deny); the only shapes a re-check can surface
+ * once the caller is already on the execute path. */
+export type NonAllowDecision = Extract<Decision, { kind: 'defer' } | { kind: 'deny' }>;
+
+/**
+ * Raised when the SafetyGate is re-consulted at token-mint time (defense in
+ * depth, inside the executor) and no longer returns `allow`. The anti-burst
+ * pacer can flip an earlier `allow` to `defer` in the window between the gate
+ * check and the mint, so this is a transient "retry later" signal, NOT an
+ * executor failure. gateAct catches it and maps `decision` back to the matching
+ * non-allow GateOutcome (deferred/denied); the dispatch tick then leaves the
+ * cursor in_progress for the next tick instead of permanently failing it.
+ */
+export class SafetyDeferredError extends Error {
+  readonly decision: NonAllowDecision;
+  constructor(decision: NonAllowDecision) {
+    super(`safety gate re-check returned ${decision.kind} at token-mint time`);
+    this.name = 'SafetyDeferredError';
+    this.decision = decision;
+  }
+}
+
 /** A signal raised by the detector for the SafetyGate to react to. */
 export interface Signal {
   kind: import('./enums.js').SignalKind;
