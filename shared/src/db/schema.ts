@@ -246,6 +246,12 @@ export const messages = pgTable('messages', {
   threadRef: text('thread_ref').notNull(),
   intent: replyIntentEnum('intent'),
   status: messageStatusEnum('status').notNull().default('draft'),
+  // The ActRequest bound to a pending (draft) outbound item, persisted so an
+  // approval can still be dispatched after a runtime restart. Without this the
+  // binding lived only in memory and any restart stranded the pending item
+  // (list_pending went empty and approve could not dispatch). Null for inbound
+  // rows and for history rows written before this column existed.
+  pendingReq: jsonb('pending_req'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

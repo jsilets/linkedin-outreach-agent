@@ -13,13 +13,11 @@ import type { ObservedMessage, PersistencePort } from '@loa/agent';
 import type { ActRequest } from '@loa/mcp';
 import { rowToMessage } from '@loa/orchestrator';
 import type { OrchestratorServices } from './orchestrator.js';
-import type { ApprovalAdapter } from './mcp-ports.js';
 import type { RuntimeStore } from '../store/index.js';
 
 export class PersistenceAdapter implements PersistencePort {
   constructor(
     private readonly services: OrchestratorServices,
-    private readonly approvals: ApprovalAdapter,
     private readonly store: RuntimeStore,
   ) {}
 
@@ -30,14 +28,8 @@ export class PersistenceAdapter implements PersistencePort {
     draft: Draft;
   }): Promise<{ pendingItemRef: string }> {
     const threadRef = `pending:${input.accountId}:${input.targetId}`;
-    const item = await this.services.approvals.enqueuePending({
-      accountId: input.accountId,
-      targetId: input.targetId,
-      campaignId: input.campaignId,
-      threadRef,
-      draft: input.draft,
-    });
-    // Bind so approval can dispatch a real message send.
+    // Persist the ActRequest on the pending item so approval can dispatch a real
+    // message send even after a restart (no in-memory binding to lose).
     const req: ActRequest = {
       type: 'message',
       accountId: input.accountId,
@@ -45,7 +37,14 @@ export class PersistenceAdapter implements PersistencePort {
       campaignId: input.campaignId,
       payload: input.draft.body,
     };
-    this.approvals.bind(item.pendingItemRef, req);
+    const item = await this.services.approvals.enqueuePending({
+      accountId: input.accountId,
+      targetId: input.targetId,
+      campaignId: input.campaignId,
+      threadRef,
+      draft: input.draft,
+      pendingReq: req,
+    });
     return { pendingItemRef: item.pendingItemRef };
   }
 
@@ -57,14 +56,6 @@ export class PersistenceAdapter implements PersistencePort {
     intent: Intent;
     draft: Draft;
   }): Promise<{ pendingItemRef: string }> {
-    const item = await this.services.approvals.enqueuePending({
-      accountId: input.accountId,
-      targetId: input.targetId,
-      campaignId: input.campaignId,
-      threadRef: input.threadRef,
-      intent: input.intent,
-      draft: input.draft,
-    });
     const req: ActRequest = {
       type: 'message',
       accountId: input.accountId,
@@ -72,7 +63,15 @@ export class PersistenceAdapter implements PersistencePort {
       campaignId: input.campaignId,
       payload: input.draft.body,
     };
-    this.approvals.bind(item.pendingItemRef, req);
+    const item = await this.services.approvals.enqueuePending({
+      accountId: input.accountId,
+      targetId: input.targetId,
+      campaignId: input.campaignId,
+      threadRef: input.threadRef,
+      intent: input.intent,
+      draft: input.draft,
+      pendingReq: req,
+    });
     return { pendingItemRef: item.pendingItemRef };
   }
 

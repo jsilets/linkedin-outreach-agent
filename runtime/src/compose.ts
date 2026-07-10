@@ -297,8 +297,9 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   }
   // --- end acceptance-detection tick ---------------------------------------
 
-  // agent loop persistence writes through the same orchestrator + approvals.
-  const persistence = new PersistenceAdapter(orchestrator, approvals, store);
+  // agent loop persistence writes through the same orchestrator; pending sends
+  // persist their ActRequest on the message row, so no in-memory binding.
+  const persistence = new PersistenceAdapter(orchestrator, store);
 
   const loopPorts: LoopPorts = {
     safety: asAgentSafetyPort(gate),

@@ -17,12 +17,17 @@ export interface EnqueuePendingInput {
   draft: Draft;
   /** Intent, when this pending item is a reply to a classified inbound message. */
   intent?: Intent;
+  /** The ActRequest to dispatch when this item is approved. Persisted on the
+   * message row so the binding survives a runtime restart. Serialized as JSON. */
+  pendingReq?: unknown;
 }
 
 export interface PendingItem {
   /** The draft message id; this is the pendingItemRef used by approvals. */
   pendingItemRef: string;
   message: Message;
+  /** The persisted ActRequest to dispatch on approval, if one was bound. */
+  pendingReq?: unknown;
 }
 
 export interface Decision {
@@ -53,6 +58,7 @@ export class ApprovalService {
       threadRef: input.threadRef,
       intent: input.intent ?? null,
       status: 'draft',
+      pendingReq: input.pendingReq ?? null,
     });
     await this.log.recordEvent('pending_enqueued', input.accountId, {
       pendingItemRef: row.id,
@@ -60,7 +66,7 @@ export class ApprovalService {
       campaignId: input.campaignId,
       intent: input.intent ?? null,
     });
-    return { pendingItemRef: row.id, message: rowToMessage(row) };
+    return { pendingItemRef: row.id, message: rowToMessage(row), pendingReq: row.pendingReq ?? undefined };
   }
 
   /** List draft (pending) messages in a thread. */
@@ -68,7 +74,26 @@ export class ApprovalService {
     const rows = await this.messages.listByThread(threadRef);
     return rows
       .filter((r) => r.status === 'draft')
-      .map((r) => ({ pendingItemRef: r.id, message: rowToMessage(r) }));
+      .map((r) => ({ pendingItemRef: r.id, message: rowToMessage(r), pendingReq: r.pendingReq ?? undefined }));
+  }
+
+  /** Every pending (draft) item across all threads, sourced from the store. The
+   * approval surface uses this to rebuild the pending queue after a restart,
+   * when no in-memory binding survives. */
+  async listAllPending(): Promise<PendingItem[]> {
+    const rows = await this.messages.listDrafts();
+    return rows.map((r) => ({
+      pendingItemRef: r.id,
+      message: rowToMessage(r),
+      pendingReq: r.pendingReq ?? undefined,
+    }));
+  }
+
+  /** The persisted ActRequest bound to a pending item, read by id regardless of
+   * status so dispatch still works after approve() has flipped it to 'sent'. */
+  async getPendingReq(pendingItemRef: string): Promise<unknown> {
+    const row = await this.messages.findById(pendingItemRef);
+    return row?.pendingReq ?? undefined;
   }
 
   /** Approve as-is: mark the draft sent, record an 'approved' decision + event. */

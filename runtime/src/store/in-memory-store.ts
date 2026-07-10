@@ -195,6 +195,7 @@ class InMemMessageRepo implements MessageRepoPort {
       threadRef: row.threadRef,
       intent: row.intent ?? null,
       status: row.status ?? 'draft',
+      pendingReq: row.pendingReq ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -220,6 +221,11 @@ class InMemMessageRepo implements MessageRepoPort {
   }
   async listByThread(threadRef: string): Promise<MessageRow[]> {
     return [...this.rows.values()].filter((r) => r.threadRef === threadRef);
+  }
+  async listDrafts(): Promise<MessageRow[]> {
+    return [...this.rows.values()]
+      .filter((r) => r.status === 'draft')
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
 }
 
