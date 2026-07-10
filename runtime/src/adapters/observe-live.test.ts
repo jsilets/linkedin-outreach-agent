@@ -8,6 +8,8 @@ import type { PeopleQuery } from '@loa/mcp';
 import {
   buildVoyagerSearchUrl,
   buildVoyagerGraphqlPath,
+  collectGeoUrns,
+  DEFAULT_GEO_URNS,
   normalizeSearchResponse,
   normalizeInboxResponse,
   normalizeConnectionsResponse,
@@ -103,8 +105,9 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
     expect(url.origin).toBe('https://www.linkedin.com');
     expect(url.pathname).toBe('/search/results/people/');
     expect(url.searchParams.get('keywords')).toBe('growth marketer');
-    // A plain keyword search (no facets) uses the vertical-switch origin.
-    expect(url.searchParams.get('origin')).toBe('SWITCH_SEARCH_VERTICAL');
+    // No geo is specified, so the default US+Canada geo facet applies, which
+    // counts as a faceted search.
+    expect(url.searchParams.get('origin')).toBe('FACETED_SEARCH');
     expect(url.searchParams.get('page')).toBeNull();
   });
 
@@ -151,12 +154,53 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
   });
 });
 
+describe('collectGeoUrns (default geography)', () => {
+  it('defaults to US + Canada when no geo is specified', () => {
+    expect(collectGeoUrns({ keywords: 'ops' })).toEqual(['103644278', '101174742']);
+    expect(collectGeoUrns({ keywords: 'ops' })).toEqual([...DEFAULT_GEO_URNS]);
+  });
+
+  it('also defaults when geoUrns is present but empty', () => {
+    expect(collectGeoUrns({ keywords: 'ops', geoUrns: [] })).toEqual([...DEFAULT_GEO_URNS]);
+  });
+
+  it('passes an explicit single geoUrn through unchanged (no default)', () => {
+    expect(collectGeoUrns({ keywords: 'ops', geoUrn: '90000084' })).toEqual(['90000084']);
+  });
+
+  it('passes explicit geoUrns through unchanged (no default)', () => {
+    expect(collectGeoUrns({ keywords: 'ops', geoUrns: ['90000084', '102890719'] })).toEqual([
+      '90000084',
+      '102890719',
+    ]);
+  });
+});
+
+describe('default geography flows into the built requests', () => {
+  it('graphql path carries the US+Canada geo tuple when no geo is given', () => {
+    const path = buildVoyagerGraphqlPath({ keywords: 'growth marketer' }, 0, 10);
+    expect(path).toContain('(key:geoUrn,value:List(103644278,101174742))');
+  });
+
+  it('search url carries the US+Canada geo facet when no geo is given', () => {
+    const params = new URL(buildVoyagerSearchUrl({ keywords: 'growth marketer' }, 0)).searchParams;
+    expect(params.get('geoUrn')).toBe('["103644278","101174742"]');
+  });
+
+  it('an explicit geo is not overridden by the default', () => {
+    const path = buildVoyagerGraphqlPath({ keywords: 'x', geoUrn: '90000084' }, 0, 10);
+    expect(path).toContain('(key:geoUrn,value:List(90000084))');
+    expect(path).not.toContain('103644278');
+    expect(path).not.toContain('101174742');
+  });
+});
+
 describe('buildVoyagerGraphqlPath (direct API request)', () => {
   it('emits the SEARCH_SRP people-results grammar with parens left literal', () => {
     const path = buildVoyagerGraphqlPath({ keywords: 'growth marketer' }, 0, 10);
     expect(path.startsWith('/voyager/api/graphql?variables=(')).toBe(true);
     expect(path).toContain('flagshipSearchIntent:SEARCH_SRP');
-    expect(path).toContain('queryParameters:List((key:resultType,value:List(PEOPLE)))');
+    expect(path).toContain('(key:resultType,value:List(PEOPLE))');
     // keywords VALUE is escaped (space -> %20); the grammar is not.
     expect(path).toContain('keywords:growth%20marketer,');
     expect(path).toContain('count:10)');
