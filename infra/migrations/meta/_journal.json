@@ -50,6 +50,13 @@
       "when": 1783554896751,
       "tag": "0006_majestic_daimon_hellstrom",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783691028028,
+      "tag": "0007_ambitious_falcon",
+      "breakpoints": true
     }
   ]
 }

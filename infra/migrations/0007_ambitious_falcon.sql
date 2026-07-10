@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "limits" jsonb DEFAULT '{"caps":{"connect":20,"message":20,"view_profile":60,"follow":15,"withdraw_invite":10,"react":30}}'::jsonb NOT NULL;

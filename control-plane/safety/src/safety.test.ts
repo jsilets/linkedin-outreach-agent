@@ -147,6 +147,19 @@ describe('budget by state', () => {
     expect(gate.budget(account({ state: 'Restricted' })).caps.message).toBe(0);
   });
 
+  it("uses the account's own editable limits over the config default", () => {
+    const caps = { connect: 5, message: 3, view_profile: 40, follow: 7, withdraw_invite: 2, react: 9 };
+    const b = gate.budget(account({ state: 'Active', limits: { caps } }));
+    expect(b.caps.connect).toBe(5);
+    expect(b.caps.message).toBe(3);
+  });
+
+  it('scales the per-account limits when Throttled', () => {
+    const caps = { connect: 8, message: 8, view_profile: 40, follow: 7, withdraw_invite: 2, react: 9 };
+    // Throttled halves the account's own base caps, not the config default.
+    expect(gate.budget(account({ state: 'Throttled', limits: { caps } })).caps.connect).toBe(4);
+  });
+
   it('resets used when the stored budget is from another day', () => {
     const stale: DailyBudget = { ...budget('Active', { connect: 5 }), date: '2020-01-01' };
     const b = gate.budget(account({ state: 'Active', budget: stale }));

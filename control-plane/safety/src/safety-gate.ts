@@ -106,6 +106,14 @@ export class DefaultSafetyGate implements SafetyGate {
     this.rng = opts.rng ?? Math.random;
   }
 
+  /**
+   * The account's editable base caps: its own `limits.caps` when set, else the
+   * config fallback. This is the single source of truth for steady-state caps.
+   */
+  private baseCaps(acct: Account): CapTable {
+    return acct.limits?.caps ?? this.cfg.active;
+  }
+
   /** Caps that apply given the account's state. */
   private capsForState(acct: Account): CapTable {
     switch (acct.state) {
@@ -114,12 +122,12 @@ export class DefaultSafetyGate implements SafetyGate {
       case 'Cold':
       case 'Warming':
       case 'Active':
-        return this.cfg.active;
+        return this.baseCaps(acct);
       case 'Throttled':
         // Throttled cuts whatever the account would otherwise get. A throttled
         // account is conceptually still at its Active steady-state ceiling, so
-        // scale the Active caps.
-        return scaleCaps(this.cfg.active, this.cfg.throttleMultiplier);
+        // scale the account's base caps.
+        return scaleCaps(this.baseCaps(acct), this.cfg.throttleMultiplier);
       case 'Cooldown':
       case 'Restricted':
         // No outbound work in these states.

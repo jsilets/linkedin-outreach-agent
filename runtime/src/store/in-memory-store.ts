@@ -7,7 +7,7 @@
 // reads action rows; the executor writes them). This store adds both. The
 // account/action/event-read surfaces are async to match the RuntimeStore shape.
 
-import { db as shared } from '@loa/shared';
+import { db as shared, defaultLimits } from '@loa/shared';
 import type {
   ApprovalRepoPort,
   CampaignRepoPort,
@@ -63,6 +63,7 @@ class InMemAccountStore implements AccountStorePort {
       state: row.state ?? 'Active',
       health: row.health,
       budget: row.budget,
+      limits: row.limits ?? defaultLimits(),
       createdAt: now,
       updatedAt: now,
     };

@@ -43,10 +43,27 @@ export interface VolumeRow {
   count: number;
 }
 
+// The per-action daily caps an operator can edit. Mirrors the server's
+// ActionType union; kept as a plain list so the UI can render one field each.
+export const ACTION_TYPES = [
+  'connect',
+  'message',
+  'view_profile',
+  'follow',
+  'withdraw_invite',
+  'react',
+] as const;
+export type ActionType = (typeof ACTION_TYPES)[number];
+
+export interface AccountLimits {
+  caps: Record<ActionType, number>;
+}
+
 export interface Account {
   id: string;
   handle: string;
   state: string;
+  limits: AccountLimits;
 }
 
 export interface ListSummary {
@@ -150,6 +167,19 @@ export const api = {
     });
     if (!res.ok) throw new Error(await errorText(res));
     return res.json() as Promise<LinkAccountResult>;
+  },
+  updateAccountLimits: async (
+    id: string,
+    caps: Record<ActionType, number>,
+  ): Promise<AccountLimits> => {
+    const res = await fetch(`/api/accounts/${id}/limits`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ caps }),
+    });
+    if (!res.ok) throw new Error(await errorText(res));
+    const body = (await res.json()) as { limits: AccountLimits };
+    return body.limits;
   },
   volume: (accountId: string, days: number) => {
     const params = new URLSearchParams({ days: String(days) });
