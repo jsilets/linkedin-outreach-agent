@@ -74,12 +74,19 @@ export async function runSmoke(): Promise<SmokeTrace> {
   check(draftBefore?.status === 'draft', 'pending send should be a draft (not sent)');
   check(draftBefore?.direction === 'outbound', 'pending send should be outbound');
 
-  // 5. approve -> transitions to sent via the fake executor.
-  const approvedAction = await ports.approval.approve(sendRef, 'operator@example.com');
-  check(Boolean(approvedAction.id), 'approve should return a dispatched action id');
+  // 5. approve -> marks the message 'approved'; the dispatch tick sends it.
+  const approved = await ports.approval.approve(sendRef, 'operator@example.com');
+  check(approved.status === 'approved', 'approve should mark the message approved');
+  const afterApprove = await store.message.findById(sendRef);
+  check(afterApprove?.status === 'approved', 'approved send should be marked approved, not sent');
+  // The tick sends approved drafts (gated). With the fake executor it lands now.
+  const tick = await runtime.dispatch.runTick();
+  const sentOutcome = tick.outcomes.find((o) => o.kind === 'executed');
+  check(Boolean(sentOutcome), 'dispatch tick should send the approved message');
   const draftAfter = await store.message.findById(sendRef);
-  check(draftAfter?.status === 'sent', 'approved send should be marked sent');
-  const actionRow = await store.action.findById(approvedAction.id);
+  check(draftAfter?.status === 'sent', 'approved send should be marked sent after the tick');
+  const dispatchedActionId = sentOutcome && 'actionId' in sentOutcome ? sentOutcome.actionId : '';
+  const actionRow = await store.action.findById(dispatchedActionId);
   check(actionRow?.type === 'message', 'dispatched action should be a message');
 
   // 6. feed a fake inbound reply, run the loop again.
@@ -131,7 +138,7 @@ export async function runSmoke(): Promise<SmokeTrace> {
     campaignId: campaign.id,
     targetId: target.id,
     sendPendingRef: sendRef,
-    approvedActionId: approvedAction.id,
+    approvedActionId: dispatchedActionId,
     sendMessageStatus: draftAfter?.status ?? 'unknown',
     replyIntent,
     replyPendingRef: replyRef,

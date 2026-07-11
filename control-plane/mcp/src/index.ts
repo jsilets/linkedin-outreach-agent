@@ -10,6 +10,7 @@ export type {
   ExecutorPort,
   SafetyPort,
   ApprovalPort,
+  ApprovalOutcome,
   CampaignPort,
   LeadListPort,
   AccountAdminPort,

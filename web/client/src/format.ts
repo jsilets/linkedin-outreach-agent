@@ -23,12 +23,37 @@ export function formatDelay(seconds: number): string {
   return parts.join(' ');
 }
 
-// A one-line funnel label for a step, e.g. "Wait 2d" or "Connect".
-export function funnelLabel(step: Step): string {
-  if (step.stepType === 'delay') return `Wait ${formatDelay(step.delaySeconds)}`;
-  const base = STEP_LABELS[step.stepType];
-  if (step.delaySeconds > 0) return `${base} (+${formatDelay(step.delaySeconds)})`;
-  return base;
+// The cumulative day each step lands on, indexed to `steps`. delaySeconds is the
+// gap AFTER the previous enabled step, so the running sum from the first enabled
+// step is the day a step actually runs — the first enabled step is the anchor
+// (day 0). Disabled steps are skipped: they get `null` and don't advance the
+// clock. Days are rounded because sends land the next working morning, so the
+// number is approximate, not an exact 24h offset.
+export function cumulativeDays(steps: Step[]): (number | null)[] {
+  let seconds = 0;
+  return steps.map((step) => {
+    if (!step.enabled) return null;
+    seconds += Math.max(0, step.delaySeconds);
+    return Math.round(seconds / 86400);
+  });
+}
+
+// The timing tag for a funnel chip: when the step lands, given its cumulative
+// `day` from cumulativeDays. A standalone Delay shows its own wait; a disabled
+// step (day === null) has no timing. Kept separate from the action word so the
+// chip can render the numerals in --font-mono.
+export function funnelWhen(step: Step, day: number | null): string {
+  if (step.stepType === 'delay') return formatDelay(step.delaySeconds);
+  if (day === null) return '';
+  return day <= 0 ? 'day 0' : `~day ${day}`;
+}
+
+// The full one-line chip label, e.g. "Message · ~day 3". Used as the chip's
+// title; the visible chip renders the action and the timing tag separately.
+export function funnelLabel(step: Step, day: number | null): string {
+  const base = step.stepType === 'delay' ? 'Wait' : STEP_LABELS[step.stepType];
+  const when = funnelWhen(step, day);
+  return when ? `${base} · ${when}` : base;
 }
 
 // Relative time from now, e.g. "in 2h", "3d ago", "just now". Future = "in X",

@@ -265,6 +265,9 @@ nav button.active::after {
 }
 
 .funnel .node {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-1);
@@ -272,8 +275,42 @@ nav button.active::after {
   font-size: var(--text-meta);
 }
 
+.funnel .node.node-off {
+  opacity: 0.5;
+}
+
+.funnel .node-act {
+  color: var(--ink-1);
+  font-weight: var(--weight-medium);
+}
+
+/* The cumulative-day tag: numerals in mono, tabular, so "~day 3" reads as data.
+   ink-2 (not ink-3) so the small caption clears AA on the surface-2 chip. */
+.funnel .node-when {
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-caption);
+}
+
 .funnel .arrow {
   color: var(--ink-3);
+}
+
+/* Sits above the step editors: explains why the day numbers are approximate. */
+.flow-note {
+  margin: 0 0 var(--space-5);
+  max-width: 68ch;
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+}
+
+/* Live cumulative-timing preview under a step's wait field. */
+.step-hint {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Flow editor steps ────────────────────────────────────────────────────── */

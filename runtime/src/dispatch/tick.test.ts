@@ -194,7 +194,7 @@ describe('DispatchTick', () => {
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
 
     const now = new Date('2026-07-06T12:00:00Z');
     const res = await tick.runTick(now);
@@ -217,7 +217,7 @@ describe('DispatchTick', () => {
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
 
     const now = new Date('2026-07-06T12:00:00Z');
     const res = await tick.runTick(now);
@@ -241,7 +241,7 @@ describe('DispatchTick', () => {
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
 
     const now = new Date('2026-07-06T12:00:00Z');
     const res = await tick.runTick(now);
@@ -270,7 +270,7 @@ describe('DispatchTick', () => {
     await store.target.setStage(TGT, 'invited');
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
 
     const res = await tick.runTick(new Date());
 
@@ -295,6 +295,7 @@ describe('DispatchTick', () => {
     const executor = new RecordingExecutor();
     const tick = new DispatchTick({
       sequence: store.sequence,
+      messages: store.message,
       gate: makeGate(executor, { kind: 'deny', reason: 'budget' }),
     });
 
@@ -307,7 +308,7 @@ describe('DispatchTick', () => {
     expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'denied' });
 
     // A later tick with allow now advances it.
-    const tick2 = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick2 = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
     await tick2.runTick(new Date());
     const [after] = await store.sequence.listTargetProgress(CAMP);
     expect(after.currentStep).toBe(1);
@@ -323,7 +324,7 @@ describe('DispatchTick', () => {
     await store.target.setStage(TGT, 'connected');
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeSupervisedGate(executor) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeSupervisedGate(executor) });
 
     const res = await tick.runTick(new Date());
 
@@ -354,6 +355,7 @@ describe('DispatchTick', () => {
     const tick = new DispatchTick({
       sequence: store.sequence,
       targets: store.target,
+      messages: store.message,
       gate: makeGate(executor, { kind: 'allow' }),
     });
 
@@ -371,6 +373,7 @@ describe('DispatchTick', () => {
     const tick2 = new DispatchTick({
       sequence: store.sequence,
       targets: store.target,
+      messages: store.message,
       gate: makeGate(okExecutor, { kind: 'allow' }),
     });
     await tick2.runTick(new Date());
@@ -389,6 +392,7 @@ describe('DispatchTick', () => {
     const tick = new DispatchTick({
       sequence: store.sequence,
       targets: store.target,
+      messages: store.message,
       gate: makeGate(executor, { kind: 'allow' }),
     });
 
@@ -407,7 +411,7 @@ describe('DispatchTick', () => {
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
 
     await tick.runTick(new Date());
 
@@ -431,7 +435,7 @@ describe('DispatchTick', () => {
     await store.target.setStage(TGT, 'connected');
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
 
     const t0 = new Date('2026-07-06T12:00:00Z');
     await tick.runTick(t0); // view_profile -> cursor at delay, due at +60s (delay's own delaySeconds)

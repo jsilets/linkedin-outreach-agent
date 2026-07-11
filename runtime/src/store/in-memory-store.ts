@@ -241,6 +241,11 @@ class InMemMessageRepo implements MessageRepoPort {
       .filter((r) => r.status === 'draft')
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   }
+  async listApproved(): Promise<MessageRow[]> {
+    return [...this.rows.values()]
+      .filter((r) => r.status === 'approved')
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  }
 }
 
 class InMemApprovalRepo implements ApprovalRepoPort {

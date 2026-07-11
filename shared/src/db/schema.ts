@@ -57,7 +57,11 @@ export const messageDirectionEnum = pgEnum('message_direction', [
   'outbound',
 ]);
 
-export const messageStatusEnum = pgEnum('message_status', ['draft', 'sent']);
+// 'draft'    — proposed, awaiting human approval (the pending queue).
+// 'approved' — a human approved it; the dispatch tick sends it at the next open
+//              working-hours window (so an off-hours approval needs no re-approval).
+// 'sent'     — actually dispatched to LinkedIn.
+export const messageStatusEnum = pgEnum('message_status', ['draft', 'approved', 'sent']);
 
 export const targetStageEnum = pgEnum('target_stage', [
   'sourced',

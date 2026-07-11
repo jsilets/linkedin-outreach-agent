@@ -14,7 +14,8 @@
 // Executor: FakeExecutor for dev/smoke (no browser); AccountRunnerExecutor is
 // available for P0 once a live session exists.
 
-import type { Account, Campaign, LLMProvider, Target } from '@loa/shared';
+import type { Account, AccountSchedule, Campaign, LLMProvider, Target } from '@loa/shared';
+import { DEFAULT_SCHEDULE } from '@loa/shared';
 import { DefaultSafetyGate, type SafetyConfig } from '@loa/safety';
 import { ClaudeLLMProvider, OpenRouterLLMProvider } from '@loa/agent';
 import {
@@ -253,11 +254,20 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // The campaign sequence engine reuses the SAME gate chokepoint the Act tools
   // route through (safety + approval + executor), so a tick-minted step obeys
   // autonomy, budgets, and the human gate exactly like an agent-driven send.
+  // The account's working schedule, read fresh so a UI edit takes effect without
+  // a restart. Shared by the dispatch and acceptance ticks to day-align due times.
+  const scheduleFor = async (accountId: string): Promise<AccountSchedule> => {
+    const row = await store.account.findById(accountId);
+    return (row ? rowToAccount(row).limits?.schedule : undefined) ?? DEFAULT_SCHEDULE;
+  };
+
   const dispatch = makeDispatchTick({
     sequence: store.sequence,
     gate: { safety, approval: approvals, executor },
     // Park at 'invited' after a connect and gate message steps on the stage.
     targets: store.target,
+    // Send human-approved drafts when the working-hours window opens.
+    messages: store.message,
   });
 
   // --- reply-detection tick (additive) -------------------------------------
@@ -300,6 +310,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       connections,
       sequence: store.sequence,
       targets: store.target,
+      scheduleFor,
       // Record an invite_accepted audit event on each acceptance so the web
       // activity feed can surface "X accepted your invite" with a timestamp
       // (the feed is otherwise built only from outbound actions, which an
