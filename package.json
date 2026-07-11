@@ -1,6 +1,6 @@
 {
   "name": "linkedin-outreach-agent",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Self-hosted, agent-driven LinkedIn outreach framework",
   "license": "Apache-2.0",
