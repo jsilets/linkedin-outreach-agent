@@ -41,7 +41,7 @@ export type ActionResult = (typeof ACTION_RESULTS)[number];
 export const MESSAGE_DIRECTIONS = ['inbound', 'outbound'] as const;
 export type MessageDirection = (typeof MESSAGE_DIRECTIONS)[number];
 
-export const MESSAGE_STATUSES = ['draft', 'approved', 'sent'] as const;
+export const MESSAGE_STATUSES = ['draft', 'approved', 'rejected', 'cancelled', 'sent'] as const;
 export type MessageStatus = (typeof MESSAGE_STATUSES)[number];
 
 export const TARGET_STAGES = [

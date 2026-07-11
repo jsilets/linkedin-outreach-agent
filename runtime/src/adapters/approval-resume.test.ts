@@ -131,6 +131,16 @@ function messageReq(targetId: string, body = 'first'): ActRequest {
 }
 
 async function parkedProgress(store: InMemoryStore, targetId: string): Promise<string> {
+  // A 'connected' target row must exist: the tick's pre-send guards cancel an
+  // approved message whose target is missing or terminal (lost/replied).
+  await store.target.create({
+    id: targetId,
+    campaignId: CAMP,
+    prospectRef: targetId,
+    linkedinUrn: `urn:li:person:${targetId}`,
+    externalContext: {},
+    stage: 'connected',
+  });
   const prog = await store.sequence.enrollTarget(CAMP, targetId, ACCT);
   await store.sequence.advanceTargetProgress(prog.id, { state: 'awaiting_approval' });
   return prog.id;
@@ -146,7 +156,9 @@ describe('ApprovalAdapter — approval marks approved, tick sends', () => {
     executor = new RecordingExecutor();
     approvals = new ApprovalAdapter(makeServices(store), executor, store);
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'first' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'follow up' });
+    // The follow-up carries a delay so, after the first send advances the cursor
+    // onto it, it is not immediately due again within the same tick pass.
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'follow up', delaySeconds: 3600 });
   });
 
   it('approve marks the message approved and leaves the cursor parked (no send yet)', async () => {
@@ -216,7 +228,7 @@ describe('ApprovalAdapter — approval marks approved, tick sends', () => {
     expect(executor.calls[0]!.payload).toBe('rewritten by the operator');
   });
 
-  it('reject stops the enrollment (skipped), nothing sent', async () => {
+  it('reject marks the draft rejected, stops the enrollment (skipped), nothing sent', async () => {
     await parkedProgress(store, 't6');
     const pending = await approvals.enqueue(messageReq('t6'), 'supervised', 'first');
 
@@ -225,6 +237,10 @@ describe('ApprovalAdapter — approval marks approved, tick sends', () => {
 
     expect(executor.calls).toHaveLength(0);
     expect((await store.sequence.getTargetProgressByTarget('t6'))!.state).toBe('skipped');
+    // The draft is terminal 'rejected': gone from the pending queue, un-approvable.
+    expect((await store.message.findById(pending.id))!.status).toBe('rejected');
+    expect(await store.message.listDrafts()).toHaveLength(0);
+    await expect(approvals.approve(pending.id, 'op')).rejects.toThrow(/already decided/);
   });
 });
 
@@ -235,6 +251,14 @@ describe('ApprovalAdapter durability across a restart', () => {
 
     const execA = new RecordingExecutor();
     const adapterA = new ApprovalAdapter(makeServices(store), execA, store);
+    await store.target.create({
+      id: 't-restart',
+      campaignId: CAMP,
+      prospectRef: 't-restart',
+      linkedinUrn: 'urn:li:person:t-restart',
+      externalContext: {},
+      stage: 'connected',
+    });
     const prog = await store.sequence.enrollTarget(CAMP, 't-restart', ACCT);
     await store.sequence.advanceTargetProgress(prog.id, { state: 'awaiting_approval' });
     const pending = await adapterA.enqueue(messageReq('t-restart', 'nice to connect'), 'supervised', 'nice to connect');

@@ -22,7 +22,7 @@
 // setInterval so a Railway process (or any host) can run it. No local/cloud
 // assumptions and no shared mutable tick state, so it is restartable.
 
-import type { AccountSchedule, CampaignStepType } from '@loa/shared';
+import type { AccountSchedule, CampaignStepType, Json } from '@loa/shared';
 import { DEFAULT_SCHEDULE, SafetyDeferredError } from '@loa/shared';
 import type { db as shared } from '@loa/shared';
 import { gateAct, type ActRequest, type GateDeps, type GateOutcome } from '@loa/mcp';
@@ -32,18 +32,31 @@ import { advanceAfterStep, dueAfterDelay } from './advance.js';
 
 type CampaignStepRow = shared.CampaignStepRow;
 type TargetProgressRow = shared.TargetProgressRow;
+type TargetRow = shared.TargetRow;
 type MessageRow = shared.MessageRow;
 
-/** Stages from which a message step may fire: a 1st-degree connection or beyond.
- * LinkedIn only lets you message a connection, so a message before acceptance is
- * held. The acceptance tick moves a target to 'connected'; the reply router moves
- * it further (in_conversation/replied/won). */
-const MESSAGEABLE_STAGES: ReadonlySet<string> = new Set([
-  'connected',
+/** Stages where the sequence must stop: past 'connected' a human owns the live
+ * thread (in_conversation / replied / won), and 'lost' is terminal. A message
+ * step must NOT keep firing at these — instead we pull the target from the
+ * funnel so its cursor goes terminal too. (Below 'connected' the invite is not
+ * yet accepted, so a message is merely held for a later tick.) */
+const SEQUENCE_STOP_STAGES: ReadonlySet<string> = new Set([
   'in_conversation',
   'replied',
   'won',
+  'lost',
 ]);
+
+/**
+ * Send-time reply probe. Returns true if the target has an inbound message newer
+ * than `since` (in which case it has ALSO routed that reply — pulling the funnel
+ * and cancelling outstanding messages), so the caller must not send. A throw
+ * means the reply lane is broken and the caller must fail closed (not send).
+ * Backed by the ReplyTick in live mode; omitted in fake mode.
+ */
+export interface SendTimeReplyCheck {
+  check(accountId: string, target: TargetRow, since: Date | null): Promise<boolean>;
+}
 
 /** How one due cursor resolved in a tick. Returned for observability + tests. */
 export type StepOutcome =
@@ -52,6 +65,7 @@ export type StepOutcome =
   | { kind: 'completed'; progressId: string }
   | { kind: 'held'; progressId: string; reason: string } // gate queued/deferred/denied, or not connected
   | { kind: 'awaiting_connection'; progressId: string } // connect sent; parked for acceptance
+  | { kind: 'cancelled'; progressId: string; messageId?: string; reason: string } // approved send killed pre-flight
   | { kind: 'failed'; progressId: string; error: string }
   | { kind: 'no_steps'; progressId: string }
   | { kind: 'exhausted'; progressId: string }; // cursor past the last step already
@@ -73,6 +87,20 @@ export interface DispatchTickDeps {
   /** Messages, so the tick can send human-approved drafts when the working-hours
    * window opens (the approval path no longer dispatches directly). */
   messages: MessageRepoPort;
+  /** Cross-campaign suppression (the person said Stop, on any campaign). Wired by
+   * compose from the orchestrator; omitted by tests that do not exercise it. When
+   * present, a suppressed target's approved send is cancelled and a suppressed
+   * message/connect step pulls the target from the funnel. */
+  suppression?: { isSuppressed(targetId: string): Promise<boolean> };
+  /** Send-time reply probe (live inbox read). Wired by compose only when a real
+   * session exists; a broken probe fails closed (no send). */
+  replyProbe?: SendTimeReplyCheck;
+  /** Fire-and-forget audit sink for cancellations and probe blocks. Wired by
+   * compose from the orchestrator event log; a logging failure never blocks or
+   * fails a tick. */
+  log?: {
+    recordEvent(kind: string, accountId: string | null, payload: Json): Promise<unknown>;
+  };
   now?: () => Date;
   /** Optional sink for per-outcome logging (audit / metrics). */
   onOutcome?: (o: StepOutcome) => void;
@@ -122,6 +150,11 @@ export class DispatchTick {
   private readonly gate: GateDeps;
   private readonly targets: TargetStagePort;
   private readonly messages: MessageRepoPort;
+  private readonly suppression?: { isSuppressed(targetId: string): Promise<boolean> };
+  private readonly replyProbe?: SendTimeReplyCheck;
+  private readonly log?: {
+    recordEvent(kind: string, accountId: string | null, payload: Json): Promise<unknown>;
+  };
   private readonly now: () => Date;
   private readonly onOutcome?: (o: StepOutcome) => void;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -132,8 +165,16 @@ export class DispatchTick {
     this.gate = deps.gate;
     this.targets = deps.targets;
     this.messages = deps.messages;
+    this.suppression = deps.suppression;
+    this.replyProbe = deps.replyProbe;
+    this.log = deps.log;
     this.now = deps.now ?? (() => new Date());
     this.onOutcome = deps.onOutcome;
+  }
+
+  /** Fire-and-forget audit event; a logging failure never affects the tick. */
+  private logEvent(kind: string, accountId: string | null, payload: Json): void {
+    void this.log?.recordEvent(kind, accountId, payload).catch(() => {});
   }
 
   /** The account's working schedule (its own, else the global default). */
@@ -173,6 +214,53 @@ export class DispatchTick {
   private async sendApproved(msg: MessageRow, now: Date): Promise<StepOutcome | undefined> {
     const req = msg.pendingReq as ActRequest | undefined;
     if (!req) return undefined; // pre-binding orphan; nothing to dispatch
+
+    // Pre-send guards. An approval given earlier can be invalidated before the
+    // window opens: the person replied, was hard-suppressed, or the target went
+    // terminal. Never send in those cases — cancel (terminal 'cancelled').
+    const suppressed = this.suppression
+      ? await this.suppression.isSuppressed(msg.targetId)
+      : false;
+    if (req.type === 'message') {
+      const target = await this.targets.findById(msg.targetId);
+      const progress = await this.sequence.getTargetProgressByTarget(msg.targetId);
+      const cancelReason =
+        progress?.state === 'replied'
+          ? 'replied'
+          : !target
+            ? 'target_missing'
+            : target.stage === 'lost'
+              ? 'stage_lost'
+              : suppressed
+                ? 'suppressed'
+                : null;
+      if (cancelReason) return this.cancelApproved(msg, progress?.id, cancelReason);
+      // Send-time reply probe: catch a reply that landed AFTER approval. A true
+      // result means the probe already routed it (pulling the funnel and
+      // cancelling this row), so hold — do not send. A throw fails closed: leave
+      // the message approved and retry next tick, because a broken reply lane
+      // must never be treated as "no reply" and allow a send.
+      if (this.replyProbe && target) {
+        const since = progress?.lastStepAt ?? msg.createdAt;
+        let replied: boolean;
+        try {
+          replied = await this.replyProbe.check(req.accountId, target, since);
+        } catch {
+          return undefined;
+        }
+        if (replied) {
+          this.logEvent('approved_send_held_reply', msg.accountId, {
+            messageId: msg.id,
+            targetId: msg.targetId,
+          });
+          return { kind: 'held', progressId: progress?.id ?? msg.targetId, reason: 'replied' };
+        }
+      }
+    } else if (suppressed) {
+      // Suppression also blocks connect/react/follow approved sends.
+      return this.cancelApproved(msg, undefined, 'suppressed');
+    }
+
     // The edited body lives on the message; the persisted request may hold the
     // original draft, so send the message body.
     const outbound: ActRequest = { ...req, payload: msg.body };
@@ -188,6 +276,28 @@ export class DispatchTick {
     }
 
     await this.messages.setStatus(msg.id, 'sent');
+
+    // A connect approved out-of-band parks for acceptance, exactly like a
+    // tick-driven connect step: set the target 'invited' and hold the cursor at
+    // awaiting_connection ON the connect step. Do NOT advance past it with
+    // advanceAfterStep — the invite is not accepted yet, and advancing would let
+    // the next (message) step fire against a non-connection. The acceptance tick
+    // releases it once accepted.
+    if (req.type === 'connect') {
+      await this.targets.setStage(msg.targetId, 'invited');
+      const prog = await this.sequence.getTargetProgressByTarget(msg.targetId);
+      if (prog && prog.state === 'awaiting_approval') {
+        await this.sequence.advanceTargetProgress(prog.id, {
+          state: 'awaiting_connection',
+          nextStepAt: null,
+          lastStepAt: now,
+          errorMessage: null,
+        });
+        return { kind: 'awaiting_connection', progressId: prog.id };
+      }
+      return { kind: 'executed', progressId: prog?.id ?? msg.targetId, actionId, nextStep: -1 };
+    }
+
     // Advance the sequence cursor for this target, if it is sequence-driven and
     // still parked awaiting this approval.
     const prog = await this.sequence.getTargetProgressByTarget(msg.targetId);
@@ -199,6 +309,26 @@ export class DispatchTick {
     const patch = advanceAfterStep(steps, prog.currentStep, now, schedule);
     await this.sequence.advanceTargetProgress(prog.id, patch);
     return { kind: 'executed', progressId: prog.id, actionId, nextStep: patch.currentStep! };
+  }
+
+  /** Cancel an approved-but-unsent message (terminal 'cancelled') and record an
+   * audit event. Called when a pre-send guard fires (reply / suppression / lost /
+   * missing target). Also pulls the target from the funnel so a cursor parked in
+   * awaiting_approval goes terminal instead of stalling invisibly with no message
+   * left to send (a no-op when the enrollment is already terminal). */
+  private async cancelApproved(
+    msg: MessageRow,
+    progressId: string | undefined,
+    reason: string,
+  ): Promise<StepOutcome> {
+    await this.messages.setStatus(msg.id, 'cancelled');
+    await this.sequence.pullTargetFromFunnel(msg.targetId, reason);
+    this.logEvent('approved_send_cancelled', msg.accountId, {
+      messageId: msg.id,
+      targetId: msg.targetId,
+      reason,
+    });
+    return { kind: 'cancelled', progressId: progressId ?? msg.targetId, messageId: msg.id, reason };
   }
 
   /** Advance one target-progress cursor by exactly one sequence step. */
@@ -243,15 +373,60 @@ export class DispatchTick {
       return { kind: 'delayed', progressId: progress.id, nextStep: nextIdx };
     }
 
-    // A message can only go to a 1st-degree connection, so gate it on the target
-    // stage. Normally the acceptance tick has already released the cursor here
-    // (target='connected'), so this is a defensive net: if the target is not yet
-    // connected, hold WITHOUT firing and leave the cursor for a later tick.
+    // A message step fires ONLY from a plain 'connected' stage.
     if (step.stepType === 'message') {
       const target = await this.targets.findById(progress.targetId);
-      if (!target || !MESSAGEABLE_STAGES.has(target.stage)) {
+      // Past 'connected' a human owns the live thread: pull the target from the
+      // funnel so the cursor goes terminal instead of holding forever.
+      if (target && SEQUENCE_STOP_STAGES.has(target.stage)) {
+        const reason = `stage_${target.stage}`;
+        await this.sequence.pullTargetFromFunnel(progress.targetId, reason);
+        return { kind: 'held', progressId: progress.id, reason };
+      }
+      // Before 'connected' (or target gone): not yet a 1st-degree connection, so
+      // hold WITHOUT firing and leave the cursor for a later tick.
+      if (!target || target.stage !== 'connected') {
         return { kind: 'held', progressId: progress.id, reason: 'not_connected' };
       }
+      // A hard-suppressed person must never receive a message: pull the funnel.
+      if (this.suppression && (await this.suppression.isSuppressed(progress.targetId))) {
+        await this.sequence.pullTargetFromFunnel(progress.targetId, 'suppressed');
+        return { kind: 'held', progressId: progress.id, reason: 'suppressed' };
+      }
+      // Send-time reply probe: catch a reply that landed while this step waited on
+      // its delay. True -> the probe routed it (funnel pulled), so hold. Throw ->
+      // fail closed: leave the cursor untouched for retry, never fire on a broken
+      // reply lane.
+      if (this.replyProbe) {
+        const since = progress.lastStepAt ?? progress.createdAt;
+        let replied: boolean;
+        try {
+          replied = await this.replyProbe.check(progress.accountId, target, since);
+        } catch {
+          this.logEvent('reply_probe_failed', progress.accountId, {
+            progressId: progress.id,
+            targetId: progress.targetId,
+          });
+          return { kind: 'held', progressId: progress.id, reason: 'reply_probe_failed' };
+        }
+        if (replied) {
+          this.logEvent('step_held_reply', progress.accountId, {
+            progressId: progress.id,
+            targetId: progress.targetId,
+          });
+          return { kind: 'held', progressId: progress.id, reason: 'replied' };
+        }
+      }
+    }
+
+    // A hard-suppressed person must never receive an invite either.
+    if (
+      step.stepType === 'connect' &&
+      this.suppression &&
+      (await this.suppression.isSuppressed(progress.targetId))
+    ) {
+      await this.sequence.pullTargetFromFunnel(progress.targetId, 'suppressed');
+      return { kind: 'held', progressId: progress.id, reason: 'suppressed' };
     }
 
     // Action step: route through the SAME gate + executor path as the Act tools.

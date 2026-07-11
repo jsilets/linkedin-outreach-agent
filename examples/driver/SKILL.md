@@ -45,6 +45,9 @@ connection that sends `Authorization: Bearer LOA_OPERATOR_TOKEN` (and optionally
    the whole day). For each target:
    a. `get_profile(accountId: "ACCOUNT_ID", linkedinUrn: <urn>)`.
    b. `get_recent_posts(accountId: "ACCOUNT_ID", linkedinUrn: <urn>)` for a hook.
+      In real executor mode `get_profile` and `get_conversation` are live, but
+      `get_recent_posts`, `get_post_engagers`, and `get_company_jobs` have no live
+      backend yet and return an error; do not personalize from them until then.
    c. Optional: do your own web research on the person or company, then
       `attach_external_context(targetId: <targetId>, context: <your findings>)`.
    d. Draft the message yourself from what you gathered.

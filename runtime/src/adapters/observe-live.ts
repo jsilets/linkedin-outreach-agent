@@ -366,7 +366,27 @@ function asConversations(included: MessagingEntity[] | undefined): Conversation[
   return included.filter((el) => Array.isArray(el?.events));
 }
 
-function normalizeEvent(threadUrn: string, event: MessagingEvent | undefined): InboundMessage | null {
+/** One messaging event parsed to its essentials, direction kept. Used by both
+ * the inbox reader (which drops outbound) and getConversation (which keeps
+ * both). Null when the event carries no text or no identifiable sender. */
+interface ParsedEvent {
+  senderUrn: string;
+  text: string;
+  publicId?: string;
+  receivedAt: Date;
+  /** True when the account itself sent the message (viewer's own event). */
+  outbound: boolean;
+}
+
+/**
+ * Parse a single messaging event into its text/sender/direction. Kept separate
+ * from normalizeEvent so getConversation can surface BOTH directions of a thread
+ * while the inbox reader keeps only inbound. LinkedIn flags the viewer's own
+ * events, but the exact flag varies by shape, so we defensively treat an explicit
+ * `outbound`/`fromViewer` marker as outbound. // GUESS: verify against a real
+ * payload.
+ */
+function parseEvent(event: MessagingEvent | undefined): ParsedEvent | null {
   if (!event) return null;
   const attributed = event.eventContent?.attributedBody?.text ?? event.subject;
   const text = attributed?.trim();
@@ -376,21 +396,73 @@ function normalizeEvent(threadUrn: string, event: MessagingEvent | undefined): I
   const senderUrn = sender?.entityUrn ?? event.from?.entityUrn;
   if (!senderUrn) return null;
 
-  // A message the account itself sent is outbound; skip it. LinkedIn flags the
-  // viewer's own events, but the exact flag varies by shape, so we defensively
-  // treat an explicit `outbound`/`fromViewer` marker as outbound and keep the
-  // rest. // GUESS: verify against a real payload.
-  if (event.outbound === true || event.from?.fromViewer === true) return null;
-
   const publicId = sender?.publicIdentifier;
   const deliveredAt = event.deliveredAt ?? event.createdAt;
   return {
-    threadUrn,
     senderUrn,
-    ...(publicId ? { profileUrl: `https://www.linkedin.com/in/${publicId}/` } : {}),
     text,
+    ...(publicId ? { publicId } : {}),
     receivedAt: typeof deliveredAt === 'number' ? new Date(deliveredAt) : new Date(),
+    outbound: event.outbound === true || event.from?.fromViewer === true,
   };
+}
+
+function normalizeEvent(threadUrn: string, event: MessagingEvent | undefined): InboundMessage | null {
+  const parsed = parseEvent(event);
+  if (!parsed) return null;
+  // A message the account itself sent is outbound; the inbox reader skips it.
+  if (parsed.outbound) return null;
+
+  return {
+    threadUrn,
+    senderUrn: parsed.senderUrn,
+    ...(parsed.publicId ? { profileUrl: `https://www.linkedin.com/in/${parsed.publicId}/` } : {}),
+    text: parsed.text,
+    receivedAt: parsed.receivedAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Conversation reading — one thread's full message history (both directions),
+// for getConversation. Reuses the SAME messaging endpoint the inbox reader hits.
+// ---------------------------------------------------------------------------
+
+/** How many recent conversations getConversation scans for the target thread. */
+const CONVERSATION_WINDOW = 40;
+
+/**
+ * Locate one thread in a Voyager messaging conversations payload and map its
+ * events into a ConversationSummary (both inbound and outbound, oldest-first for
+ * reading). Matches on either entityUrn or backendUrn. Returns null when the
+ * thread is not present in the payload so the caller can throw a clear
+ * not-found error naming the ref (silence is what this whole change fixes).
+ * Exported for the ops shakeout to run over a captured raw body.
+ */
+export function normalizeConversation(
+  body: unknown,
+  threadRef: string,
+): ConversationSummary | null {
+  const root = body as VoyagerMessagingResponse | undefined;
+  const conversations =
+    root?.elements ?? root?.data?.elements ?? asConversations(root?.included);
+
+  for (const conv of conversations ?? []) {
+    if (conv?.entityUrn !== threadRef && conv?.backendUrn !== threadRef) continue;
+    const messages: ConversationSummary['messages'] = [];
+    for (const event of conv?.events ?? []) {
+      const parsed = parseEvent(event);
+      if (!parsed) continue;
+      messages.push({
+        direction: parsed.outbound ? 'outbound' : 'inbound',
+        body: parsed.text,
+        at: parsed.receivedAt,
+      });
+    }
+    // Oldest-first so the thread reads top-to-bottom like the LinkedIn UI.
+    messages.sort((a, b) => a.at.getTime() - b.at.getTime());
+    return { threadRef, messages };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -702,15 +774,73 @@ export class LiveObserve implements ObservePort {
     return results.slice(0, target);
   }
 
+  /**
+   * A single person's profile, read live over the Voyager identity endpoint
+   * (GET /voyager/api/identity/profiles/{id}/profileView, grounded in
+   * tomquirk/linkedin-api's get_profile). {id} is the fsd_profile urn tail (or a
+   * bare id / public identifier when the caller passes one). A single-profile
+   * read, so it does NOT charge the search budget — but it still ensures the page
+   * is on the LinkedIn origin first, like the other readers.
+   */
+  async getProfile(accountId: string, linkedinUrn: string): Promise<ProfileSummary> {
+    const page = await this.pages.pageFor(accountId);
+    await ensureOnLinkedIn(page);
+    const { status, body } = await page.voyagerGet(profileViewPath(profileIdFromUrn(linkedinUrn)), {
+      accept: 'application/json',
+    });
+    if (status !== 200) {
+      throw new Error(
+        `voyager profileView returned HTTP ${status} for ${linkedinUrn}; the session ` +
+          `may be invalid or the profile id unresolvable`,
+      );
+    }
+    return normalizeProfileResponse(body, linkedinUrn);
+  }
+
+  /**
+   * One thread's message history (both directions), read live over the same
+   * Voyager messaging endpoint the inbox reader uses. Scans the CONVERSATION_WINDOW
+   * most recent conversations for the thread whose entityUrn/backendUrn matches
+   * threadRef. A `pending:<accountId>:<targetId>` ref is an internal placeholder
+   * for a not-yet-sent message — there is no LinkedIn thread yet, so we throw a
+   * specific error rather than pretend. If the thread is simply not in the recent
+   * window, we throw naming the ref and window size rather than returning an empty
+   * conversation (silence is the bug this change fixes). Not a people-search, so it
+   * does NOT charge the search budget.
+   */
+  async getConversation(accountId: string, threadRef: string): Promise<ConversationSummary> {
+    if (threadRef.startsWith('pending:')) {
+      throw new Error(
+        `no LinkedIn thread exists yet for ${threadRef}: this is a pending (not-yet-sent) ` +
+          `placeholder ref, so there is no conversation to read until the first message is sent`,
+      );
+    }
+    const page = await this.pages.pageFor(accountId);
+    await ensureOnLinkedIn(page);
+    const { status, body } = await page.voyagerGet(messagingPath(CONVERSATION_WINDOW), {
+      accept: 'application/json',
+    });
+    if (status !== 200) {
+      throw new Error(
+        `voyager messaging returned HTTP ${status}; the session may be invalid`,
+      );
+    }
+    const summary = normalizeConversation(body, threadRef);
+    if (!summary) {
+      throw new Error(
+        `thread ${threadRef} was not found in the ${CONVERSATION_WINDOW} most recent ` +
+          `conversations; it may be older than the window or the ref may be wrong`,
+      );
+    }
+    return summary;
+  }
+
   // -------------------------------------------------------------------------
-  // The other Observe reads are not implemented by this live backend yet; they
-  // stay on FakeObserve at compose time. Provide throwing stubs so the class
-  // still satisfies ObservePort without silently returning fake data.
+  // These reads have no live backend yet. Rather than fall back to canned data
+  // (which would poison real personalization), they throw a loud error so an MCP
+  // caller knows the signal is unavailable in real mode.
   // -------------------------------------------------------------------------
 
-  getProfile(): Promise<ProfileSummary> {
-    return notLive('getProfile');
-  }
   getRecentPosts(): Promise<PostSummary[]> {
     return notLive('getRecentPosts');
   }
@@ -720,15 +850,60 @@ export class LiveObserve implements ObservePort {
   getCompanyJobs(): Promise<JobSummary[]> {
     return notLive('getCompanyJobs');
   }
-  getConversation(): Promise<ConversationSummary> {
-    return notLive('getConversation');
-  }
 }
 
 function notLive(method: string): Promise<never> {
   return Promise.reject(
-    new Error(`LiveObserve.${method} is not implemented; use FakeObserve for it`),
+    new Error(
+      `LiveObserve.${method} is not implemented yet; do not personalize from this tool ` +
+        `in real mode (there is no live backend, so any data would be fabricated)`,
+    ),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Profile reading — one member's profileView -> ProfileSummary.
+// ---------------------------------------------------------------------------
+
+/**
+ * The profile id for the identity endpoint. In this codebase linkedinUrn is
+ * usually `urn:li:fsd_profile:<id>` (see profileUrnFromEntityUrn), whose tail is
+ * the id the endpoint wants. A bare id or a public identifier (e.g. "dana-lopez")
+ * is used as-is.
+ */
+export function profileIdFromUrn(linkedinUrn: string): string {
+  return linkedinUrn.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/)?.[1] ?? linkedinUrn;
+}
+
+/** Voyager identity profileView endpoint for one profile id/public identifier. */
+function profileViewPath(id: string): string {
+  return `/voyager/api/identity/profiles/${encodeURIComponent(id)}/profileView`;
+}
+
+/**
+ * Walk a Voyager profileView response into a ProfileSummary. Parsed defensively
+ * (every field optional) like the other normalizers: reads the top-level
+ * `profile` object, falling back to its `miniProfile` for name/occupation. The
+ * `raw` field carries the profile slice for a caller that wants more than the
+ * summarized fields. Exported for the ops shakeout to run over a captured body.
+ */
+export function normalizeProfileResponse(body: unknown, linkedinUrn: string): ProfileSummary {
+  const root = body as VoyagerProfileResponse | undefined;
+  const profile = root?.profile ?? root ?? {};
+  const mini = profile.miniProfile;
+  const name = [profile.firstName ?? mini?.firstName, profile.lastName ?? mini?.lastName]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  const headline = (profile.headline ?? mini?.occupation ?? '').trim();
+  const publicId = profile.publicIdentifier ?? mini?.publicIdentifier;
+  return {
+    linkedinUrn,
+    handle: publicId ?? profileIdFromUrn(linkedinUrn),
+    name,
+    headline,
+    raw: profile as unknown as ProfileSummary['raw'],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -916,6 +1091,31 @@ interface MessagingEvent {
 /** Any entity in the normalized `included[]`; only conversations carry events. */
 type MessagingEntity = Conversation & Record<string, unknown>;
 
+// --- identity profileView response (profile reader) -----------------------
+
+/** The identity fields we read off a profileView. Every field optional because
+ * the payload is large and versioned; a sparse profile still normalizes. */
+interface ProfileEntity {
+  firstName?: string;
+  lastName?: string;
+  headline?: string;
+  publicIdentifier?: string;
+  occupation?: string;
+  /** Older/embedded shape: the same fields nested under miniProfile. */
+  miniProfile?: {
+    firstName?: string;
+    lastName?: string;
+    occupation?: string;
+    publicIdentifier?: string;
+  };
+}
+
+/** profileView carries the identity under `profile`; some shapes inline the
+ * fields at the top level, so ProfileEntity is also spread on the root. */
+interface VoyagerProfileResponse extends ProfileEntity {
+  profile?: ProfileEntity;
+}
+
 // --- relationships connections response (connections reader) --------------
 
 interface VoyagerConnectionsResponse {
@@ -985,6 +1185,15 @@ interface ConnectionEntity extends ConnectionElement {
 // endpoint path, the event field names (eventContent.attributedBody.text,
 // from.*.miniProfile.entityUrn, deliveredAt), and the inbound/outbound marker
 // all need one real run to confirm. normalizeInboxResponse is exported so the
+// ops shakeout can dump a raw body and adjust the names. getConversation shares
+// this endpoint and the same parseEvent parser, so it inherits the same
+// unverified field names (plus the entityUrn/backendUrn thread-match).
+//
+// The profile reader (getProfile / normalizeProfileResponse) is grounded in
+// tomquirk/linkedin-api's get_profile but UNPROVEN against a live payload: the
+// /voyager/api/identity/profiles/{id}/profileView path and the field names
+// (profile.miniProfile, profile.firstName/lastName/headline/publicIdentifier)
+// all need one real run to confirm. normalizeProfileResponse is exported so the
 // ops shakeout can dump a raw body and adjust the names.
 //
 // The connections reader (readConnections / normalizeConnectionsResponse) is

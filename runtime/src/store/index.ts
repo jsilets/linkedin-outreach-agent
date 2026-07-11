@@ -90,6 +90,11 @@ export interface SequenceStorePort {
    * for the invite to be accepted. The acceptance tick reads these to release
    * connected targets into the next step. */
   awaitingConnectionEnrollments(): Promise<shared.TargetProgressRow[]>;
+  /** Every still-live enrollment cursor (state IN in_progress, pending,
+   * awaiting_approval, awaiting_connection), across all campaigns/accounts. The
+   * reply tick scans these so a reply is caught even while a step waits on its
+   * delay or an approval — not just the cursors that are due to act. */
+  activeEnrollments(): Promise<shared.TargetProgressRow[]>;
   advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void>;
   /** Pull a target out of every funnel it is in (terminal 'replied' state) and
    * stop further steps. Idempotent; a no-op if the target is not enrolled. */

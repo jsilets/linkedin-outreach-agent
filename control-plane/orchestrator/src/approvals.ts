@@ -145,6 +145,13 @@ export class ApprovalService {
       const approved = await this.messages.setStatus(pendingItemRef, 'approved');
       message = rowToMessage(approved);
     }
+    if (decision === 'rejected') {
+      // Mark the draft 'rejected' (terminal): it leaves the pending queue
+      // (listDrafts filters status='draft') and the status!=='draft' guard above
+      // blocks a later approve of the same item.
+      const rejected = await this.messages.setStatus(pendingItemRef, 'rejected');
+      message = rowToMessage(rejected);
+    }
 
     await this.log.recordEvent('approval_decided', existing.accountId, {
       pendingItemRef,

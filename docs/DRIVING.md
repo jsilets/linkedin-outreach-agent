@@ -71,7 +71,11 @@ and stays open for platform health checks.
 Agent (driver, non-privileged):
 
 - Observe: `get_profile`, `get_recent_posts`, `get_post_engagers`,
-  `get_company_jobs`, `get_conversation`, `search_people`, `source_people`.
+  `get_company_jobs`, `get_conversation`, `search_people`, `source_people`. In
+  real executor mode the live reads are `get_profile`, `get_conversation`,
+  `search_people`, and `list_recent_connections`; `get_recent_posts`,
+  `get_post_engagers`, and `get_company_jobs` have no live backend yet and return
+  an error, so do not personalize from them until they are implemented.
 - Act (routed through the gate): `send_connection`, `send_message`,
   `view_profile`, `follow`, `withdraw_invite`, `react_to_post`.
 - Campaign and state: `create_campaign`, `add_targets`,
@@ -98,7 +102,9 @@ budget. This is the same loop the example driver in `examples/driver/` encodes.
 2. Read the queue. Call `get_queue` for the account to see what is already
    pending, so you do not re-enqueue the same target.
 3. For each target within budget:
-   - `get_profile` and `get_recent_posts` to gather signal.
+   - `get_profile` and `get_recent_posts` to gather signal. In real mode
+     `get_profile` is live but `get_recent_posts` is not yet, so it errors; lean
+     on `get_profile` and your own research until posts have a live backend.
    - Optional enrichment: run the agent's own web search or research, then feed
      the result in with `attach_external_context` (see below). The framework
      does not discover or enrich prospects itself.

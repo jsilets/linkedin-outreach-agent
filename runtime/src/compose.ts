@@ -60,7 +60,7 @@ import {
   LiveConnectionsReader,
   InMemorySearchBudget,
 } from './adapters/observe-live.js';
-import { makeDispatchTick, type DispatchTick } from './dispatch/index.js';
+import { makeDispatchTick, type DispatchTick, type SendTimeReplyCheck } from './dispatch/index.js';
 import { ReplyTick } from './dispatch/reply-tick.js';
 import { AcceptanceTick } from './dispatch/acceptance-tick.js';
 import { PersistenceAdapter } from './adapters/persistence.js';
@@ -222,27 +222,19 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   const admin = new AccountAdminAdapter(store, gate, orchestrator, pause);
   const campaign = new CampaignAdapter(orchestrator, store, gate);
   const safety = makeMcpSafetyPort(gate, store);
-  // Observe: reads run open (no gating). With a real session, people-search
-  // goes live (a direct authenticated /voyager/api/graphql call from the page);
-  // the other reads stay on the canned FakeObserve until they get live backends.
-  // Without a real session there is no page to drive, so everything is fake.
-  const fakeObserve = new FakeObserve();
-  let observe: ObservePort = fakeObserve;
+  // Observe: reads run open (no gating). With a real session the observe port is
+  // LiveObserve for everything: searchPeople, listRecentConnections, getProfile,
+  // and getConversation read live over the page's Voyager API, while
+  // getRecentPosts / getPostEngagers / getCompanyJobs throw a loud
+  // "not implemented" error — an MCP caller gets an explicit failure instead of
+  // fabricated data. Without a real session there is no page to drive, so the
+  // whole port stays on the canned FakeObserve (dev/smoke only).
+  let observe: ObservePort = new FakeObserve();
   if (sessionProvider) {
-    const live = new LiveObserve(
+    observe = new LiveObserve(
       { pageFor: (id) => sessionProvider!.pageFor(id) },
       new InMemorySearchBudget(),
     );
-    observe = {
-      ...fakeObserve,
-      getProfile: fakeObserve.getProfile.bind(fakeObserve),
-      getRecentPosts: fakeObserve.getRecentPosts.bind(fakeObserve),
-      getPostEngagers: fakeObserve.getPostEngagers.bind(fakeObserve),
-      getCompanyJobs: fakeObserve.getCompanyJobs.bind(fakeObserve),
-      getConversation: fakeObserve.getConversation.bind(fakeObserve),
-      searchPeople: (id, q, limit) => live.searchPeople(id, q, limit),
-      listRecentConnections: (id, limit) => live.listRecentConnections(id, limit),
-    };
   }
   // --- sourcing-mcp-tools: lead lists over the store (read by the web UI) ----
   // A LeadListAdapter over store.leadList backs the create_list / list_lists /
@@ -261,6 +253,18 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
     return (row ? rowToAccount(row).limits?.schedule : undefined) ?? DEFAULT_SCHEDULE;
   };
 
+  // The send-time reply probe is backed by the ReplyTick, which is built AFTER
+  // dispatch (below). Late-bind it through a closure so a probe call at tick time
+  // resolves the real ReplyTick; in fake mode no ReplyTick exists, so no probe is
+  // wired and sends proceed without one.
+  let replyTickRef: ReplyTick | undefined;
+  const replyProbe: SendTimeReplyCheck = {
+    check: (accountId, target, since) =>
+      replyTickRef
+        ? replyTickRef.probeTarget(accountId, target, since)
+        : Promise.resolve(false),
+  };
+
   const dispatch = makeDispatchTick({
     sequence: store.sequence,
     gate: { safety, approval: approvals, executor },
@@ -268,6 +272,12 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
     targets: store.target,
     // Send human-approved drafts when the working-hours window opens.
     messages: store.message,
+    // Cancel an approved send whose person said Stop (on any campaign).
+    suppression: orchestrator.suppression,
+    // Send-time reply probe: only when a real session can read a live inbox.
+    ...(sessionProvider ? { replyProbe } : {}),
+    // Audit cancellations + probe blocks.
+    log: orchestrator.eventLog,
   });
 
   // --- reply-detection tick (additive) -------------------------------------
@@ -279,18 +289,17 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   let replyTick: ReplyTick | undefined;
   if (sessionProvider) {
     const inbox = new LiveInboxReader({ pageFor: (id) => sessionProvider!.pageFor(id) });
-    // Enumerate active enrollments across campaigns. No cross-campaign list
-    // method exists on the store, so read in_progress cursors via the due query
-    // with a far-future clock (it returns every in_progress row regardless of
-    // nextStepAt) — a reply can land while a step is still on its delay.
-    const FAR_FUTURE = new Date(8640000000000000);
     replyTick = new ReplyTick({
       inbox,
-      enrollments: { activeEnrollments: () => store.sequence.dueTargetProgress(FAR_FUTURE) },
+      // Every still-live enrollment (including cursors parked on a delay or an
+      // approval), so a reply is caught even before a step is due to act.
+      enrollments: { activeEnrollments: () => store.sequence.activeEnrollments() },
       targets: store.target,
       router: orchestrator.replyRouter,
       llm,
     });
+    // Late-bind the dispatch send-time probe to this instance (see above).
+    replyTickRef = replyTick;
   }
   // --- end reply-detection tick --------------------------------------------
 
