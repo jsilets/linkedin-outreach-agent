@@ -63,7 +63,7 @@ describe('list_accounts tool', () => {
     const used = { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 };
     await store.account.create({
       id: ACCT,
-      handle: 'josh-silets',
+      handle: 'acme-operator',
       state: 'Active',
       proxyBinding: { proxyId: 'p', region: 'us-east', sticky: true },
       health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: new Date() },
@@ -81,7 +81,7 @@ describe('list_accounts tool', () => {
     }>;
 
     expect(accounts).toHaveLength(1);
-    expect(accounts[0]).toMatchObject({ id: ACCT, handle: 'josh-silets', state: 'Active' });
+    expect(accounts[0]).toMatchObject({ id: ACCT, handle: 'acme-operator', state: 'Active' });
   });
 });
 
@@ -126,16 +126,16 @@ describe('create_list / list_lists / get_list round-trip', () => {
   });
 
   it('creates a list, lists it with a member count, and reads it back empty', async () => {
-    const created = (await run('create_list', { name: 'EV charging ops', description: 'ICP A' }, ports)) as {
+    const created = (await run('create_list', { name: 'Field ops', description: 'ICP A' }, ports)) as {
       id: string;
       name: string;
     };
     expect(created.id).toBeTruthy();
-    expect(created.name).toBe('EV charging ops');
+    expect(created.name).toBe('Field ops');
 
     const lists = (await run('list_lists', {}, ports)) as Array<{ id: string; name: string; memberCount: number }>;
     expect(lists).toHaveLength(1);
-    expect(lists[0]).toMatchObject({ id: created.id, name: 'EV charging ops', memberCount: 0 });
+    expect(lists[0]).toMatchObject({ id: created.id, name: 'Field ops', memberCount: 0 });
 
     const detail = (await run('get_list', { listId: created.id }, ports)) as {
       id: string;
@@ -160,7 +160,7 @@ describe('source_to_list tool', () => {
 
     const first = (await run(
       'source_to_list',
-      { accountId: ACCT, listName: 'sourced', query: 'ev charging', limit: 25 },
+      { accountId: ACCT, listName: 'sourced', query: 'field service operations', limit: 25 },
       ports,
     )) as { listId: string; found: number; inserted: number; duplicates: number };
 
@@ -179,7 +179,7 @@ describe('source_to_list tool', () => {
     // Re-running against the SAME list re-finds the same people: all duplicates.
     const second = (await run(
       'source_to_list',
-      { accountId: ACCT, listId: first.listId, query: 'ev charging', limit: 25 },
+      { accountId: ACCT, listId: first.listId, query: 'field service operations', limit: 25 },
       ports,
     )) as { found: number; inserted: number; duplicates: number };
     expect(second.found).toBe(2);
@@ -202,7 +202,7 @@ describe('sourceToList core (shared by the CLI)', () => {
     const lists = new LeadListAdapter(store);
     const observe = new FakeObserve([person(1), person(2)]);
 
-    const query: PeopleQuery = { keywords: 'ev charging', limit: 25 };
+    const query: PeopleQuery = { keywords: 'field service operations', limit: 25 };
     const result = await sourceToList({ observe, lists }, { accountId: ACCT, listName: 'cli-list', query });
 
     expect(result.found).toBe(2);

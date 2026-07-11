@@ -110,7 +110,7 @@ function todayIso(): string {
  * Encoding verified against captured page URLs (2026-07-06). Free-tier flagship
  * search exposes structured facets as SEPARATE query params, each a JSON array
  * of quoted strings:
- *   keywords=ev charging operations lead
+ *   keywords=field service operations lead
  *   origin=FACETED_SEARCH
  *   network=["S","O"]            (connection degree: F=1st, S=2nd, O=3rd+)
  *   geoUrn=["103644278"]         (bare geo id, not the full urn)

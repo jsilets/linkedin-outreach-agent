@@ -125,7 +125,7 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
   // the keyword box (no free-tier facet for those).
   it('encodes each facet as its own JSON-array param', () => {
     const q: PeopleQuery = {
-      keywords: 'ev charging operations lead',
+      keywords: 'field service operations lead',
       titleKeywords: ['manager', 'director'],
       companyKeywords: ['Acme'],
       companyUrns: ['439853', '2685826'],
@@ -133,7 +133,7 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
       network: ['S', 'O'],
     };
     const params = new URL(buildVoyagerSearchUrl(q, 0)).searchParams;
-    expect(params.get('keywords')).toBe('ev charging operations lead manager director Acme');
+    expect(params.get('keywords')).toBe('field service operations lead manager director Acme');
     expect(params.get('origin')).toBe('FACETED_SEARCH');
     expect(params.get('network')).toBe('["S","O"]');
     expect(params.get('geoUrn')).toBe('["103644278"]');
