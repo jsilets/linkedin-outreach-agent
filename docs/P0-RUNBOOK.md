@@ -1,10 +1,9 @@
 # P0 runbook: first supervised run, one account
 
-This is the sequenced guide to a first real run: one LinkedIn account, one app
+This is the sequenced guide to your first real run: one LinkedIn account, one app
 container plus Postgres, and a driving Claude Code or Codex session that you
-approve by hand. It is honest about what is unproven. Browser, live LinkedIn
-traffic, and the DOM selectors are P0 items that are not exercised end to end
-yet, so treat this as a careful first bring-up, not a turnkey install.
+approve by hand. The browser and DOM paths depend on LinkedIn's live markup,
+which drifts, so treat this as a careful first bring-up, not a turnkey install.
 
 Do each step in order. Do not skip the proxy leak test or the selector check.
 
@@ -131,13 +130,12 @@ Now run a real cycle, supervised, approving every send by hand.
 Only after this one-account supervised loop is clean should you consider raising
 autonomy, adding targets in bulk, or standing up a second account.
 
-## What is unproven
+## What to watch
 
-- Browser runs, live LinkedIn traffic, and the assisted-login path are P0 and not
-  exercised end to end. The image is structurally ready (Xvfb plus headful
-  Chromium) but the flows are new.
 - The DOM selectors are best-effort and will drift with LinkedIn's markup. Step 5
-  is where you catch that.
+  is where you catch that on your own account.
+- Every account, proxy IP, and cookie vault is fresh on a new deployment. Prove
+  the loop on one supervised account before you raise autonomy or add a second.
 - The brain/body split across services is future work. Today the whole runtime is
   one process in one container, one account. See the scaling note in
   `infra/RAILWAY.md`.
