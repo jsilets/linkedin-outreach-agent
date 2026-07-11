@@ -15,6 +15,7 @@ const {
   actions,
   messages,
   accounts,
+  events,
   leadLists,
   leadListMembers,
 } = schema;
@@ -429,13 +430,15 @@ export interface ActivityItem {
 }
 
 /**
- * Reverse-chron feed of real actions, joined to the target's name. Optional
- * campaignId narrows the feed. Ordered by executed-else-scheduled time, newest
- * first. limit is clamped by the caller (default 50, max 200).
+ * Reverse-chron feed of what happened, newest first: outbound actions AND
+ * inbound invite_accepted events, so an acceptance shows up alongside the sends
+ * ("X accepted your invite"). An acceptance is not an action row, so it is
+ * unioned in from the event log. Optional campaignId narrows both. limit is
+ * clamped by the caller (default 50, max 200).
  */
 export async function getActivity(opts: { campaignId?: string; limit: number }): Promise<ActivityItem[]> {
   const ordering = sql`coalesce(${actions.executedAt}, ${actions.scheduledAt})`;
-  const rows = await db
+  const actionRows = await db
     .select({
       actionId: actions.id,
       type: actions.type,
@@ -452,16 +455,55 @@ export async function getActivity(opts: { campaignId?: string; limit: number }):
     .orderBy(desc(ordering))
     .limit(opts.limit);
 
-  return rows.map((r) => ({
-    actionId: r.actionId,
-    type: r.type,
-    result: r.result,
-    executedAt: r.executedAt ? r.executedAt.toISOString() : null,
-    scheduledAt: r.scheduledAt.toISOString(),
-    targetId: r.targetId,
-    name: r.name,
-    campaignId: r.campaignId,
-  }));
+  // Acceptance events carry targetId/campaignId/name in their jsonb payload.
+  const payloadCampaign = sql<string | null>`${events.payload}->>'campaignId'`;
+  const acceptRows = await db
+    .select({
+      id: events.id,
+      ts: events.ts,
+      targetId: sql<string | null>`${events.payload}->>'targetId'`,
+      campaignId: payloadCampaign,
+      name: sql<string | null>`${events.payload}->>'name'`,
+    })
+    .from(events)
+    .where(
+      opts.campaignId
+        ? and(eq(events.kind, 'invite_accepted'), eq(payloadCampaign, opts.campaignId))
+        : eq(events.kind, 'invite_accepted'),
+    )
+    .orderBy(desc(events.ts))
+    .limit(opts.limit);
+
+  const items: ActivityItem[] = [
+    ...actionRows.map((r) => ({
+      actionId: r.actionId,
+      type: r.type,
+      result: r.result,
+      executedAt: r.executedAt ? r.executedAt.toISOString() : null,
+      scheduledAt: r.scheduledAt.toISOString(),
+      targetId: r.targetId,
+      name: r.name,
+      campaignId: r.campaignId,
+    })),
+    ...acceptRows.map((r) => ({
+      actionId: r.id,
+      type: 'invite_accepted',
+      result: 'success',
+      executedAt: r.ts.toISOString(),
+      scheduledAt: r.ts.toISOString(),
+      targetId: r.targetId ?? '',
+      name: r.name,
+      campaignId: r.campaignId,
+    })),
+  ];
+
+  // Merge both streams by time and cap at the requested limit.
+  items.sort((a, b) => {
+    const ta = new Date(a.executedAt ?? a.scheduledAt).getTime();
+    const tb = new Date(b.executedAt ?? b.scheduledAt).getTime();
+    return tb - ta;
+  });
+  return items.slice(0, opts.limit);
 }
 
 // Replace the whole step list for a campaign in one transaction: delete the

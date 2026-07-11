@@ -22,7 +22,7 @@ async function seedParked(store: InMemoryStore): Promise<string> {
     campaignId: CAMP,
     prospectRef: 'p1',
     linkedinUrn: 'urn:li:person:p1',
-    externalContext: {},
+    externalContext: { name: 'Pat Prospect' },
     stage: 'invited',
   });
   await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect' });
@@ -55,7 +55,15 @@ describe('AcceptanceTick', () => {
     const res = await tick.runTick(now);
 
     expect(res.accounts).toBe(1);
-    expect(res.outcomes[0]).toMatchObject({ kind: 'connected', targetId: TGT, nextStep: 1 });
+    // The accepted outcome carries who/where so the host can log invite_accepted.
+    expect(res.outcomes[0]).toMatchObject({
+      kind: 'connected',
+      targetId: TGT,
+      nextStep: 1,
+      accountId: ACCT,
+      campaignId: CAMP,
+      name: 'Pat Prospect',
+    });
 
     // Target moved to connected.
     const target = await store.target.findById(TGT);
