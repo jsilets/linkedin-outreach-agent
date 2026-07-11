@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, type ListDetail, type ListSummary } from './api';
+import { api, type ListDetail, type ListMember, type ListSummary } from './api';
+import { DataTable, type Column } from './DataTable';
 
 export function ListsView() {
   const [lists, setLists] = useState<ListSummary[] | null>(null);
@@ -43,10 +44,10 @@ export function ListsView() {
   const canSubmit = name.trim() && !saving;
 
   return (
-    <div className="grid" style={{ gap: 20 }}>
+    <div className="grid" style={{ gap: 'var(--space-5)' }}>
       <div className="card">
         <strong>Create a lead list</strong>
-        <div className="grid" style={{ marginTop: 12 }}>
+        <div className="grid" style={{ marginTop: 'var(--space-3)' }}>
           <div>
             <label>List name</label>
             <input
@@ -101,110 +102,88 @@ export function ListsView() {
 function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   const [detail, setDetail] = useState<ListDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [goal, setGoal] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [campaignMsg, setCampaignMsg] = useState<string | null>(null);
 
   useEffect(() => {
     api.getList(id).then(setDetail).catch((e) => setError(String(e)));
   }, [id]);
 
-  async function createCampaign() {
-    setCreating(true);
-    setCampaignMsg(null);
-    try {
-      const res = await api.createCampaignFromList(id, { goal: goal.trim() });
-      setCampaignMsg(
-        `Campaign created with ${res.targetCount} ${res.targetCount === 1 ? 'lead' : 'leads'}. ` +
-          `Open the Campaigns tab to set its funnel.`,
-      );
-      setGoal('');
-    } catch (e) {
-      setCampaignMsg(e instanceof Error ? e.message : 'Create failed.');
-    } finally {
-      setCreating(false);
-    }
-  }
-
   if (error) return <div className="error">{error}</div>;
   if (!detail) return <p className="muted">Loading...</p>;
 
-  const memberCount = detail.members.length;
+  const columns: Column<ListMember>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      sortValue: (m) => (m.name ?? '').toLowerCase(),
+      cell: (m) => m.name ?? '—',
+    },
+    {
+      key: 'headline',
+      header: 'Headline',
+      sortValue: (m) => (m.headline ?? '').toLowerCase(),
+      cell: (m) => m.headline ?? '—',
+    },
+    {
+      key: 'company',
+      header: 'Company',
+      sortValue: (m) => (m.currentCompany ?? '').toLowerCase(),
+      cell: (m) => m.currentCompany ?? '—',
+    },
+    {
+      key: 'degree',
+      header: 'Degree',
+      sortValue: (m) => m.degree ?? '',
+      cell: (m) => m.degree ?? '—',
+    },
+    {
+      key: 'location',
+      header: 'Location',
+      sortValue: (m) => (m.location ?? '').toLowerCase(),
+      cell: (m) => m.location ?? '—',
+    },
+    {
+      key: 'profile',
+      header: 'Profile',
+      sortable: false,
+      cell: (m) =>
+        m.profileUrl ? (
+          <a href={m.profileUrl} target="_blank" rel="noreferrer">
+            View
+          </a>
+        ) : (
+          '—'
+        ),
+    },
+  ];
 
   return (
     <div>
       <span className="back" onClick={onBack}>
         &larr; All lists
       </span>
-      <div className="card" style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: '0 0 6px' }}>{detail.name}</h2>
+      <div className="card" style={{ marginBottom: 'var(--space-4)' }}>
+        <h2 style={{ margin: '0 0 var(--space-1)' }}>{detail.name}</h2>
         {detail.description && <div className="muted">{detail.description}</div>}
       </div>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <strong>Start a campaign from this list</strong>
-        <div className="muted" style={{ margin: '4px 0 12px' }}>
-          Creates a campaign and enrolls all {memberCount} {memberCount === 1 ? 'lead' : 'leads'} as
-          targets. You set the funnel steps afterwards in the Campaigns tab.
-        </div>
-        <div className="toolbar" style={{ margin: 0 }}>
-          <input
-            value={goal}
-            onChange={(e) => setGoal(e.target.value)}
-            placeholder="Campaign goal, e.g. book intro calls with EV O&M leads"
-            style={{ flex: 1 }}
-          />
-          <button className="btn" onClick={createCampaign} disabled={!goal.trim() || creating || memberCount === 0}>
-            {creating ? 'Creating...' : 'Create campaign'}
-          </button>
-        </div>
-        {campaignMsg && (
-          <div className={campaignMsg.startsWith('Campaign created') ? 'saved' : 'error'} style={{ marginTop: 10 }}>
-            {campaignMsg}
-          </div>
-        )}
-      </div>
-
       <div className="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Headline</th>
-              <th>Company</th>
-              <th>Degree</th>
-              <th>Location</th>
-              <th>Profile</th>
-            </tr>
-          </thead>
-          <tbody>
-            {detail.members.map((m) => (
-              <tr key={m.id}>
-                <td>{m.name ?? '—'}</td>
-                <td>{m.headline ?? '—'}</td>
-                <td>{m.currentCompany ?? '—'}</td>
-                <td>{m.degree ?? '—'}</td>
-                <td>{m.location ?? '—'}</td>
-                <td>
-                  {m.profileUrl ? (
-                    <a href={m.profileUrl} target="_blank" rel="noreferrer">
-                      View
-                    </a>
-                  ) : (
-                    '—'
-                  )}
-                </td>
-              </tr>
-            ))}
-            {detail.members.length === 0 && (
-              <tr>
-                <td colSpan={6} className="muted">
-                  No leads in this list yet.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+        <div className="section-head">
+          <h3>Leads</h3>
+          <span className="count-tag">{detail.members.length}</span>
+        </div>
+        {detail.members.length === 0 ? (
+          <div className="empty">No leads in this list yet.</div>
+        ) : (
+          <DataTable
+            rows={detail.members}
+            columns={columns}
+            rowKey={(m) => m.id}
+            search={(m) =>
+              [m.name, m.headline, m.currentCompany, m.location].filter(Boolean).join(' ')
+            }
+            searchPlaceholder="Filter leads by name, company, location…"
+          />
+        )}
       </div>
     </div>
   );

@@ -1,8 +1,8 @@
 // Read queries and the steps write, all against the shared schema via Drizzle.
 import { join } from 'node:path';
-import { and, asc, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import { buildStorageStateFromPastedCookies, saveStorageState } from '@loa/account-runner';
-import { ACTION_TYPES, DEFAULT_CAPS, defaultLimits } from '@loa/shared';
+import { ACTION_TYPES, DEFAULT_CAPS, defaultLimits, extractCompany } from '@loa/shared';
 import type { AccountLimits, ActionType } from '@loa/shared';
 import { db, schema, type Db } from './db.js';
 import { normalizeSteps, type NormalizedStep } from './steps.js';
@@ -19,6 +19,24 @@ const {
   leadListMembers,
 } = schema;
 
+/** Lifecycle a campaign has reached, derived from its enrollment cursors. */
+export type CampaignStatus = 'draft' | 'active' | 'done';
+
+// Progress states that mean the sequence is still moving a target forward.
+const ACTIVE_PROGRESS_STATES = ['in_progress', 'awaiting_approval', 'awaiting_connection'] as const;
+
+/**
+ * Derive campaign lifecycle from its progress-state histogram: no enrollment
+ * cursors at all -> draft; any cursor in an active state -> active; cursors exist
+ * but all terminal -> done.
+ */
+function deriveStatus(byProgressState: Record<string, number>): CampaignStatus {
+  const enrolled = Object.values(byProgressState).reduce((sum, n) => sum + n, 0);
+  if (enrolled === 0) return 'draft';
+  const active = ACTIVE_PROGRESS_STATES.some((s) => (byProgressState[s] ?? 0) > 0);
+  return active ? 'active' : 'done';
+}
+
 export interface CampaignSummary {
   id: string;
   goal: string;
@@ -27,9 +45,15 @@ export interface CampaignSummary {
   messageStrategy: string;
   targetCount: number;
   byStage: Record<string, number>;
+  byProgressState: Record<string, number>;
+  status: CampaignStatus;
+  pendingCount: number;
 }
 
-// Campaigns list with per-campaign target counts and a stage histogram.
+// Campaigns list with per-campaign target counts, a stage histogram, a progress
+// histogram, the derived lifecycle status, and a pending-approval count. Three
+// grouped queries feed every campaign (one per histogram/count) so the whole list
+// costs a fixed number of round-trips regardless of campaign count.
 export async function listCampaigns(): Promise<CampaignSummary[]> {
   const rows = await db.select().from(campaigns).orderBy(asc(campaigns.createdAt));
 
@@ -42,16 +66,44 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
     .from(targets)
     .groupBy(targets.campaignId, targets.stage);
 
-  const byCampaign = new Map<string, { total: number; byStage: Record<string, number> }>();
+  const progressRows = await db
+    .select({
+      campaignId: targetProgress.campaignId,
+      state: targetProgress.state,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(targetProgress)
+    .groupBy(targetProgress.campaignId, targetProgress.state);
+
+  const pendingRows = await db
+    .select({
+      campaignId: targets.campaignId,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(pendingDraftFilter())
+    .groupBy(targets.campaignId);
+
+  const stageByCampaign = new Map<string, { total: number; byStage: Record<string, number> }>();
   for (const r of stageRows) {
-    const entry = byCampaign.get(r.campaignId) ?? { total: 0, byStage: {} };
+    const entry = stageByCampaign.get(r.campaignId) ?? { total: 0, byStage: {} };
     entry.byStage[r.stage] = r.count;
     entry.total += r.count;
-    byCampaign.set(r.campaignId, entry);
+    stageByCampaign.set(r.campaignId, entry);
   }
+  const progressByCampaign = new Map<string, Record<string, number>>();
+  for (const r of progressRows) {
+    const entry = progressByCampaign.get(r.campaignId) ?? {};
+    entry[r.state] = r.count;
+    progressByCampaign.set(r.campaignId, entry);
+  }
+  const pendingByCampaign = new Map<string, number>();
+  for (const r of pendingRows) pendingByCampaign.set(r.campaignId, r.count);
 
   return rows.map((c) => {
-    const counts = byCampaign.get(c.id) ?? { total: 0, byStage: {} };
+    const counts = stageByCampaign.get(c.id) ?? { total: 0, byStage: {} };
+    const byProgressState = progressByCampaign.get(c.id) ?? {};
     return {
       id: c.id,
       goal: c.goal,
@@ -60,16 +112,20 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
       messageStrategy: c.messageStrategy,
       targetCount: counts.total,
       byStage: counts.byStage,
+      byProgressState,
+      status: deriveStatus(byProgressState),
+      pendingCount: pendingByCampaign.get(c.id) ?? 0,
     };
   });
 }
 
 export interface CampaignDetail extends CampaignSummary {
   steps: Array<typeof campaignSteps.$inferSelect>;
-  byProgressState: Record<string, number>;
+  enrolledCount: number;
 }
 
-// One campaign with its ordered steps and both count histograms.
+// One campaign with its ordered steps, both count histograms, the derived
+// lifecycle status, and the pending-approval + enrolled counts.
 export async function getCampaign(id: string): Promise<CampaignDetail | null> {
   const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, id));
   if (!campaign) return null;
@@ -92,6 +148,12 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     .where(eq(targetProgress.campaignId, id))
     .groupBy(targetProgress.state);
 
+  const [pending] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(and(eq(targets.campaignId, id), pendingDraftFilter()));
+
   const byStage: Record<string, number> = {};
   let total = 0;
   for (const r of stageRows) {
@@ -99,7 +161,11 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     total += r.count;
   }
   const byProgressState: Record<string, number> = {};
-  for (const r of progressRows) byProgressState[r.state] = r.count;
+  let enrolledCount = 0;
+  for (const r of progressRows) {
+    byProgressState[r.state] = r.count;
+    enrolledCount += r.count;
+  }
 
   return {
     id: campaign.id,
@@ -110,8 +176,292 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     targetCount: total,
     byStage,
     byProgressState,
+    status: deriveStatus(byProgressState),
+    pendingCount: pending?.count ?? 0,
+    enrolledCount,
     steps,
   };
+}
+
+// A pending approval is a draft outbound message with its ActRequest binding
+// still attached (pending_req). The binding is what the runtime dispatches on
+// approve, so its message id doubles as the MCP pendingId; a draft without one
+// is un-approvable and is not "pending". Reused by every pending count/list so
+// the UI, the per-lead flag, and the live MCP list_pending all agree.
+function pendingDraftFilter() {
+  return and(
+    eq(messages.status, 'draft'),
+    eq(messages.direction, 'outbound'),
+    isNotNull(messages.pendingReq),
+  );
+}
+
+// The subset of a target's external_context blob the UI shows. Every field is
+// optional (free-tier sourcing fills what it can), so read defensively.
+interface LeadContext {
+  name?: unknown;
+  headline?: unknown;
+  profileUrl?: unknown;
+  company?: unknown;
+}
+
+function str(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+// name / company / headline / profileUrl pulled from the external_context blob.
+// Company falls back to extractCompany(headline) when not explicitly present.
+function readLeadContext(raw: unknown): {
+  name: string | null;
+  company: string | null;
+  headline: string | null;
+  profileUrl: string | null;
+} {
+  const ec = (raw ?? {}) as LeadContext;
+  const headline = str(ec.headline);
+  return {
+    name: str(ec.name),
+    company: str(ec.company) ?? extractCompany(headline ?? undefined) ?? null,
+    headline,
+    profileUrl: str(ec.profileUrl),
+  };
+}
+
+export interface Lead {
+  targetId: string;
+  name: string | null;
+  company: string | null;
+  headline: string | null;
+  profileUrl: string | null;
+  stage: string;
+  progressState: string | null;
+  currentStep: number | null;
+  nextStepAt: string | null;
+  lastStepAt: string | null;
+  errorMessage: string | null;
+  lastAction: { type: string; result: string; executedAt: string | null } | null;
+  pendingMessageId: string | null;
+}
+
+// Per-progressState sort rank; anything unlisted (incl. no cursor) sorts last.
+const LEAD_STATE_ORDER = [
+  'awaiting_approval',
+  'in_progress',
+  'awaiting_connection',
+  'pending',
+  'replied',
+  'completed',
+  'failed',
+  'skipped',
+];
+
+function leadStateRank(state: string | null): number {
+  const i = state ? LEAD_STATE_ORDER.indexOf(state) : -1;
+  return i === -1 ? LEAD_STATE_ORDER.length : i;
+}
+
+// Normalize a state key for filtering: case-insensitive, spaces↔underscores
+// collapsed ("Awaiting Approval" == "awaiting_approval").
+function normalizeStateKey(s: string): string {
+  return s.toLowerCase().replace(/[\s_]+/g, '_');
+}
+
+/**
+ * Per-lead drill-down for one campaign: every target joined to its enrollment
+ * cursor, its most-recent action, and any pending draft message. Optional filter
+ * matches a target's progress state OR its stage (case-insensitive, spaces and
+ * underscores interchangeable). Sorted by progress-state priority, then soonest
+ * next step (nulls last), then name.
+ */
+export async function getCampaignLeads(campaignId: string, stateFilter?: string): Promise<Lead[]> {
+  const rows = await db
+    .select({
+      targetId: targets.id,
+      externalContext: targets.externalContext,
+      stage: targets.stage,
+      progressState: targetProgress.state,
+      currentStep: targetProgress.currentStep,
+      nextStepAt: targetProgress.nextStepAt,
+      lastStepAt: targetProgress.lastStepAt,
+      errorMessage: targetProgress.errorMessage,
+    })
+    .from(targets)
+    .leftJoin(targetProgress, eq(targetProgress.targetId, targets.id))
+    .where(eq(targets.campaignId, campaignId));
+
+  // Most-recent action per target (by executed-else-scheduled time), one row each.
+  const ordering = sql`coalesce(${actions.executedAt}, ${actions.scheduledAt})`;
+  const actionRows = await db
+    .selectDistinctOn([actions.targetId], {
+      targetId: actions.targetId,
+      type: actions.type,
+      result: actions.result,
+      executedAt: actions.executedAt,
+    })
+    .from(actions)
+    .where(eq(actions.campaignId, campaignId))
+    .orderBy(actions.targetId, desc(ordering));
+  const lastActionByTarget = new Map(actionRows.map((a) => [a.targetId, a]));
+
+  // Pending draft message id per target (newest first, keep the first seen).
+  const pendingRows = await db
+    .select({ targetId: messages.targetId, id: messages.id })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(and(eq(targets.campaignId, campaignId), pendingDraftFilter()))
+    .orderBy(desc(messages.createdAt));
+  const pendingByTarget = new Map<string, string>();
+  for (const p of pendingRows) if (!pendingByTarget.has(p.targetId)) pendingByTarget.set(p.targetId, p.id);
+
+  const leads: Lead[] = rows.map((r) => {
+    const ctx = readLeadContext(r.externalContext);
+    const action = lastActionByTarget.get(r.targetId);
+    return {
+      targetId: r.targetId,
+      name: ctx.name,
+      company: ctx.company,
+      headline: ctx.headline,
+      profileUrl: ctx.profileUrl,
+      stage: r.stage,
+      progressState: r.progressState ?? null,
+      currentStep: r.currentStep ?? null,
+      nextStepAt: r.nextStepAt ? r.nextStepAt.toISOString() : null,
+      lastStepAt: r.lastStepAt ? r.lastStepAt.toISOString() : null,
+      errorMessage: r.errorMessage ?? null,
+      lastAction: action
+        ? { type: action.type, result: action.result, executedAt: action.executedAt ? action.executedAt.toISOString() : null }
+        : null,
+      pendingMessageId: pendingByTarget.get(r.targetId) ?? null,
+    };
+  });
+
+  const filtered = stateFilter
+    ? leads.filter((l) => {
+        const key = normalizeStateKey(stateFilter);
+        return (
+          (l.progressState !== null && normalizeStateKey(l.progressState) === key) ||
+          normalizeStateKey(l.stage) === key
+        );
+      })
+    : leads;
+
+  filtered.sort((a, b) => {
+    const rank = leadStateRank(a.progressState) - leadStateRank(b.progressState);
+    if (rank !== 0) return rank;
+    // Secondary: soonest next step first, nulls last.
+    if (a.nextStepAt !== b.nextStepAt) {
+      if (a.nextStepAt === null) return 1;
+      if (b.nextStepAt === null) return -1;
+      return a.nextStepAt < b.nextStepAt ? -1 : 1;
+    }
+    return (a.name ?? '').localeCompare(b.name ?? '');
+  });
+
+  return filtered;
+}
+
+export interface Pending {
+  messageId: string;
+  campaignId: string | null;
+  campaignGoal: string | null;
+  targetId: string;
+  name: string | null;
+  company: string | null;
+  body: string;
+  intent: string | null;
+  accountId: string;
+  createdAt: string;
+}
+
+/**
+ * Pending message approvals (draft outbound with a live binding), joined to
+ * their target and campaign. Optional campaignId narrows to one campaign. Newest
+ * first. Each messageId is the pendingId for the MCP approve/reject tools.
+ */
+export async function getPending(campaignId?: string): Promise<Pending[]> {
+  const where = campaignId
+    ? and(eq(targets.campaignId, campaignId), pendingDraftFilter())
+    : pendingDraftFilter();
+  const rows = await db
+    .select({
+      messageId: messages.id,
+      campaignId: targets.campaignId,
+      campaignGoal: campaigns.goal,
+      targetId: messages.targetId,
+      externalContext: targets.externalContext,
+      body: messages.body,
+      intent: messages.intent,
+      accountId: messages.accountId,
+      createdAt: messages.createdAt,
+    })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .innerJoin(campaigns, eq(targets.campaignId, campaigns.id))
+    .where(where)
+    .orderBy(desc(messages.createdAt));
+
+  return rows.map((r) => {
+    const ctx = readLeadContext(r.externalContext);
+    return {
+      messageId: r.messageId,
+      campaignId: r.campaignId,
+      campaignGoal: r.campaignGoal,
+      targetId: r.targetId,
+      name: ctx.name,
+      company: ctx.company,
+      body: r.body,
+      intent: r.intent ?? null,
+      accountId: r.accountId,
+      createdAt: r.createdAt.toISOString(),
+    };
+  });
+}
+
+export interface ActivityItem {
+  actionId: string;
+  type: string;
+  result: string;
+  executedAt: string | null;
+  scheduledAt: string;
+  targetId: string;
+  name: string | null;
+  campaignId: string | null;
+}
+
+/**
+ * Reverse-chron feed of real actions, joined to the target's name. Optional
+ * campaignId narrows the feed. Ordered by executed-else-scheduled time, newest
+ * first. limit is clamped by the caller (default 50, max 200).
+ */
+export async function getActivity(opts: { campaignId?: string; limit: number }): Promise<ActivityItem[]> {
+  const ordering = sql`coalesce(${actions.executedAt}, ${actions.scheduledAt})`;
+  const rows = await db
+    .select({
+      actionId: actions.id,
+      type: actions.type,
+      result: actions.result,
+      executedAt: actions.executedAt,
+      scheduledAt: actions.scheduledAt,
+      targetId: actions.targetId,
+      campaignId: actions.campaignId,
+      name: sql<string | null>`${targets.externalContext}->>'name'`,
+    })
+    .from(actions)
+    .innerJoin(targets, eq(actions.targetId, targets.id))
+    .where(opts.campaignId ? eq(actions.campaignId, opts.campaignId) : undefined)
+    .orderBy(desc(ordering))
+    .limit(opts.limit);
+
+  return rows.map((r) => ({
+    actionId: r.actionId,
+    type: r.type,
+    result: r.result,
+    executedAt: r.executedAt ? r.executedAt.toISOString() : null,
+    scheduledAt: r.scheduledAt.toISOString(),
+    targetId: r.targetId,
+    name: r.name,
+    campaignId: r.campaignId,
+  }));
 }
 
 // Replace the whole step list for a campaign in one transaction: delete the
