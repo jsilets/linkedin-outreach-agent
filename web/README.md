@@ -1,9 +1,10 @@
 # Campaign management UI
 
-A local, read-heavy dashboard plus a campaign flow editor for the outreach
-stack. It talks to Postgres directly through the shared Drizzle schema
-(`@loa/shared`); it does not import the runtime, control-plane, or
-account-runner code.
+A dashboard plus a campaign flow editor for the outreach stack. Reads go to
+Postgres directly through the shared Drizzle schema (`@loa/shared`); account
+linking uses the cookie-vault helpers from `@loa/account-runner`; approval
+writes and the `/mcp` route proxy to the runtime's MCP server. It does not
+import the runtime or control-plane code.
 
 ## What it shows
 
@@ -15,6 +16,9 @@ account-runner code.
 - Volume: successful invites and messages (and other action types) per day, as a
   grouped bar chart, filterable by account and window, plus a per-account state
   table.
+- Approvals, lead lists, and accounts: approve/edit/reject pending drafts in the
+  UI, manage lead lists, link an account by pasting session cookies, and edit
+  per-account caps and working hours.
 
 ## Requirements
 
@@ -67,15 +71,48 @@ DATABASE_URL=... npm start   # serves API + client on PORT (default 4000)
 
 ## API
 
+Campaigns:
+
 - `GET /api/campaigns` - campaigns with target count and stage histogram.
 - `GET /api/campaigns/:id` - one campaign, its ordered steps, and counts (targets
   total, by stage, by progress state).
+- `GET /api/campaigns/:id/leads` - the per-lead table for one campaign.
 - `PUT /api/campaigns/:id/steps` - replace and reorder the step list. Body is
   `{ "steps": [...] }` (order is array position). Validates step type against the
   shared `CAMPAIGN_STEP_TYPES` and that delay steps have `delaySeconds > 0`.
+- `POST /api/campaigns/:id/launch` - enroll the campaign's targets in its sequence.
+- `DELETE /api/campaigns/:id` - delete a campaign.
+
+Accounts:
+
+- `GET /api/accounts` - accounts with state and limits.
+- `POST /api/accounts/link` - link an account from pasted session cookies
+  (`li_at` + `JSESSIONID`); seals them into the encrypted vault.
+- `PATCH /api/accounts/:id/limits` - edit per-action daily caps and the
+  working-hours/days schedule.
+
+Lead lists:
+
+- `GET /api/lists`, `POST /api/lists`, `GET /api/lists/:id`,
+  `DELETE /api/lists/:id` - manage lead lists.
+- `POST /api/lists/:id/campaign` - create a campaign from a list.
+
+Approvals and activity (writes proxy to the runtime's MCP server):
+
+- `GET /api/pending` - pending message approvals, optionally per campaign.
+- `POST /api/pending/approve` - bulk approve by `messageIds`.
+- `POST /api/pending/:messageId/approve` - approve one draft; a non-empty `body`
+  edits it first.
+- `POST /api/pending/:messageId/reject` - reject with a `reason`.
+- `GET /api/activity` - reverse-chron feed of real actions.
+
+Metrics:
+
 - `GET /api/metrics/volume?accountId=&days=` - successful actions per day per
   type over the trailing window.
-- `GET /api/accounts` - accounts with state and warmup day.
+
+The server also exposes `GET /healthz`, `GET`/`POST /login`, and forwards
+`/mcp` to the runtime's internal MCP server.
 
 ## Tests
 

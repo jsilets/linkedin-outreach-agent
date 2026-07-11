@@ -1,16 +1,17 @@
 # Local end-to-end stack: Postgres + the single app container.
 #
-# The app is @loa/runtime: it composes the control-plane brain and an in-process
-# executor, starts the MCP HTTP server, and serves GET /healthz. This is the
-# whole deployable unit today (see infra/README.md).
+# The app container runs two processes (infra/entrypoint.sh): the @loa/runtime
+# worker (control-plane brain, in-process executor, MCP server on MCP_PORT) and
+# the @loa/web server (UI + JSON API on PORT, which also proxies /mcp to the
+# runtime). See infra/README.md.
 #
 # Quickstart:
-#   cp .env.example .env        # then fill in ANTHROPIC_API_KEY, COOKIE_VAULT_KEY
+#   cp .env.example .env        # then fill in COOKIE_VAULT_KEY
 #   docker compose run --rm migrate    # apply the schema once
-#   docker compose up app              # start the app; healthz on MCP_PORT
+#   docker compose up app              # web UI + healthz on http://localhost:8080
 #
-# With no ANTHROPIC_API_KEY the runtime uses a fake LLM; with no real browser
-# run wired yet, the browser stays idle. Both are expected at this P0 stage.
+# With no LLM key the runtime uses a fake LLM, and with LOA_EXECUTOR=fake
+# (the default) nothing touches LinkedIn. Both are fine for local runs.
 
 services:
   postgres:
@@ -61,13 +62,16 @@ services:
       - .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-loa}:${POSTGRES_PASSWORD:-loa}@postgres:5432/${POSTGRES_DB:-loa}
-      MCP_PORT: ${MCP_PORT:-8080}
+      # The runtime's MCP server. Must differ from the web server's PORT (8080);
+      # the web server proxies /mcp to it, so it needs no published port.
+      MCP_PORT: ${MCP_PORT:-8090}
       LOA_PROFILE_DIR: /data/profile
     volumes:
       # Browser profile: cookies/session survive restarts.
       - browser_profile:/data/profile
     ports:
-      - "${MCP_PORT:-8080}:${MCP_PORT:-8080}"
+      # The web UI/API (the image sets PORT=8080), the container's public face.
+      - "${WEB_PORT:-8080}:8080"
     # ~2GB once real browser runs land (one headful Chromium). Uncomment to cap.
     # mem_limit: 2g
     restart: unless-stopped

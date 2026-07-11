@@ -57,7 +57,6 @@ service variables. Generate the cookie vault key with `openssl rand -base64 32`.
     railway variables --set "DATABASE_URL=postgres://..." \
                        --set "ANTHROPIC_API_KEY=sk-ant-..." \
                        --set "COOKIE_VAULT_KEY=$(openssl rand -base64 32)" \
-                       --set "MCP_PORT=8080" \
                        --set "LOA_LLM_MODEL=claude-fable-5"
 
 Auth is required in production and the endpoints fail closed without it. Generate
@@ -83,8 +82,12 @@ Proxy vars, once you run a real account (per-account, sticky IP; see
 Env var reference and defaults live in the repo-root `.env.example` and the
 matrix in `infra/README.md`.
 
-Note on the port: the app binds `MCP_PORT` (default 8080). Set `MCP_PORT` and let
-Railway route to it; the `/healthz` healthcheck hits that same port.
+Note on the ports: the container runs two servers. The web UI/API is the public
+face on `PORT` (the image sets 8080); Railway routes the domain there and the
+`/healthz` healthcheck hits it. The runtime's MCP server binds `MCP_PORT`
+internally (the image sets 8090) and is reached through the web server's `/mcp`
+proxy on the public port. Leave both at the image defaults; in particular do not
+set `MCP_PORT=8080`, which collides with the web server.
 
 ## 5. Attach a volume for the browser profile
 
@@ -119,13 +122,15 @@ Then check health:
 ## Enable real sending
 
 By default `LOA_EXECUTOR` is `fake`: the runtime is up, the MCP surface and web
-UI work, but nothing touches LinkedIn. The real executor path is wired end to
-end but has not yet been proven against live LinkedIn markup — treat the first
-run as a shakeout. To turn it on for one account:
+UI work, but nothing touches LinkedIn. The real executor has run the connect,
+accept, and message loop against live LinkedIn on a single supervised account
+(see the 0.1.0 entry in `CHANGELOG.md`), but LinkedIn's markup drifts, so still
+supervise the first run on a new account. To turn it on for one account:
 
     railway variables --set "LOA_EXECUTOR=real" \
                        --set "LOA_DISPATCH_INTERVAL_MS=30000" \
-                       --set "LOA_REPLY_POLL_INTERVAL_MS=120000"
+                       --set "LOA_REPLY_POLL_INTERVAL_MS=120000" \
+                       --set "LOA_ACCEPTANCE_POLL_INTERVAL_MS=300000"
 
 Preconditions before those flags do anything:
 
@@ -139,7 +144,11 @@ Preconditions before those flags do anything:
 
 `LOA_DISPATCH_INTERVAL_MS` starts the campaign dispatch tick (paced sends);
 `LOA_REPLY_POLL_INTERVAL_MS` starts the reply-detection tick (reads the inbox,
-classifies, pulls repliers out of the funnel). Both stay idle when unset.
+classifies, pulls repliers out of the funnel); `LOA_ACCEPTANCE_POLL_INTERVAL_MS`
+starts the acceptance tick (reads the connections list and releases cursors
+parked after a connect step). All three stay idle when unset. Do not skip the
+acceptance tick: without it targets park at `awaiting_connection` forever and
+follow-up message steps never fire.
 
 ## Prove one account first
 
@@ -147,9 +156,8 @@ classifies, pulls repliers out of the funnel). Both stay idle when unset.
    green and the `accounts` / `campaigns` / `actions` tables exist.
 2. Link one account in the UI and run a small supervised window (autonomy
    `supervised`, so every send queues for your approval).
-3. Watch the logs for selector drift and the reply/inbox parse (the Voyager
-   messaging fields are grounded in prior art but unconfirmed against a live
-   payload).
+3. Watch the logs for selector drift and the reply/inbox parse; LinkedIn's
+   markup and Voyager payloads drift over time.
 4. Only after that loop is clean, consider a second account.
 
 ## Scaling to multiple accounts (future work)

@@ -30,8 +30,8 @@ Type:
 - Weights: `--weight-normal` 400 · `--weight-medium` 500 · `--weight-semibold` 600
 
 Shape and space:
-- Radius: `--radius-1`, `--radius-2` (theme-set; Swiss = 0)
-- Elevation: `--shadow-1` (theme-set; Instrument = none)
+- Radius: `--radius-1`, `--radius-2` (theme-set)
+- Elevation: `--shadow-1` (theme-set)
 - Spacing scale (shared 4pt, px): `--space-1` 4 · `-2` 8 · `-3` 12 · `-4` 16 · `-5` 20 · `-6` 24 · `-8` 32 · `-10` 40 · `-12` 48 · `-16` 64
 - Motion: `--ease` cubic-bezier(.2,.7,.2,1) (ease-out, no bounce) · `--dur` 180ms
 

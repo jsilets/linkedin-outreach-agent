@@ -27,14 +27,15 @@ Observe, Act, and Campaign tools. A human operator connects with the privileged
 context and gets the Approval and Safety families. Both talk to the same server,
 so the same autonomy gate governs both.
 
-### Autonomous mode (fallback)
+### Autonomous mode (partial)
 
-When no external agent is attached, the framework runs its own internal loop and
-calls an LLM through a key. The provider is optional and selected server-side by
-which key is present: `OPENROUTER_API_KEY` uses OpenRouter (any model in
-`vendor/model` form via `OPENROUTER_MODEL`), else `ANTHROPIC_API_KEY` uses
-Claude, else the runtime falls back to a deterministic fake. Use this only when
-you do not want to keep a driving session attached.
+The framework has an internal agent loop and an optional LLM, selected
+server-side by which key is present: `OPENROUTER_API_KEY` uses OpenRouter (any
+model in `vendor/model` form via `OPENROUTER_MODEL`), else `ANTHROPIC_API_KEY`
+uses Claude, else the runtime falls back to a deterministic fake. Nothing
+schedules the loop yet — only the smoke scenario runs it — so today the internal
+LLM's real job is classifying replies for the reply-detection tick. Treat driven
+mode as the way outreach runs.
 
 Both modes are safe the same way: the autonomy and approval gate is enforced
 server-side regardless of which brain drives. Under the `supervised` autonomy
@@ -63,8 +64,10 @@ one-time warning, so you can run without secrets on your own machine.
 
 A common setup is two MCP client connections to the same URL: one with the agent
 token for the driver, one with the operator token for approvals. The MCP
-endpoint is `POST /mcp`; health is `GET /healthz` on `MCP_PORT` (default 8080)
-and stays open for platform health checks.
+endpoint is `POST /mcp`; `GET /healthz` stays open for platform health checks.
+Locally the MCP server binds `MCP_PORT` (code default 8080); in the deployed
+container it binds `MCP_PORT=8090` internally and the web server proxies `/mcp`
+on the public port (`PORT`, 8080).
 
 ## Which tools each role uses
 
