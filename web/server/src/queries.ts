@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import { buildStorageStateFromPastedCookies, saveStorageState } from '@loa/account-runner';
 import { ACTION_TYPES, DEFAULT_CAPS, defaultLimits, extractCompany } from '@loa/shared';
-import type { AccountLimits, ActionType } from '@loa/shared';
+import type { AccountLimits, AccountSchedule, ActionType } from '@loa/shared';
 import { db, schema, type Db } from './db.js';
 import { normalizeSteps, type NormalizedStep } from './steps.js';
 
@@ -237,6 +237,9 @@ export interface Lead {
   stage: string;
   progressState: string | null;
   currentStep: number | null;
+  /** Type of the step the cursor is about to run (e.g. "message", "connect"),
+   * so the UI can say "Message in 22h" rather than a bare "next step". */
+  nextStepType: string | null;
   nextStepAt: string | null;
   lastStepAt: string | null;
   errorMessage: string | null;
@@ -314,9 +317,20 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
   const pendingByTarget = new Map<string, string>();
   for (const p of pendingRows) if (!pendingByTarget.has(p.targetId)) pendingByTarget.set(p.targetId, p.id);
 
+  // The campaign's enabled steps in order; the cursor's currentStep indexes into
+  // this list, so steps[currentStep] is the step about to run.
+  const stepRows = await db
+    .select({ stepType: campaignSteps.stepType, enabled: campaignSteps.enabled })
+    .from(campaignSteps)
+    .where(eq(campaignSteps.campaignId, campaignId))
+    .orderBy(asc(campaignSteps.stepOrder));
+  const enabledStepTypes = stepRows.filter((s) => s.enabled).map((s) => s.stepType);
+
   const leads: Lead[] = rows.map((r) => {
     const ctx = readLeadContext(r.externalContext);
     const action = lastActionByTarget.get(r.targetId);
+    const nextStepType =
+      r.currentStep !== null && r.currentStep >= 0 ? enabledStepTypes[r.currentStep] ?? null : null;
     return {
       targetId: r.targetId,
       name: ctx.name,
@@ -326,6 +340,7 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
       stage: r.stage,
       progressState: r.progressState ?? null,
       currentStep: r.currentStep ?? null,
+      nextStepType,
       nextStepAt: r.nextStepAt ? r.nextStepAt.toISOString() : null,
       lastStepAt: r.lastStepAt ? r.lastStepAt.toISOString() : null,
       errorMessage: r.errorMessage ?? null,
@@ -646,12 +661,60 @@ function validateCaps(input: unknown): Record<ActionType, number> {
   return out;
 }
 
-/** Patch one account's editable automation limits (daily caps). */
+/**
+ * Coerce arbitrary input into a valid schedule: an 8am-8pm-style local-hour
+ * window and a set of active weekdays (0=Sun..6=Sat). Rejects out-of-range
+ * hours, a non-earlier start, and an empty/garbage day set so a bad edit can
+ * never write a schedule that silently sends 24/7 or never sends.
+ */
+function validateSchedule(input: unknown): AccountSchedule {
+  if (typeof input !== 'object' || input === null) {
+    throw new LimitsError('schedule must be an object.');
+  }
+  const raw = input as Record<string, unknown>;
+  const start = raw['hoursStart'];
+  const end = raw['hoursEnd'];
+  if (typeof start !== 'number' || !Number.isInteger(start) || start < 0 || start > 23) {
+    throw new LimitsError('hoursStart must be an integer 0-23.');
+  }
+  if (typeof end !== 'number' || !Number.isInteger(end) || end < 1 || end > 24) {
+    throw new LimitsError('hoursEnd must be an integer 1-24.');
+  }
+  if (end <= start) {
+    throw new LimitsError('hoursEnd must be after hoursStart.');
+  }
+  if (!Array.isArray(raw['days'])) {
+    throw new LimitsError('days must be an array of weekday numbers (0-6).');
+  }
+  const days = [...new Set(raw['days'])].filter(
+    (d): d is number => typeof d === 'number' && Number.isInteger(d) && d >= 0 && d <= 6,
+  );
+  if (days.length === 0) {
+    throw new LimitsError('at least one working day is required.');
+  }
+  days.sort((a, b) => a - b);
+  return { hoursStart: start, hoursEnd: end, days };
+}
+
+/** Patch one account's editable automation limits: daily caps and, when
+ * provided, the working-hours/days schedule. An omitted schedule is left
+ * unchanged; passing one replaces it wholesale. */
 export async function updateAccountLimits(
   accountId: string,
   caps: unknown,
+  schedule?: unknown,
 ): Promise<AccountLimits> {
+  const [existing] = await db
+    .select({ limits: accounts.limits })
+    .from(accounts)
+    .where(eq(accounts.id, accountId));
+  if (!existing) throw new LimitsError('unknown account.');
+  const prev = (existing.limits as AccountLimits | null) ?? defaultLimits();
+
   const validated: AccountLimits = { caps: validateCaps(caps) };
+  const nextSchedule = schedule !== undefined ? validateSchedule(schedule) : prev.schedule;
+  if (nextSchedule) validated.schedule = nextSchedule;
+
   const [row] = await db
     .update(accounts)
     .set({ limits: validated, updatedAt: new Date() })

@@ -51,6 +51,7 @@ export interface Lead {
   stage: string;
   progressState: string | null;
   currentStep: number | null;
+  nextStepType: string | null;
   nextStepAt: string | null;
   lastStepAt: string | null;
   errorMessage: string | null;
@@ -104,8 +105,23 @@ export const ACTION_TYPES = [
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
+// When an account is allowed to act: a local-hour window and its active
+// weekdays (0=Sun..6=Sat). Optional — absent means the server's default window.
+export interface AccountSchedule {
+  hoursStart: number;
+  hoursEnd: number;
+  days: number[];
+}
+
+export const DEFAULT_SCHEDULE: AccountSchedule = {
+  hoursStart: 8,
+  hoursEnd: 20,
+  days: [0, 1, 2, 3, 4, 5, 6],
+};
+
 export interface AccountLimits {
   caps: Record<ActionType, number>;
+  schedule?: AccountSchedule;
 }
 
 export interface Account {
@@ -255,11 +271,12 @@ export const api = {
   updateAccountLimits: async (
     id: string,
     caps: Record<ActionType, number>,
+    schedule?: AccountSchedule,
   ): Promise<AccountLimits> => {
     const res = await fetch(`/api/accounts/${id}/limits`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ caps }),
+      body: JSON.stringify(schedule ? { caps, schedule } : { caps }),
     });
     if (!res.ok) throw new Error(await errorText(res));
     const body = (await res.json()) as { limits: AccountLimits };

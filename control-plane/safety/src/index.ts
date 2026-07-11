@@ -6,7 +6,14 @@ export type { CapTable, SafetyConfig } from './config.js';
 export { transition, isTerminal } from './state-machine.js';
 export type { StateEvent, StateStep } from './state-machine.js';
 
-export { DefaultSafetyGate, isoDate, nextDay } from './safety-gate.js';
+export {
+  DefaultSafetyGate,
+  isoDate,
+  nextDay,
+  activeHoursDefer,
+  scheduleDefer,
+  effectiveSchedule,
+} from './safety-gate.js';
 export type {
   SafetyGateOptions,
   WeeklyInviteCounter,

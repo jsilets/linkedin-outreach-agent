@@ -19,10 +19,9 @@ code yet. Do not deploy a separate always-running "body" service; there is
 nothing for it to talk to. See `examples/fly/NOTE.md` for the archived sketch of
 that future split.
 
-Real browser runs, live LinkedIn traffic, and the real LLM are P0 items: the
-image is built to be correct for them (Xvfb plus a headful Chromium are present,
-the entrypoint starts the virtual display), but nothing exercises the browser
-end to end yet. With no `ANTHROPIC_API_KEY` the runtime uses a fake LLM; with no
+The image ships Xvfb plus a headful Chromium and the entrypoint starts the
+virtual display, so a real browser account runs the same in a container as it
+does locally. With no `ANTHROPIC_API_KEY` the runtime uses a fake LLM; with no
 `DATABASE_URL` it uses an in-memory store.
 
 ## Files
@@ -116,8 +115,8 @@ provider (see `PROXY.md`); that cost is per account and is not Railway's.
 
 ## Caveats
 
-- Browser, LinkedIn, and real-LLM paths are P0 and not exercised end to end yet.
-  The image is structurally ready (Xvfb + headful Chromium), but prove the loop
-  with one account before scaling.
+- The browser and LinkedIn paths depend on LinkedIn's live markup and will drift.
+  The image runs headful Chromium under Xvfb; prove the loop with one account
+  before scaling.
 - The brain/body split is future work; the callback transport does not exist in
   the code. Today it is one process in one container.

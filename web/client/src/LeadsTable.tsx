@@ -25,16 +25,26 @@ function ts(iso: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-// When the next step will run. A FUTURE time is the scheduled delay (e.g. the
-// 24h wait after acceptance) and reads as "in 20h". A PAST time means the step
-// is already ripe and just waiting on a send slot — the daily cap, the pacer, or
-// the working-hours window (nothing sends overnight) — so "queued" is the honest
-// label, not "due 5h ago", which read like something was overdue/broken.
-function nextStepLabel(iso: string | null): string {
+// A short verb for the step about to run, so the column says WHAT is next, not
+// just when. "message" -> "Message", "connect" -> "Invite" (via actionLabel);
+// delay steps have no verb of their own, so they read as a plain wait.
+function stepVerb(type: string | null): string {
+  if (!type || type === 'delay') return 'Next step';
+  return actionLabel(type);
+}
+
+// When the next step will run, prefixed with what it is: "Message in 22h".
+// A FUTURE time is the scheduled delay (e.g. the 24h wait after acceptance). A
+// PAST time means the step is ripe and waiting on a send slot — the daily cap,
+// the pacer, or the working-hours/days window — so "Message queued" is the
+// honest label, not "due 5h ago", which read like something was overdue.
+function nextStepLabel(type: string | null, iso: string | null): string {
   if (!iso) return '—';
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return '—';
-  return t > Date.now() ? formatRelative(iso) : 'queued';
+  const verb = stepVerb(type);
+  const when = t > Date.now() ? formatRelative(iso) : 'queued';
+  return `${verb} ${when}`;
 }
 
 // Whether the lead is still stepping (so a "next step" time is meaningful).
@@ -85,7 +95,9 @@ export function LeadsTable({ leads, filter }: { leads: Lead[]; filter: string | 
       sortValue: (l) => (isFlowing(l) ? ts(l.nextStepAt) : null),
       cellClassName: 'when',
       cell: (l) => (
-        <span title={formatStamp(l.nextStepAt)}>{isFlowing(l) ? nextStepLabel(l.nextStepAt) : '—'}</span>
+        <span title={formatStamp(l.nextStepAt)}>
+          {isFlowing(l) ? nextStepLabel(l.nextStepType, l.nextStepAt) : '—'}
+        </span>
       ),
     },
     {

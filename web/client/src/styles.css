@@ -140,23 +140,27 @@ header.top h1 {
   margin-right: auto;
 }
 
+/* Tabs sit on a hairline rule; the selected one is marked by an accent underline
+ * (accent = selection), not a filled box — so "you are here" never blurs into
+ * the hover fill. */
 nav {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1);
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--line);
 }
 
 nav button {
+  position: relative;
   background: transparent;
-  border: 1px solid transparent;
+  border: none;
   color: var(--ink-2);
   padding: var(--space-2) var(--space-3);
   min-height: 44px;
-  border-radius: var(--radius-1);
+  border-radius: var(--radius-1) var(--radius-1) 0 0;
   cursor: pointer;
   font: inherit;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
-    border-color var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 
 nav button:hover {
@@ -164,10 +168,26 @@ nav button:hover {
   background: var(--surface-2);
 }
 
+nav button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
 nav button.active {
   color: var(--ink-1);
-  background: var(--surface-2);
-  border-color: var(--line-strong);
+  font-weight: var(--weight-medium);
+}
+
+/* Accent underline indicator, overlapping the nav's bottom rule. */
+nav button.active::after {
+  content: '';
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
 }
 
 /* ── Theme toggle (single sun/moon icon button) ───────────────────────────── */
@@ -331,6 +351,81 @@ textarea::placeholder {
 textarea {
   min-height: 60px;
   resize: vertical;
+}
+
+/* ── Working-schedule editor (Accounts) ───────────────────────────────────── */
+.schedule {
+  margin-top: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.schedule-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+/* A weekday chip: hairline + muted when off, accent fill when active. Accent is
+ * the selection color, so an "on" day reads as chosen at a glance. */
+.day-toggle {
+  min-width: 48px;
+  min-height: 40px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-1);
+  background: var(--surface-1);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: var(--text-meta);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.day-toggle:hover {
+  color: var(--ink-1);
+  border-color: var(--accent);
+}
+
+.day-toggle.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: var(--weight-medium);
+}
+
+.day-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.schedule-hours {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.schedule-hours input {
+  width: 4ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  /* Hide the number spinners: they clip two-digit hours ("20" -> "2") and the
+   * value is edited by typing anyway. */
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.schedule-hours input::-webkit-outer-spin-button,
+.schedule-hours input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.schedule-dash {
+  color: var(--ink-3);
 }
 
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
