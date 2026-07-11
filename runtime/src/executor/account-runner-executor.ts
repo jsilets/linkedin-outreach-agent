@@ -39,6 +39,7 @@ import {
 import type { RuntimeStore } from '../store/index.js';
 import type {
   StoreBackedActionPacer,
+  StoreBackedDailyUsage,
   StoreBackedWeeklyInviteCounter,
 } from '../adapters/safety-state.js';
 import { rowToAccount, rowToTarget } from '../mappers.js';
@@ -60,6 +61,10 @@ export interface AccountRunnerExecutorDeps {
   /** Weekly-invite counter kept warm on each successful connect (matches the
    * fake executor). Optional so a wiring test can omit it. */
   weekly?: StoreBackedWeeklyInviteCounter;
+  /** Per-type daily-usage counter kept warm on each successful action so the
+   * gate's daily caps see today's real count. Optional so a wiring test can
+   * omit it. */
+  daily?: StoreBackedDailyUsage;
   /** Action pacer kept warm on every successful action so the gate spaces the
    * next one apart. Optional so a wiring test can omit it. */
   pacer?: StoreBackedActionPacer;
@@ -76,6 +81,7 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
   private readonly runnerSafety: RunnerSafetyPort;
   private readonly session: SessionProvider;
   private readonly weekly?: StoreBackedWeeklyInviteCounter;
+  private readonly daily?: StoreBackedDailyUsage;
   private readonly pacer?: StoreBackedActionPacer;
   private readonly now: () => Date;
   private readonly sleep?: Sleeper;
@@ -86,6 +92,7 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     this.runnerSafety = deps.runnerSafety;
     this.session = deps.session;
     this.weekly = deps.weekly;
+    this.daily = deps.daily;
     this.pacer = deps.pacer;
     this.now = deps.now ?? (() => new Date());
     this.sleep = deps.sleep;
@@ -169,6 +176,13 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       }
       throw err;
     }
+    // Reserve the pacer slot the moment the token is minted, BEFORE the page
+    // drive: a concurrent caller (an MCP act tool overlapping the dispatch
+    // tick, or two approvals back-to-back) would otherwise pass its own gate
+    // check during the 10-60s the browser takes, and two actions would land
+    // seconds apart. The post-drive record below then advances the stamp to
+    // the completion time, which is the more conservative spacing anchor.
+    this.pacer?.record(accountId, this.now());
 
     // Obtain the live Page from the resumed session. LiveSessionProvider.pageFor
     // is wired and proven (people-search runs over this same call on a real
@@ -188,7 +202,30 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       ...(this.rng ? { rng: this.rng } : {}),
     };
 
-    const outcome = await this.drive(ctx, type, profileUrl, outboundBody);
+    let outcome: ActionResultOut;
+    try {
+      outcome = await this.drive(ctx, type, profileUrl, outboundBody);
+    } catch (err) {
+      // A throw out of the page drive (crash, navigation timeout) is a failed
+      // attempt, not a pending one: persist the failure so the row is not left
+      // orphaned at 'pending', record the pacer (the session WAS driven), and
+      // rethrow for the caller to handle like any executor error.
+      const failedAt = this.now();
+      this.pacer?.record(accountId, failedAt);
+      await this.store.action.setResult(action.id, 'failed', failedAt);
+      await this.store.event.append({
+        accountId,
+        kind: 'action_failed',
+        payload: {
+          actionId: action.id,
+          type,
+          targetId,
+          campaignId,
+          detail: err instanceof Error ? err.message : String(err),
+        },
+      });
+      throw err;
+    }
 
     const executedAt = this.now();
     // The pacer spaces any browser activity, so record it whether or not the
@@ -214,8 +251,10 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     // reporting it as pending. Do this before warming the safety state / event.
     const successRow = await this.store.action.setResult(action.id, 'success', executedAt);
     // Keep the in-memory safety state warm exactly like the fake executor: the
-    // weekly ceiling counts connects that actually went out.
+    // weekly ceiling counts connects that actually went out, and the daily caps
+    // count every successful action by type.
     if (type === 'connect') this.weekly?.record(accountId, executedAt);
+    this.daily?.record(accountId, type, executedAt);
     await this.store.event.append({
       accountId,
       kind: 'action_executed',

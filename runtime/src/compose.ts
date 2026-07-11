@@ -33,7 +33,9 @@ import {
   type RuntimeStore,
 } from './store/index.js';
 import {
+  PauseRegistry,
   StoreBackedActionPacer,
+  StoreBackedDailyUsage,
   StoreBackedWeeklyInviteCounter,
   replaySignals,
 } from './adapters/safety-state.js';
@@ -171,10 +173,14 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // ONE safety gate, backed by a store-aware weekly-invite counter and an
   // action pacer that spaces every account's actions apart (anti-burst).
   const weekly = new StoreBackedWeeklyInviteCounter();
+  const daily = new StoreBackedDailyUsage();
   const pacer = new StoreBackedActionPacer();
+  const pause = new PauseRegistry();
   const gate = new DefaultSafetyGate({
     weeklyInvites: weekly,
+    dailyUsage: daily,
     recentActions: pacer,
+    pause,
     ...(deps.safetyConfig ? { config: deps.safetyConfig } : {}),
   });
 
@@ -187,7 +193,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // Executor + LLM. The fake executor is always built (smoke drives it via
   // feedInbound); the wired executor is the real account-runner when
   // LOA_EXECUTOR=real, else the fake.
-  const fakeExecutor = new FakeExecutor({ store, weekly, pacer });
+  const fakeExecutor = new FakeExecutor({ store, weekly, daily, pacer });
   let sessionProvider: LiveSessionProvider | undefined;
   let executor: McpExecutorPort & AgentExecutorPort = fakeExecutor;
   if (config.executorMode === 'real') {
@@ -204,6 +210,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       runnerSafety: makeRunnerSafetyPort(gate),
       session: sessionProvider,
       weekly,
+      daily,
       pacer,
     });
   }
@@ -211,7 +218,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
 
   // mcp ports, all backed by the single orchestrator + gate + store + executor.
   const approvals = new ApprovalAdapter(orchestrator, executor, store);
-  const admin = new AccountAdminAdapter(store, gate, orchestrator);
+  const admin = new AccountAdminAdapter(store, gate, orchestrator, pause);
   const campaign = new CampaignAdapter(orchestrator, store, gate);
   const safety = makeMcpSafetyPort(gate, store);
   // Observe: reads run open (no gating). With a real session, people-search
@@ -339,7 +346,9 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       const accounts = await store.account.all();
       const ids = accounts.map((a) => a.id);
       await weekly.rehydrate(store, ids);
+      await daily.rehydrate(store, ids);
       await pacer.rehydrate(store, ids);
+      await pause.rehydrate(store, ids);
       await replaySignals(
         store,
         gate,

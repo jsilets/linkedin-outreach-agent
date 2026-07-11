@@ -139,6 +139,7 @@ describe('AccountRunnerExecutor real path', () => {
     // Windowless config so the gate never defers on time of day: this suite
     // must pass whether it runs at noon or at 3am.
     const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
       weeklyInvites: new StoreBackedWeeklyInviteCounter(),
       config: NO_ACTIVE_HOURS_CONFIG,
     });
@@ -192,6 +193,7 @@ describe('AccountRunnerExecutor real path', () => {
     // executor must record that as a failure ON THE ROW, not leave it pending.
     const failSession = new StubSessionProvider(0);
     const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
       weeklyInvites: new StoreBackedWeeklyInviteCounter(),
       config: NO_ACTIVE_HOURS_CONFIG,
     });

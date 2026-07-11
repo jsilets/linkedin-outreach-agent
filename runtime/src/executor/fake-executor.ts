@@ -21,12 +21,14 @@ import type {
 import type { RuntimeStore } from '../store/index.js';
 import type {
   StoreBackedActionPacer,
+  StoreBackedDailyUsage,
   StoreBackedWeeklyInviteCounter,
 } from '../adapters/safety-state.js';
 
 export interface FakeExecutorDeps {
   store: RuntimeStore;
   weekly: StoreBackedWeeklyInviteCounter;
+  daily: StoreBackedDailyUsage;
   pacer: StoreBackedActionPacer;
   now?: () => Date;
 }
@@ -34,6 +36,7 @@ export interface FakeExecutorDeps {
 export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
   private readonly store: RuntimeStore;
   private readonly weekly: StoreBackedWeeklyInviteCounter;
+  private readonly daily: StoreBackedDailyUsage;
   private readonly pacer: StoreBackedActionPacer;
   private readonly now: () => Date;
   /** Inbound messages queued per target id, drained on the next observe(). */
@@ -42,6 +45,7 @@ export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
   constructor(deps: FakeExecutorDeps) {
     this.store = deps.store;
     this.weekly = deps.weekly;
+    this.daily = deps.daily;
     this.pacer = deps.pacer;
     this.now = deps.now ?? (() => new Date());
   }
@@ -98,6 +102,8 @@ export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
     if (type === 'connect') {
       this.weekly.record(accountId, executedAt);
     }
+    // Count every successful action by type so the gate's daily caps are enforced.
+    this.daily.record(accountId, type, executedAt);
     // Pace every action type, so the gate spaces the next action apart.
     this.pacer.record(accountId, executedAt);
     await this.store.event.append({
