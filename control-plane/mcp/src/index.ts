@@ -36,6 +36,13 @@ export type {
   ListMember,
   ListDetail,
   InsertMembersResult,
+  Icp,
+  IcpAttribute,
+  IcpField,
+  DiscoveryPort,
+  DiscoveryResult,
+  LeadScoreInput,
+  ScoreLeadsResult,
 } from './ports.js';
 
 export { gateAct, mayExecuteDirectly, type GateOutcome, type GateDeps } from './gate.js';

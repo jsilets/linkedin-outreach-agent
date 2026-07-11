@@ -69,6 +69,7 @@ import { resolveProxyIdentity } from '@loa/account-runner';
 import { AccountRunnerExecutor } from './executor/account-runner-executor.js';
 import { LiveSessionProvider } from './executor/session-provider.js';
 import { FakeLLMProvider } from './llm/fake-llm-provider.js';
+import { DiscoveryAdapter } from './discovery/index.js';
 import type { ExecutorPort as McpExecutorPort } from '@loa/mcp';
 import type { ExecutorPort as AgentExecutorPort } from '@loa/agent';
 
@@ -241,7 +242,23 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // get_list / source_to_list tools. It writes the same lead_lists /
   // lead_list_members tables the web UI's ListsView reads.
   const lists = new LeadListAdapter(store);
-  const ports: Ports = { observe, executor, safety, approval: approvals, campaign, lists, admin };
+  // --- discovery feeder (feature-flagged) ----------------------------------
+  // Autonomous lead discovery + scoring, off unless LOA_DISCOVERY_ENABLED. It
+  // reuses the SAME observe the sourcing tools use for candidate discovery and
+  // writes scores into lead_list_members.external_context (visible in the UI,
+  // carried onto campaign targets by createCampaignFromList). Absent otherwise,
+  // so the discover_leads / score_leads tools reject when the flag is off.
+  const discovery = config.discoveryEnabled ? new DiscoveryAdapter(store, observe) : undefined;
+  const ports: Ports = {
+    observe,
+    executor,
+    safety,
+    approval: approvals,
+    campaign,
+    lists,
+    admin,
+    ...(discovery ? { discovery } : {}),
+  };
 
   // The campaign sequence engine reuses the SAME gate chokepoint the Act tools
   // route through (safety + approval + executor), so a tick-minted step obeys

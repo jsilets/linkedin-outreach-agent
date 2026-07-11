@@ -6,6 +6,7 @@
 // works over both the synchronous in-memory maps and the async Postgres driver.
 
 import { db as shared } from '@loa/shared';
+import type { Json } from '@loa/shared';
 import type {
   ApprovalRepoPort,
   CampaignRepoPort,
@@ -125,6 +126,14 @@ export interface LeadListStorePort {
   /** Insert members, skipping any already present (unique on listId +
    * linkedinUrn). Returns how many rows were newly inserted. */
   insertMembers(rows: shared.NewLeadListMemberRow[]): Promise<{ inserted: number }>;
+  /** Merge a patch into one member's external_context (matched on listId +
+   * linkedinUrn). Used by the harness-driven score_leads path to attach a score
+   * an agent computed. Returns true when a member matched, false otherwise. */
+  updateMemberContext(
+    listId: string,
+    linkedinUrn: string,
+    patch: Record<string, Json>,
+  ): Promise<boolean>;
 }
 
 /** The composed store shape the runtime adapters depend on. */

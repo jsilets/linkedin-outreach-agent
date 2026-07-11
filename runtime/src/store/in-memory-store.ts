@@ -8,6 +8,7 @@
 // account/action/event-read surfaces are async to match the RuntimeStore shape.
 
 import { db as shared, defaultLimits } from '@loa/shared';
+import type { Json } from '@loa/shared';
 import type {
   ApprovalRepoPort,
   CampaignRepoPort,
@@ -560,6 +561,20 @@ class InMemLeadListStore implements LeadListStorePort {
       inserted += 1;
     }
     return { inserted };
+  }
+
+  async updateMemberContext(
+    listId: string,
+    linkedinUrn: string,
+    patch: Record<string, Json>,
+  ): Promise<boolean> {
+    const member = [...this.members.values()].find(
+      (m) => m.listId === listId && m.linkedinUrn === linkedinUrn,
+    );
+    if (!member) return false;
+    const base = (member.externalContext ?? {}) as Record<string, Json>;
+    member.externalContext = { ...base, ...patch };
+    return true;
   }
 }
 
