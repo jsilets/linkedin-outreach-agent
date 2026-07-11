@@ -14,7 +14,7 @@
 // set PROXY_* for the account's sticky proxy):
 //
 //   COOKIE_VAULT_KEY=... LOA_ALLOW_NO_PROXY=true \
-//   npm run search-shakeout -- <accountId> --keywords "ev charging operations" --limit 25
+//   npm run search-shakeout -- <accountId> --keywords "field service operations" --limit 25
 //
 // Flags (all optional except the positional accountId):
 //   --keywords "..."          free-text search box
@@ -92,7 +92,7 @@ function parseArgs(argv: string[]): { accountId: string; query: PeopleQuery } {
     !query.geoUrn &&
     !query.network
   ) {
-    query.keywords = 'ev charging operations';
+    query.keywords = 'field service operations';
   }
   return { accountId, query };
 }

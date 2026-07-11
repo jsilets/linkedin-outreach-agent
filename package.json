@@ -4,7 +4,6 @@
   "private": true,
   "description": "Self-hosted, agent-driven LinkedIn outreach framework",
   "license": "Apache-2.0",
-  "author": "Josh Silets",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -35,8 +34,6 @@
     "act-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/act-shakeout.ts",
     "link-account": "node --env-file-if-exists=.env --import tsx runtime/src/tools/link-account.ts",
     "source-to-list": "node --env-file-if-exists=.env --import tsx runtime/src/tools/source-to-list.ts",
-    "split-and-enroll": "node --env-file-if-exists=.env --import tsx runtime/src/tools/split-and-enroll.ts",
-    "enrich-company": "node --env-file-if-exists=.env --import tsx runtime/src/tools/enrich-company.ts",
     "msg-overlay-dump": "node --env-file-if-exists=.env --import tsx runtime/src/tools/msg-overlay-dump.ts",
     "selector-scan": "node --env-file-if-exists=.env --import tsx runtime/src/tools/selector-scan.ts",
     "db:generate": "drizzle-kit generate",

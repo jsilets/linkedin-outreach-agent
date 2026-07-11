@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   console.log(`\n[link] sealed vault for ${accountId} -> ${vaultPath}`);
   console.log(`[link] li_at present: ${gotLiAt ? 'yes' : 'no'}, JSESSIONID present: ${gotJsession ? 'yes' : 'no'}`);
   console.log(`[link] verify it drives the browser:`);
-  console.log(`[link]   LOA_ALLOW_NO_PROXY=true npm run search-shakeout -- ${accountId} --keywords "ev charging operations"`);
+  console.log(`[link]   LOA_ALLOW_NO_PROXY=true npm run search-shakeout -- ${accountId} --keywords "field service operations"`);
 }
 
 main().catch((err) => {

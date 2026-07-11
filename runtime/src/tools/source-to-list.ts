@@ -4,8 +4,8 @@
 // search (proven) -> DB -> UI.
 //
 //   COOKIE_VAULT_KEY=... DATABASE_URL=... LOA_ALLOW_NO_PROXY=true \
-//   npm run source-to-list -- <accountId> --list-name "EV charging ops" \
-//     --keywords "ev charging operations" --limit 25
+//   npm run source-to-list -- <accountId> --list-name "Field ops" \
+//     --keywords "field service operations" --limit 25
 //
 // Target an existing list with --list-id <uuid> instead of --list-name. Facets
 // match search-shakeout: --title a,b  --company a,b  --company-urn 1,2  --geo id1,id2

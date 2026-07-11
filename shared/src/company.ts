@@ -1,8 +1,8 @@
 // Conservative company extraction from a LinkedIn headline.
 //
 // LinkedIn people-search (free tier) rarely fills a structured company, but the
-// company is usually named in the headline: "… at Eviny", "… @ ChargePoint",
-// "Head of Ops at Applegreen Electric US | …". This pulls that name out for the
+// company is usually named in the headline: "… at Meridian", "… @ Globex",
+// "Head of Ops at Evergreen Retail US | …". This pulls that name out for the
 // {Company} merge token and for auto-classifying sourced leads.
 //
 // The bar is HONESTY over coverage: only return a company when a strong marker
@@ -18,7 +18,7 @@ const SEGMENT_DELIMITERS = /[|•·–—,]|\.\s|\s[-–—]\s|\s\(|:/;
 /**
  * Extract a company name from a headline, or undefined when none is clearly
  * marked. Keys on the LAST "at"/"@" marker (the current employer usually sits
- * at the end, e.g. "Manager, O&M – EV Charging | Fleet Reliability | MN8 Energy"
+ * at the end, e.g. "Manager, O&M – Field Service | Fleet Reliability | Globex Energy"
  * has no marker, but "… at MN8 Energy" would). Exported for unit tests.
  */
 export function extractCompany(headline: string | null | undefined): string | undefined {

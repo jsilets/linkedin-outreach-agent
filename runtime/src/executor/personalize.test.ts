@@ -65,7 +65,7 @@ describe('personalizeBody', () => {
 
 describe('companyFromTarget', () => {
   it('reads the sourced currentCompany', () => {
-    expect(companyFromTarget(target({ externalContext: { currentCompany: 'EVgo' } }))).toBe('EVgo');
+    expect(companyFromTarget(target({ externalContext: { currentCompany: 'Globex' } }))).toBe('Globex');
   });
   it('is undefined when absent or blank', () => {
     expect(companyFromTarget(target({ externalContext: {} }))).toBeUndefined();
@@ -74,12 +74,12 @@ describe('companyFromTarget', () => {
 });
 
 describe('personalizeBody — {Company}', () => {
-  const withCo = target({ externalContext: { name: 'Kenney Tran', currentCompany: 'EVgo' } });
+  const withCo = target({ externalContext: { name: 'Kenney Tran', currentCompany: 'Globex' } });
   const noCo = target({ externalContext: { name: 'Kenney Tran' } });
 
   it('substitutes {Company} when known', () => {
     expect(personalizeBody('your work at {Company} and see', withCo)).toBe(
-      'your work at EVgo and see',
+      'your work at Globex and see',
     );
   });
 
@@ -89,7 +89,7 @@ describe('personalizeBody — {Company}', () => {
   });
 
   it('personalizes both tokens together', () => {
-    expect(personalizeBody('Hey {First}, how is {Company}?', withCo)).toBe('Hey Kenney, how is EVgo?');
+    expect(personalizeBody('Hey {First}, how is {Company}?', withCo)).toBe('Hey Kenney, how is Globex?');
     expect(personalizeBody('Hey {First}, thanks.', noCo)).toBe('Hey Kenney, thanks.');
   });
 

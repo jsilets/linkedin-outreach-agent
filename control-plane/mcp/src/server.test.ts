@@ -38,11 +38,11 @@ describe('authenticate', () => {
   it('grants a privileged operator context for a valid operator token', () => {
     process.env.LOA_MCP_TOKEN = 'agent-secret';
     process.env.LOA_OPERATOR_TOKEN = 'operator-secret';
-    const result = authenticate({ ...bearer('operator-secret'), 'x-loa-operator': 'josh' });
+    const result = authenticate({ ...bearer('operator-secret'), 'x-loa-operator': 'operator-1' });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.ctx.privileged).toBe(true);
-    expect(result.ctx.operator).toBe('josh');
+    expect(result.ctx.operator).toBe('operator-1');
   });
 
   it('falls back to a default operator label when x-loa-operator is absent', () => {
