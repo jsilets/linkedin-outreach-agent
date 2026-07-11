@@ -71,7 +71,7 @@ describe('list_accounts tool', () => {
     });
     // Only the store is exercised; the orchestrator services are unused here.
     const ports = {
-      campaign: new CampaignAdapter({} as never, store, new DefaultSafetyGate()),
+      campaign: new CampaignAdapter({} as never, store, new DefaultSafetyGate({ allowMissingCounters: true })),
     } as unknown as Ports;
 
     const accounts = (await run('list_accounts', {}, ports)) as Array<{

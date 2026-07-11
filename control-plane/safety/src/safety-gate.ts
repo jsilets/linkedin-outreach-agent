@@ -27,6 +27,19 @@ export interface WeeklyInviteCounter {
 }
 
 /**
+ * Port for reading today's usage per action type for an account — the count that
+ * the daily caps are checked against. The scheduler/store owns this state; the
+ * gate only reads it synchronously inside budget()/canAct. If not provided, the
+ * gate falls back to the persisted `acct.budget.used`, which is NEVER written
+ * with today's live count and therefore silently disables the daily cap — so a
+ * real deployment MUST wire this. A rolling-24h implementation is preferred over
+ * a calendar-day one so the cap can't reset mid-day at the UTC boundary.
+ */
+export interface DailyUsageCounter {
+  usedToday(accountId: string): Record<ActionType, number>;
+}
+
+/**
  * Port for reading the timestamp of the most recent outbound action on an
  * account, across ALL action types. The runtime owns this state (kept warm as
  * actions execute, rehydrated from action rows on boot); the gate only reads it
@@ -34,6 +47,17 @@ export interface WeeklyInviteCounter {
  */
 export interface RecentActionClock {
   lastActionAt(accountId: string): Date | undefined;
+}
+
+/**
+ * Port for reading the operator pause flag for an account. Pause is an operator
+ * override (pause_account / kill_all), orthogonal to the account state machine:
+ * a paused account keeps its state and caps but the gate denies every outbound
+ * action until it is resumed. The runtime owns this state (persisted as
+ * account_paused/account_resumed events, rehydrated at boot).
+ */
+export interface PauseState {
+  isPaused(accountId: string): boolean;
 }
 
 /**
@@ -48,10 +72,22 @@ const REAL_CLOCK: Clock = { now: () => new Date() };
 export interface SafetyGateOptions {
   config?: SafetyConfig;
   weeklyInvites?: WeeklyInviteCounter;
+  /** Today's per-type usage. Without it the daily cap is not enforced. */
+  dailyUsage?: DailyUsageCounter;
   clock?: Clock;
   recentActions?: RecentActionClock;
+  /** Operator pause flag. When wired, a paused account is denied every action. */
+  pause?: PauseState;
   /** RNG seam for the action-gap jitter. Defaults to Math.random. */
   rng?: () => number;
+  /**
+   * TEST-ONLY escape hatch. Without all three counters (dailyUsage,
+   * weeklyInvites, recentActions) the gate silently loses its daily caps,
+   * weekly ceiling, and pacing — the exact misconfiguration that once let 32
+   * invites out under a 20/day cap. The constructor therefore throws unless
+   * every counter is wired or this flag is set. Never set it in production.
+   */
+  allowMissingCounters?: boolean;
 }
 
 /** ISO date (YYYY-MM-DD) for a Date, in UTC. */
@@ -90,8 +126,10 @@ const ZERO_CAPS: CapTable = {
 export class DefaultSafetyGate implements SafetyGate {
   private readonly cfg: SafetyConfig;
   private readonly weeklyInvites?: WeeklyInviteCounter;
+  private readonly dailyUsage?: DailyUsageCounter;
   private readonly clock: Clock;
   private readonly recentActions?: RecentActionClock;
+  private readonly pause?: PauseState;
   private readonly rng: () => number;
 
   // Consecutive soft-signal counter per account. Reset when the account
@@ -99,10 +137,24 @@ export class DefaultSafetyGate implements SafetyGate {
   private readonly softStreak = new Map<string, number>();
 
   constructor(opts: SafetyGateOptions = {}) {
+    if (
+      !opts.allowMissingCounters &&
+      (!opts.dailyUsage || !opts.weeklyInvites || !opts.recentActions)
+    ) {
+      // Fail closed at construction: a gate without its counters silently
+      // enforces nothing (daily caps read a never-updated fallback, the weekly
+      // ceiling can never fire cross-day, and pacing is skipped entirely).
+      throw new Error(
+        'DefaultSafetyGate requires dailyUsage, weeklyInvites, and recentActions; ' +
+          'pass allowMissingCounters: true only in tests',
+      );
+    }
     this.cfg = opts.config ?? DEFAULT_CONFIG;
     this.weeklyInvites = opts.weeklyInvites;
+    this.dailyUsage = opts.dailyUsage;
     this.clock = opts.clock ?? REAL_CLOCK;
     this.recentActions = opts.recentActions;
+    this.pause = opts.pause;
     this.rng = opts.rng ?? Math.random;
   }
 
@@ -140,9 +192,14 @@ export class DefaultSafetyGate implements SafetyGate {
   budget(acct: Account): DailyBudget {
     const today = isoDate(this.clock.now());
     const caps = this.capsForState(acct);
-    // Preserve today's usage; reset if the stored budget is from another day.
-    const used =
-      acct.budget && acct.budget.date === today
+    // Prefer the store-backed usage counter when wired. The persisted
+    // acct.budget.used is never written with today's live count, so falling back
+    // to it silently disables the daily cap; the counter reflects real action
+    // rows and survives restarts. Preserve the day-scoped fallback for callers
+    // (e.g. tests) that don't wire a counter.
+    const used = this.dailyUsage
+      ? { ...emptyUsed(), ...this.dailyUsage.usedToday(acct.id) }
+      : acct.budget && acct.budget.date === today
         ? { ...emptyUsed(), ...acct.budget.used }
         : emptyUsed();
     return { date: today, caps, used };
@@ -158,6 +215,12 @@ export class DefaultSafetyGate implements SafetyGate {
     const type = action.type;
 
     // Terminal / no-outbound states deny outright.
+    // Operator pause is the hardest stop of all: it is checked before anything
+    // else so pause_account / kill_all actually halt outbound work.
+    if (this.pause?.isPaused(acct.id)) {
+      return { kind: 'deny', reason: 'account paused by operator' };
+    }
+
     if (acct.state === 'Restricted') {
       return { kind: 'deny', reason: 'account restricted; halted pending human review' };
     }
@@ -166,7 +229,10 @@ export class DefaultSafetyGate implements SafetyGate {
     }
 
     const b = this.budget(acct);
-    const cap = b.caps[type];
+    // Fail closed on a missing cap entry: an undefined cap would sail past both
+    // comparisons below and allow the action uncapped (e.g. an action type added
+    // after an account's caps blob was written).
+    const cap = b.caps[type] ?? 0;
     const used = b.used[type] ?? 0;
 
     // State forbids this action entirely (cap of 0 for this type).

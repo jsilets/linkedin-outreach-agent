@@ -96,12 +96,14 @@ async function main(): Promise<void> {
       const c = await loc.count();
       const rows: string[] = [];
       for (let i = 0; i < Math.min(c, 8); i++) {
-        const cn = await loc.nth(i).evaluate((el) => (el as HTMLElement).className).catch(() => '?');
+        const cn = await loc.nth(i).evaluate((el) => (el as { className: string }).className).catch(() => '?');
         const hasBox = (await loc.nth(i).locator('div[contenteditable="true"]').count()) > 0;
         const links = await loc
           .nth(i)
           .locator('a[href*="/in/"]')
-          .evaluateAll((els) => els.map((e) => (e as HTMLAnchorElement).getAttribute('href')))
+          .evaluateAll((els) =>
+            els.map((e) => (e as { getAttribute(name: string): string | null }).getAttribute('href')),
+          )
           .catch(() => []);
         rows.push(`  #${i} hasBox=${hasBox} links=${JSON.stringify(links)} class="${String(cn).slice(0, 80)}"`);
       }

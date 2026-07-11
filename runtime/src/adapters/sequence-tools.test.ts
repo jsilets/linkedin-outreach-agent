@@ -24,7 +24,7 @@ describe('CampaignAdapter.addTargets mapping', () => {
         },
       },
     } as unknown as OrchestratorServices;
-    const adapter = new CampaignAdapter(services, new InMemoryStore(), new DefaultSafetyGate());
+    const adapter = new CampaignAdapter(services, new InMemoryStore(), new DefaultSafetyGate({ allowMissingCounters: true }));
 
     await adapter.addTargets(CAMP, [
       'manual-ref',
@@ -59,7 +59,7 @@ describe('CampaignAdapter sequence surface', () => {
 
   beforeEach(() => {
     store = new InMemoryStore();
-    campaign = new CampaignAdapter(noServices, store, new DefaultSafetyGate());
+    campaign = new CampaignAdapter(noServices, store, new DefaultSafetyGate({ allowMissingCounters: true }));
   });
 
   it('defines an ordered sequence and reads it back', async () => {

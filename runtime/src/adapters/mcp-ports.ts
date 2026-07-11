@@ -49,6 +49,7 @@ import type {
 import type { ApprovalDecision } from '@loa/shared';
 import type { db as shared } from '@loa/shared';
 import { DefaultSafetyGate } from '@loa/safety';
+import type { PauseRegistry } from './safety-state.js';
 import type { OrchestratorServices } from './orchestrator.js';
 import type { RuntimeStore } from '../store/index.js';
 import { advanceAfterStep } from '../dispatch/advance.js';
@@ -130,15 +131,27 @@ export class ApprovalAdapter implements ApprovalPort {
   }
 
   async approve(pendingId: string, editor: string) {
-    await this.services.approvals.approve(pendingId, editor);
+    // Dispatch FIRST, record the decision only on a genuinely-sent action.
+    // Ordering matters twice over: (a) a mint-time safety deferral (cap hit,
+    // outside hours, pacer) throws before anything is recorded, so the draft
+    // stays pending and the operator's approval is not consumed by a send that
+    // never happened; (b) a failed page drive leaves the draft re-approvable
+    // instead of marking an unsent message 'sent'.
     const action = await this.dispatch(pendingId);
+    if (action.result !== 'success') return action;
+    await this.services.approvals.approve(pendingId, editor);
     await this.onApprovalResolved(action.targetId, 'approved');
     return action;
   }
 
   async editAndApprove(pendingId: string, editor: string, body: string) {
+    // Same dispatch-first ordering as approve(). The edited body is passed
+    // straight to the executor: the persisted ActRequest still carries the
+    // ORIGINAL draft payload, so dispatching it unedited would send the text
+    // the operator explicitly rewrote.
+    const action = await this.dispatch(pendingId, body);
+    if (action.result !== 'success') return action;
     await this.services.approvals.editAndApprove(pendingId, editor, body);
-    const action = await this.dispatch(pendingId);
     await this.onApprovalResolved(action.targetId, 'approved');
     return action;
   }
@@ -188,13 +201,16 @@ export class ApprovalAdapter implements ApprovalPort {
 
   /** Dispatch the underlying action through the executor after sign-off. The
    * ActRequest is read back from the store (it was persisted at enqueue time),
-   * so this works even on the first approval after a restart. */
-  private async dispatch(pendingId: string) {
+   * so this works even on the first approval after a restart. An edited body
+   * overrides the persisted payload so the operator's rewrite is what sends. */
+  private async dispatch(pendingId: string, bodyOverride?: string) {
     const req = (await this.services.approvals.getPendingReq(pendingId)) as ActRequest | undefined;
     if (!req) {
       throw new Error(`no ActRequest bound to pending item ${pendingId}`);
     }
-    return this.executor.execute(req);
+    return this.executor.execute(
+      bodyOverride === undefined ? req : { ...req, payload: bodyOverride },
+    );
   }
 }
 
@@ -436,29 +452,37 @@ function memberRowFromPerson(
 
 /** mcp AccountAdminPort: privileged safety controls over the store + gate. The
  * kill switch and pause/resume never route through the scheduler; they mutate
- * account state directly and record an event, so they stay reachable. */
+ * the shared PauseRegistry — which the gate consults on EVERY canAct, so a
+ * pause genuinely halts outbound work — and record an event per account, from
+ * which the registry rehydrates after a restart. */
 export class AccountAdminAdapter implements AccountAdminPort {
-  private readonly paused = new Set<string>();
-
   constructor(
     private readonly store: RuntimeStore,
     private readonly gate: DefaultSafetyGate,
     private readonly services: OrchestratorServices,
+    private readonly pause: PauseRegistry,
   ) {}
 
   async pauseAccount(accountId: string, reason: string): Promise<void> {
-    this.paused.add(accountId);
+    this.pause.pause(accountId);
     await this.services.eventLog.recordEvent('account_paused', accountId, { reason });
   }
 
   async resumeAccount(accountId: string): Promise<void> {
-    this.paused.delete(accountId);
+    this.pause.resume(accountId);
     await this.services.eventLog.recordEvent('account_resumed', accountId, {});
   }
 
   async killAll(reason: string): Promise<void> {
     const rows = await this.store.account.all();
-    for (const r of rows) this.paused.add(r.id);
+    // One account_paused event per account (not just the kill_all summary), so
+    // the registry's per-account rehydrate replays the kill after a restart.
+    for (const r of rows) {
+      this.pause.pause(r.id);
+      await this.services.eventLog.recordEvent('account_paused', r.id, {
+        reason: `kill_all: ${reason}`,
+      });
+    }
     await this.services.eventLog.recordEvent('kill_all', null, {
       reason,
       accounts: rows.length,
@@ -466,7 +490,7 @@ export class AccountAdminAdapter implements AccountAdminPort {
   }
 
   isPaused(accountId: string): boolean {
-    return this.paused.has(accountId);
+    return this.pause.isPaused(accountId);
   }
 
   async getHealth(accountId: string): Promise<HealthReport> {
@@ -477,7 +501,7 @@ export class AccountAdminAdapter implements AccountAdminPort {
       accountId,
       state: acct.state,
       budget: this.gate.budget(acct),
-      paused: this.paused.has(accountId),
+      paused: this.pause.isPaused(accountId),
     };
   }
 

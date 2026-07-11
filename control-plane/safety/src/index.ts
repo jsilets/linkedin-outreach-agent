@@ -10,7 +10,9 @@ export { DefaultSafetyGate, isoDate, nextDay } from './safety-gate.js';
 export type {
   SafetyGateOptions,
   WeeklyInviteCounter,
+  DailyUsageCounter,
   RecentActionClock,
+  PauseState,
   Clock,
 } from './safety-gate.js';
 

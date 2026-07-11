@@ -11,6 +11,7 @@
 
 import { describe, expect, it, beforeEach } from 'vitest';
 import type { Action } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import type { ActRequest, ExecutorPort } from '@loa/mcp';
 import { ApprovalService, EventLog } from '@loa/orchestrator';
 import { InMemoryStore } from '../store/in-memory-store.js';
@@ -22,7 +23,17 @@ const ACCT = 'acct-1';
 
 class RecordingExecutor implements ExecutorPort {
   readonly calls: ActRequest[] = [];
+  /** Result stamped on returned actions; a test flips it to 'failed'. */
+  result: 'success' | 'failed' = 'success';
+  /** When set, execute throws this instead of returning (mint-time defer). */
+  throwOnce: Error | undefined;
+
   async execute(req: ActRequest): Promise<Action> {
+    if (this.throwOnce) {
+      const err = this.throwOnce;
+      this.throwOnce = undefined;
+      throw err;
+    }
     this.calls.push(req);
     const now = new Date();
     return {
@@ -30,7 +41,7 @@ class RecordingExecutor implements ExecutorPort {
       type: req.type,
       scheduledAt: now,
       executedAt: now,
-      result: 'success',
+      result: this.result,
       dedupKey: `${req.accountId}:${req.targetId}:${req.type}`,
       accountId: req.accountId,
       targetId: req.targetId,
@@ -109,6 +120,76 @@ describe('ApprovalAdapter sequence resume', () => {
     expect(after!.id).toBe(prog.id);
     expect(after!.state).toBe('in_progress');
     expect(after!.currentStep).toBe(0);
+  });
+});
+
+describe('ApprovalAdapter dispatch-first ordering', () => {
+  let store: InMemoryStore;
+  let executor: RecordingExecutor;
+  let approvals: ApprovalAdapter;
+
+  beforeEach(async () => {
+    store = new InMemoryStore();
+    executor = new RecordingExecutor();
+    approvals = new ApprovalAdapter(makeServices(store), executor, store);
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'first' });
+  });
+
+  it('a safety deferral at dispatch leaves the draft pending and the cursor parked', async () => {
+    await parkedProgress(store, 't-defer');
+    const pending = await approvals.enqueue(messageReq('t-defer'), 'supervised', 'first');
+
+    // The executor's mint-time gate re-check defers (cap hit / outside hours).
+    executor.throwOnce = new SafetyDeferredError({
+      kind: 'defer',
+      until: new Date(Date.now() + 60_000),
+    });
+    await expect(approvals.approve(pending.id, 'op')).rejects.toBeInstanceOf(SafetyDeferredError);
+
+    // Nothing was consumed: the draft is still pending (re-approvable), the
+    // cursor is still parked, and no send happened.
+    expect(executor.calls).toHaveLength(0);
+    expect(await approvals.listPending()).toHaveLength(1);
+    const prog = await store.sequence.getTargetProgressByTarget('t-defer');
+    expect(prog!.state).toBe('awaiting_approval');
+
+    // A later re-approve (gate now allows) dispatches and resolves normally.
+    // This suite has a single sequence step, so approval completes the run.
+    const action = await approvals.approve(pending.id, 'op');
+    expect(action.result).toBe('success');
+    expect(await approvals.listPending()).toHaveLength(0);
+    expect((await store.sequence.getTargetProgressByTarget('t-defer'))!.state).toBe('completed');
+  });
+
+  it('a failed page drive leaves the draft pending instead of marking it sent', async () => {
+    await parkedProgress(store, 't-fail');
+    const pending = await approvals.enqueue(messageReq('t-fail'), 'supervised', 'first');
+
+    executor.result = 'failed';
+    const action = await approvals.approve(pending.id, 'op');
+
+    expect(action.result).toBe('failed');
+    // The draft was NOT marked sent and the cursor did not advance: the
+    // operator can re-approve once the underlying failure is fixed.
+    expect(await approvals.listPending()).toHaveLength(1);
+    expect((await store.sequence.getTargetProgressByTarget('t-fail'))!.state).toBe(
+      'awaiting_approval',
+    );
+  });
+
+  it('editAndApprove dispatches the EDITED body, not the persisted draft payload', async () => {
+    const pending = await approvals.enqueue(
+      messageReq('t-edit', 'original text'),
+      'supervised',
+      'original text',
+    );
+
+    await approvals.editAndApprove(pending.id, 'op', 'rewritten by the operator');
+
+    expect(executor.calls).toHaveLength(1);
+    // The persisted ActRequest still carries the original payload; the send
+    // must use the operator's rewrite.
+    expect(executor.calls[0]!.payload).toBe('rewritten by the operator');
   });
 });
 
