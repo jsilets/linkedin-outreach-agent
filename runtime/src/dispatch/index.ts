@@ -5,7 +5,7 @@
 // and starts the loop; nothing here assumes a host, so it deploys unchanged.
 
 import type { GateDeps } from '@loa/mcp';
-import type { TargetRepoPort } from '@loa/orchestrator';
+import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
 import type { SequenceStorePort } from '../store/index.js';
 import { DispatchTick, type DispatchTickDeps, type StepOutcome, type TickResult } from './tick.js';
 
@@ -18,6 +18,8 @@ export interface MakeDispatchTickDeps {
   gate: GateDeps;
   /** Target-stage reads/writes: park at 'invited' on connect, gate messages. */
   targets: Pick<TargetRepoPort, 'findById' | 'setStage'>;
+  /** Messages, so the tick sends human-approved drafts when the window opens. */
+  messages: MessageRepoPort;
   now?: () => Date;
   onOutcome?: (o: StepOutcome) => void;
 }
@@ -28,6 +30,7 @@ export function makeDispatchTick(deps: MakeDispatchTickDeps): DispatchTick {
     sequence: deps.sequence,
     gate: deps.gate,
     targets: deps.targets,
+    messages: deps.messages,
     ...(deps.now ? { now: deps.now } : {}),
     ...(deps.onOutcome ? { onOutcome: deps.onOutcome } : {}),
   });

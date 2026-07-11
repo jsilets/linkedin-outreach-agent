@@ -242,6 +242,17 @@ export class MessageRepo {
       .where(eq(messages.status, 'draft'))
       .orderBy(asc(messages.createdAt));
   }
+
+  /** Approved-but-unsent messages, oldest first. The dispatch tick sends these
+   * when the working-hours window is open, so an off-hours approval goes out at
+   * the next window with no second approval. */
+  async listApproved(): Promise<MessageRow[]> {
+    return this.db.handle
+      .select()
+      .from(messages)
+      .where(eq(messages.status, 'approved'))
+      .orderBy(asc(messages.createdAt));
+  }
 }
 
 export class ApprovalRepo {

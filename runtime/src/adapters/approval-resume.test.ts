@@ -1,20 +1,19 @@
-// Tests the ApprovalAdapter over a REAL ApprovalService backed by the in-memory
-// store, so the pending-item binding is persisted the same way it is in
-// Postgres. Covers two things:
-//   1. Post-approval sequence resume: a cursor parked in awaiting_approval
-//      advances on approve, stops (skipped) on reject, and a non-parked cursor
-//      (a direct Act-tool approval) is left untouched.
-//   2. Durability across a restart: a pending item enqueued through one adapter
-//      is still visible via list_pending and still dispatches the correct
-//      ActRequest through a brand-new adapter + services built over the SAME
-//      store (the in-memory map used to strand these on restart).
+// Tests the approval flow over a REAL ApprovalService + in-memory store, so the
+// pending-item binding is persisted the same way it is in Postgres.
+//
+// The model: approving does NOT dispatch. approve() marks the message 'approved'
+// and leaves the sequence cursor parked; the dispatch tick sends approved
+// messages when the working-hours window is open and only then advances the
+// cursor. So an off-hours approval goes out at the next window with no second
+// approval. These tests cover that end to end.
 
 import { describe, expect, it, beforeEach } from 'vitest';
-import type { Action } from '@loa/shared';
+import type { Account, Action, Campaign } from '@loa/shared';
 import { SafetyDeferredError } from '@loa/shared';
-import type { ActRequest, ExecutorPort } from '@loa/mcp';
+import type { ActRequest, ExecutorPort, GateDeps } from '@loa/mcp';
 import { ApprovalService, EventLog } from '@loa/orchestrator';
 import { InMemoryStore } from '../store/in-memory-store.js';
+import { DispatchTick } from '../dispatch/tick.js';
 import { ApprovalAdapter } from './mcp-ports.js';
 import type { OrchestratorServices } from './orchestrator.js';
 
@@ -52,13 +51,79 @@ class RecordingExecutor implements ExecutorPort {
   }
 }
 
-/** Real orchestrator services over the store: the ApprovalService persists the
- * pending item (and its ActRequest) to the store, exactly like production. Only
- * the approvals + eventLog slice is exercised by these tests. */
 function makeServices(store: InMemoryStore): OrchestratorServices {
   const eventLog = new EventLog(store.event);
   const approvals = new ApprovalService(store.message, store.approval, eventLog);
   return { eventLog, approvals } as unknown as OrchestratorServices;
+}
+
+/** A dispatch tick over the same store, whose executor the test controls. Its
+ * gate is a stub — the tick's approved-send path uses only executor + safety
+ * (for the account schedule); autonomy/approval are not exercised there. */
+function makeTick(store: InMemoryStore, executor: RecordingExecutor): DispatchTick {
+  const gate: GateDeps = {
+    executor,
+    safety: {
+      getAccount: async (id: string): Promise<Account> => fakeAccount(id),
+      getCampaign: async (id: string): Promise<Campaign> => fakeCampaign(id),
+      canAct: async () => ({ kind: 'allow' as const }),
+    },
+    approval: {
+      async enqueue() {
+        throw new Error('not used');
+      },
+      async listPending() {
+        return [];
+      },
+      async approve() {
+        throw new Error('not used');
+      },
+      async editAndApprove() {
+        throw new Error('not used');
+      },
+      async reject() {
+        /* not used */
+      },
+      async record() {
+        /* not used */
+      },
+    },
+  };
+  return new DispatchTick({
+    sequence: store.sequence,
+    targets: store.target,
+    messages: store.message,
+    gate,
+  });
+}
+
+function fakeAccount(id: string): Account {
+  return {
+    id,
+    handle: 'op',
+    proxyBinding: { proxyId: 'p', region: 'us', sticky: true },
+    state: 'Active',
+    health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: new Date() },
+    budget: {
+      date: new Date().toISOString().slice(0, 10),
+      caps: { connect: 10, message: 10, view_profile: 10, follow: 10, withdraw_invite: 10, react: 10 },
+      used: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },
+    },
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+function fakeCampaign(id: string): Campaign {
+  return {
+    id,
+    goal: 'g',
+    autonomyLevel: 'semi_auto',
+    messageStrategy: 's',
+    owner: 'o',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
 }
 
 function messageReq(targetId: string, body = 'first'): ActRequest {
@@ -71,7 +136,7 @@ async function parkedProgress(store: InMemoryStore, targetId: string): Promise<s
   return prog.id;
 }
 
-describe('ApprovalAdapter sequence resume', () => {
+describe('ApprovalAdapter — approval marks approved, tick sends', () => {
   let store: InMemoryStore;
   let executor: RecordingExecutor;
   let approvals: ApprovalAdapter;
@@ -84,161 +149,113 @@ describe('ApprovalAdapter sequence resume', () => {
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'follow up' });
   });
 
-  it('advances a parked cursor to the next step on approve', async () => {
+  it('approve marks the message approved and leaves the cursor parked (no send yet)', async () => {
     await parkedProgress(store, 't1');
     const pending = await approvals.enqueue(messageReq('t1'), 'supervised', 'first');
 
-    await approvals.approve(pending.id, 'op');
+    const outcome = await approvals.approve(pending.id, 'op');
 
-    expect(executor.calls).toHaveLength(1); // the approved send dispatched
-    const after = await store.sequence.getTargetProgressByTarget('t1');
-    expect(after!.state).toBe('in_progress');
-    expect(after!.currentStep).toBe(1);
+    expect(outcome.status).toBe('approved');
+    expect(executor.calls).toHaveLength(0); // nothing dispatched at approval time
+    expect((await store.message.findById(pending.id))!.status).toBe('approved');
+    // Still parked; the tick advances it only after the send.
+    expect((await store.sequence.getTargetProgressByTarget('t1'))!.state).toBe('awaiting_approval');
   });
 
-  it('stops the enrollment (skipped) on reject', async () => {
+  it('the tick sends the approved message and advances the cursor', async () => {
     await parkedProgress(store, 't2');
     const pending = await approvals.enqueue(messageReq('t2'), 'supervised', 'first');
-
-    await approvals.reject(pending.id, 'op', 'wrong angle');
-
-    expect(executor.calls).toHaveLength(0); // nothing sent on reject
-    const after = await store.sequence.getTargetProgressByTarget('t2');
-    expect(after!.state).toBe('skipped');
-    expect(after!.currentStep).toBe(0); // did not advance
-  });
-
-  it('leaves a non-parked cursor untouched (direct Act-tool approval)', async () => {
-    // Enrolled but in_progress (not awaiting_approval): a direct send approval
-    // for this target must not move the sequence cursor.
-    const prog = await store.sequence.enrollTarget(CAMP, 't3', ACCT);
-    const pending = await approvals.enqueue(messageReq('t3', 'x'), 'supervised', 'x');
-
     await approvals.approve(pending.id, 'op');
 
-    const after = await store.sequence.getTargetProgressByTarget('t3');
-    expect(after!.id).toBe(prog.id);
-    expect(after!.state).toBe('in_progress');
-    expect(after!.currentStep).toBe(0);
-  });
-});
-
-describe('ApprovalAdapter dispatch-first ordering', () => {
-  let store: InMemoryStore;
-  let executor: RecordingExecutor;
-  let approvals: ApprovalAdapter;
-
-  beforeEach(async () => {
-    store = new InMemoryStore();
-    executor = new RecordingExecutor();
-    approvals = new ApprovalAdapter(makeServices(store), executor, store);
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'first' });
-  });
-
-  it('a safety deferral at dispatch leaves the draft pending and the cursor parked', async () => {
-    await parkedProgress(store, 't-defer');
-    const pending = await approvals.enqueue(messageReq('t-defer'), 'supervised', 'first');
-
-    // The executor's mint-time gate re-check defers (cap hit / outside hours).
-    executor.throwOnce = new SafetyDeferredError({
-      kind: 'defer',
-      until: new Date(Date.now() + 60_000),
-    });
-    await expect(approvals.approve(pending.id, 'op')).rejects.toBeInstanceOf(SafetyDeferredError);
-
-    // Nothing was consumed: the draft is still pending (re-approvable), the
-    // cursor is still parked, and no send happened.
-    expect(executor.calls).toHaveLength(0);
-    expect(await approvals.listPending()).toHaveLength(1);
-    const prog = await store.sequence.getTargetProgressByTarget('t-defer');
-    expect(prog!.state).toBe('awaiting_approval');
-
-    // A later re-approve (gate now allows) dispatches and resolves normally.
-    // This suite has a single sequence step, so approval completes the run.
-    const action = await approvals.approve(pending.id, 'op');
-    expect(action.result).toBe('success');
-    expect(await approvals.listPending()).toHaveLength(0);
-    expect((await store.sequence.getTargetProgressByTarget('t-defer'))!.state).toBe('completed');
-  });
-
-  it('a failed page drive leaves the draft pending instead of marking it sent', async () => {
-    await parkedProgress(store, 't-fail');
-    const pending = await approvals.enqueue(messageReq('t-fail'), 'supervised', 'first');
-
-    executor.result = 'failed';
-    const action = await approvals.approve(pending.id, 'op');
-
-    expect(action.result).toBe('failed');
-    // The draft was NOT marked sent and the cursor did not advance: the
-    // operator can re-approve once the underlying failure is fixed.
-    expect(await approvals.listPending()).toHaveLength(1);
-    expect((await store.sequence.getTargetProgressByTarget('t-fail'))!.state).toBe(
-      'awaiting_approval',
-    );
-  });
-
-  it('editAndApprove dispatches the EDITED body, not the persisted draft payload', async () => {
-    const pending = await approvals.enqueue(
-      messageReq('t-edit', 'original text'),
-      'supervised',
-      'original text',
-    );
-
-    await approvals.editAndApprove(pending.id, 'op', 'rewritten by the operator');
+    const res = await makeTick(store, executor).runTick(new Date());
 
     expect(executor.calls).toHaveLength(1);
-    // The persisted ActRequest still carries the original payload; the send
-    // must use the operator's rewrite.
+    expect((await store.message.findById(pending.id))!.status).toBe('sent');
+    const prog = await store.sequence.getTargetProgressByTarget('t2');
+    expect(prog!.state).toBe('in_progress');
+    expect(prog!.currentStep).toBe(1); // advanced to the follow-up
+    expect(res.outcomes.some((o) => o.kind === 'executed')).toBe(true);
+  });
+
+  it('an off-hours (deferred) send leaves it approved; a later tick sends it — no re-approval', async () => {
+    await parkedProgress(store, 't3');
+    const pending = await approvals.enqueue(messageReq('t3'), 'supervised', 'first');
+    await approvals.approve(pending.id, 'op');
+
+    // First tick: the executor's gate defers (outside the window).
+    executor.throwOnce = new SafetyDeferredError({ kind: 'defer', until: new Date(Date.now() + 3_600_000) });
+    await makeTick(store, executor).runTick(new Date());
+    expect((await store.message.findById(pending.id))!.status).toBe('approved'); // still approved
+    expect((await store.sequence.getTargetProgressByTarget('t3'))!.state).toBe('awaiting_approval');
+
+    // Later tick, window now open: it sends, no second approval needed.
+    await makeTick(store, executor).runTick(new Date());
+    expect((await store.message.findById(pending.id))!.status).toBe('sent');
+    expect((await store.sequence.getTargetProgressByTarget('t3'))!.currentStep).toBe(1);
+  });
+
+  it('a failed send leaves the message approved for a later retry', async () => {
+    await parkedProgress(store, 't4');
+    const pending = await approvals.enqueue(messageReq('t4'), 'supervised', 'first');
+    await approvals.approve(pending.id, 'op');
+
+    executor.result = 'failed';
+    await makeTick(store, executor).runTick(new Date());
+    expect((await store.message.findById(pending.id))!.status).toBe('approved'); // not sent
+    expect((await store.sequence.getTargetProgressByTarget('t4'))!.state).toBe('awaiting_approval');
+  });
+
+  it('editAndApprove sends the EDITED body, not the persisted draft payload', async () => {
+    await parkedProgress(store, 't5');
+    const pending = await approvals.enqueue(messageReq('t5', 'original text'), 'supervised', 'original text');
+
+    await approvals.editAndApprove(pending.id, 'op', 'rewritten by the operator');
+    await makeTick(store, executor).runTick(new Date());
+
+    expect(executor.calls).toHaveLength(1);
     expect(executor.calls[0]!.payload).toBe('rewritten by the operator');
+  });
+
+  it('reject stops the enrollment (skipped), nothing sent', async () => {
+    await parkedProgress(store, 't6');
+    const pending = await approvals.enqueue(messageReq('t6'), 'supervised', 'first');
+
+    await approvals.reject(pending.id, 'op', 'wrong angle');
+    await makeTick(store, executor).runTick(new Date());
+
+    expect(executor.calls).toHaveLength(0);
+    expect((await store.sequence.getTargetProgressByTarget('t6'))!.state).toBe('skipped');
   });
 });
 
 describe('ApprovalAdapter durability across a restart', () => {
-  it('list_pending and approve survive a fresh adapter + services over the same store', async () => {
+  it('a pending item enqueued before a restart approves + sends through fresh instances', async () => {
     const store = new InMemoryStore();
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
 
-    // --- before "restart": enqueue a connect approval through adapter A. ---
     const execA = new RecordingExecutor();
     const adapterA = new ApprovalAdapter(makeServices(store), execA, store);
-    const req: ActRequest = {
-      type: 'connect',
-      accountId: ACCT,
-      targetId: 't-restart',
-      campaignId: CAMP,
-      payload: 'nice to connect',
-    };
-    const pending = await adapterA.enqueue(req, 'supervised', 'nice to connect');
+    const prog = await store.sequence.enrollTarget(CAMP, 't-restart', ACCT);
+    await store.sequence.advanceTargetProgress(prog.id, { state: 'awaiting_approval' });
+    const pending = await adapterA.enqueue(messageReq('t-restart', 'nice to connect'), 'supervised', 'nice to connect');
 
-    // --- simulate a process restart: brand-new services + adapter, no shared
-    //     in-memory state, only the SAME store underneath. ---
+    // Restart: brand-new adapter + services over the SAME store.
     const execB = new RecordingExecutor();
     const adapterB = new ApprovalAdapter(makeServices(store), execB, store);
 
-    // The operator still sees the pending item (previously it went empty here).
     const listed = await adapterB.listPending();
     expect(listed).toHaveLength(1);
     expect(listed[0]!.id).toBe(pending.id);
-    expect(listed[0]!.req).toMatchObject({
-      type: 'connect',
-      targetId: 't-restart',
-      campaignId: CAMP,
-      payload: 'nice to connect',
-    });
 
-    // Approving dispatches the correct ActRequest (previously threw "no
-    // ActRequest bound to pending item").
-    const action = await adapterB.approve(pending.id, 'op');
-    expect(action.type).toBe('connect');
+    const outcome = await adapterB.approve(pending.id, 'op');
+    expect(outcome.status).toBe('approved');
+    expect(execA.calls).toHaveLength(0); // pre-restart adapter never dispatched
+
+    await makeTick(store, execB).runTick(new Date());
     expect(execB.calls).toHaveLength(1);
-    expect(execB.calls[0]).toMatchObject({
-      type: 'connect',
-      targetId: 't-restart',
-      payload: 'nice to connect',
-    });
-    // The pre-restart adapter never dispatched anything.
-    expect(execA.calls).toHaveLength(0);
-
-    // The item is no longer pending after approval.
+    expect(execB.calls[0]).toMatchObject({ type: 'message', targetId: 't-restart' });
+    expect((await store.message.findById(pending.id))!.status).toBe('sent');
+    // No longer pending, and it left the approval queue when approved.
     expect(await adapterB.listPending()).toHaveLength(0);
   });
 });

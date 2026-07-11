@@ -189,14 +189,25 @@ export interface PendingItem {
   createdAt: Date;
 }
 
+/** Result of approving a pending item. The send is NOT immediate: approval marks
+ * the message 'approved' and the dispatch tick sends it at the next open
+ * working-hours window (so an off-hours approval needs no second approval). */
+export interface ApprovalOutcome {
+  pendingId: string;
+  targetId: string;
+  /** 'approved' — queued to send at the next open window. */
+  status: 'approved';
+}
+
 export interface ApprovalPort {
   /** Queue an action for human sign-off. Returns the pending id. */
   enqueue(req: ActRequest, autonomyLevel: AutonomyLevel, draftBody?: string): Promise<PendingItem>;
   listPending(campaignId?: string): Promise<PendingItem[]>;
-  /** Approve as-is: dispatches the underlying action via the executor. */
-  approve(pendingId: string, editor: string): Promise<Action>;
-  /** Edit the draft body then approve and dispatch. */
-  editAndApprove(pendingId: string, editor: string, body: string): Promise<Action>;
+  /** Approve as-is: marks the message approved; the dispatch tick sends it at
+   * the next open working-hours window. */
+  approve(pendingId: string, editor: string): Promise<ApprovalOutcome>;
+  /** Edit the draft body then approve (sent by the tick at the next window). */
+  editAndApprove(pendingId: string, editor: string, body: string): Promise<ApprovalOutcome>;
   /** Reject; nothing is dispatched. */
   reject(pendingId: string, editor: string, reason: string): Promise<void>;
   /** Record an operator decision (audit). */

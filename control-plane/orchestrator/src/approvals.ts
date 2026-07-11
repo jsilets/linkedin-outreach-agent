@@ -138,10 +138,12 @@ export class ApprovalService {
       message = rowToMessage(edited);
     }
     if (decision === 'approved' || decision === 'edited') {
-      // Approval marks the draft as sent. The actual send is handed to the
-      // executor elsewhere; here we record intent in the message status.
-      const sent = await this.messages.setStatus(pendingItemRef, 'sent');
-      message = rowToMessage(sent);
+      // Approval marks the draft 'approved', NOT 'sent'. The dispatch tick sends
+      // approved messages when the working-hours window is open and flips them to
+      // 'sent' — so an approval given off-hours or on a day off goes out at the
+      // next window with no second approval.
+      const approved = await this.messages.setStatus(pendingItemRef, 'approved');
+      message = rowToMessage(approved);
     }
 
     await this.log.recordEvent('approval_decided', existing.accountId, {

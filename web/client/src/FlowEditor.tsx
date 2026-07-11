@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { CAMPAIGN_STEP_TYPES, api, type CampaignStepType, type Step } from './api';
-import { STEP_LABELS, funnelLabel } from './format';
+import { STEP_LABELS, cumulativeDays, funnelLabel, funnelWhen } from './format';
 
 interface Props {
   campaignId: string;
@@ -68,17 +68,33 @@ export function FlowEditor({ campaignId, initial }: Props) {
     }
   }
 
+  const days = cumulativeDays(steps);
+  const firstEnabled = steps.findIndex((s) => s.enabled);
+  const anchorIsConnect = firstEnabled >= 0 && steps[firstEnabled]?.stepType === 'connect';
+
   return (
     <div>
       <div className="funnel">
         {steps.length === 0 && <span className="muted">No steps yet.</span>}
-        {steps.map((s, i) => (
-          <span key={i} style={{ display: 'contents' }}>
-            {i > 0 && <span className="arrow">-&gt;</span>}
-            <span className="node">{funnelLabel(s)}</span>
-          </span>
-        ))}
+        {steps.map((s, i) => {
+          const act = s.stepType === 'delay' ? 'Wait' : STEP_LABELS[s.stepType];
+          const when = funnelWhen(s, days[i] ?? null);
+          return (
+            <span key={i} style={{ display: 'contents' }}>
+              {i > 0 && <span className="arrow" aria-hidden="true">→</span>}
+              <span className={`node${s.enabled ? '' : ' node-off'}`} title={funnelLabel(s, days[i] ?? null)}>
+                <span className="node-act">{act}</span>
+                {when && <span className="node-when">{when}</span>}
+              </span>
+            </span>
+          );
+        })}
       </div>
+
+      <p className="flow-note">
+        Timing is approximate. Each step sends the next working-day morning and skips days off, so
+        the day numbers are estimates, not exact 24-hour offsets.
+      </p>
 
       <div className="steps">
         {steps.map((step, i) => (
@@ -122,7 +138,13 @@ export function FlowEditor({ campaignId, initial }: Props) {
               </div>
             </div>
             <div className="step-body grid">
-              <StepFields step={step} onChange={(patch) => update(i, patch)} />
+              <StepFields
+                step={step}
+                day={days[i] ?? null}
+                isAnchor={i === firstEnabled}
+                anchorIsConnect={anchorIsConnect}
+                onChange={(patch) => update(i, patch)}
+              />
             </div>
           </div>
         ))}
@@ -143,11 +165,51 @@ export function FlowEditor({ campaignId, initial }: Props) {
   );
 }
 
-function StepFields({ step, onChange }: { step: Step; onChange: (p: Partial<Step>) => void }) {
+// The one-line preview under the delay field: when this step actually lands,
+// stated in cumulative days from the anchor (day 0). Kept honest about the
+// working-morning rounding.
+function timingHint(
+  step: Step,
+  day: number | null,
+  isAnchor: boolean,
+  anchorIsConnect: boolean,
+): string {
+  if (!step.enabled) return 'Disabled: skipped, and does not affect the timing below.';
+  if (day === null) return '';
+  if (step.stepType === 'delay') return `Advances the clock to ~day ${day}.`;
+  if (isAnchor) {
+    return day <= 0
+      ? 'Runs first, on day 0.'
+      : `Runs first, ~day ${day} (next working morning).`;
+  }
+  const after = anchorIsConnect ? ' after connecting' : '';
+  return `Sends ~day ${day}${after} (next working morning).`;
+}
+
+function StepFields({
+  step,
+  day,
+  isAnchor,
+  anchorIsConnect,
+  onChange,
+}: {
+  step: Step;
+  day: number | null;
+  isAnchor: boolean;
+  anchorIsConnect: boolean;
+  onChange: (p: Partial<Step>) => void;
+}) {
+  const hint = timingHint(step, day, isAnchor, anchorIsConnect);
+  const delayLabel = isAnchor
+    ? step.stepType === 'connect'
+      ? 'Wait before sending the invite'
+      : 'Wait before the first step'
+    : 'Wait after previous step';
   const delayField = (
     <div>
-      <label>Delay before this step</label>
+      <label>{delayLabel}</label>
       <DelayInput seconds={step.delaySeconds} onChange={(s) => onChange({ delaySeconds: s })} />
+      {hint && <p className="step-hint">{hint}</p>}
     </div>
   );
 
@@ -156,6 +218,7 @@ function StepFields({ step, onChange }: { step: Step; onChange: (p: Partial<Step
       <div>
         <label>Wait duration</label>
         <DelayInput seconds={step.delaySeconds} onChange={(s) => onChange({ delaySeconds: s })} />
+        {hint && <p className="step-hint">{hint}</p>}
       </div>
     );
   }

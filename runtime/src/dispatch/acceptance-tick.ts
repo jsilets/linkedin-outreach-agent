@@ -23,7 +23,8 @@
 // wraps it in a self-skipping setInterval so a host runs it unattended.
 // Host-agnostic and restartable — no shared mutable tick state.
 
-import type { db as shared } from '@loa/shared';
+import type { AccountSchedule, db as shared } from '@loa/shared';
+import { DEFAULT_SCHEDULE } from '@loa/shared';
 import type { TargetRepoPort } from '@loa/orchestrator';
 import type { AcceptedConnection, ConnectionsReaderPort } from '../adapters/observe-live.js';
 import type { SequenceStorePort } from '../store/index.js';
@@ -85,6 +86,10 @@ export interface AcceptanceTickDeps {
   now?: () => Date;
   /** How many connections to read per account per tick. */
   connectionsLimit?: number;
+  /** The account's working schedule, so the first message after acceptance is
+   * clocked to the next working-day morning (not exactly N*24h from acceptance).
+   * Defaults to the global schedule when not provided. */
+  scheduleFor?: (accountId: string) => Promise<AccountSchedule>;
   /** Optional sink for per-outcome logging (audit / metrics). */
   onOutcome?: (o: AcceptanceOutcome) => void;
 }
@@ -95,6 +100,7 @@ export class AcceptanceTick {
   private readonly targets: TargetStagePort;
   private readonly now: () => Date;
   private readonly connectionsLimit: number;
+  private readonly scheduleFor?: (accountId: string) => Promise<AccountSchedule>;
   private readonly onOutcome?: (o: AcceptanceOutcome) => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
@@ -105,6 +111,7 @@ export class AcceptanceTick {
     this.targets = deps.targets;
     this.now = deps.now ?? (() => new Date());
     this.connectionsLimit = deps.connectionsLimit ?? DEFAULT_CONNECTIONS_LIMIT;
+    this.scheduleFor = deps.scheduleFor;
     this.onOutcome = deps.onOutcome;
   }
 
@@ -152,7 +159,9 @@ export class AcceptanceTick {
     const steps = (await this.sequence.listCampaignSteps(progress.campaignId)).filter(
       (s) => s.enabled,
     );
-    const patch = advanceAfterStep(steps, progress.currentStep, now);
+    // Day-align the first message to the next working morning (not accept + 24h).
+    const schedule = (await this.scheduleFor?.(progress.accountId)) ?? DEFAULT_SCHEDULE;
+    const patch = advanceAfterStep(steps, progress.currentStep, now, schedule);
     await this.sequence.advanceTargetProgress(progress.id, patch);
     const name = leadName(target);
     if (patch.state === 'completed') {

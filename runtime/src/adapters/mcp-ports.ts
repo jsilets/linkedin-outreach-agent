@@ -22,6 +22,7 @@ import type {
 import type {
   AccountAdminPort,
   ActRequest,
+  ApprovalOutcome,
   ApprovalPort,
   AuditRecord,
   CampaignPort,
@@ -130,30 +131,21 @@ export class ApprovalAdapter implements ApprovalPort {
     return out;
   }
 
-  async approve(pendingId: string, editor: string) {
-    // Dispatch FIRST, record the decision only on a genuinely-sent action.
-    // Ordering matters twice over: (a) a mint-time safety deferral (cap hit,
-    // outside hours, pacer) throws before anything is recorded, so the draft
-    // stays pending and the operator's approval is not consumed by a send that
-    // never happened; (b) a failed page drive leaves the draft re-approvable
-    // instead of marking an unsent message 'sent'.
-    const action = await this.dispatch(pendingId);
-    if (action.result !== 'success') return action;
-    await this.services.approvals.approve(pendingId, editor);
-    await this.onApprovalResolved(action.targetId, 'approved');
-    return action;
+  async approve(pendingId: string, editor: string): Promise<ApprovalOutcome> {
+    // Approval does NOT dispatch. It marks the message 'approved'; the dispatch
+    // tick sends it when the working-hours window is open and advances the
+    // sequence cursor. So an approval given off-hours or on a day off goes out
+    // at the next open window with no second approval, and the send is always
+    // gated (caps / pacer / hours / days) at token-mint time.
+    const decision = await this.services.approvals.approve(pendingId, editor);
+    return { pendingId, targetId: decision.message.targetId, status: 'approved' };
   }
 
-  async editAndApprove(pendingId: string, editor: string, body: string) {
-    // Same dispatch-first ordering as approve(). The edited body is passed
-    // straight to the executor: the persisted ActRequest still carries the
-    // ORIGINAL draft payload, so dispatching it unedited would send the text
-    // the operator explicitly rewrote.
-    const action = await this.dispatch(pendingId, body);
-    if (action.result !== 'success') return action;
-    await this.services.approvals.editAndApprove(pendingId, editor, body);
-    await this.onApprovalResolved(action.targetId, 'approved');
-    return action;
+  async editAndApprove(pendingId: string, editor: string, body: string): Promise<ApprovalOutcome> {
+    // Same deferred-send model as approve(). The edited body is persisted on the
+    // message row; the tick sends THAT body (not the original draft).
+    const decision = await this.services.approvals.editAndApprove(pendingId, editor, body);
+    return { pendingId, targetId: decision.message.targetId, status: 'approved' };
   }
 
   async reject(pendingId: string, editor: string, _reason: string): Promise<void> {
@@ -197,20 +189,6 @@ export class ApprovalAdapter implements ApprovalPort {
       // No new body supplied on a bare record; re-approve as-is.
       await this.services.approvals.approve(pendingId, editor);
     } else await this.services.approvals.reject(pendingId, editor);
-  }
-
-  /** Dispatch the underlying action through the executor after sign-off. The
-   * ActRequest is read back from the store (it was persisted at enqueue time),
-   * so this works even on the first approval after a restart. An edited body
-   * overrides the persisted payload so the operator's rewrite is what sends. */
-  private async dispatch(pendingId: string, bodyOverride?: string) {
-    const req = (await this.services.approvals.getPendingReq(pendingId)) as ActRequest | undefined;
-    if (!req) {
-      throw new Error(`no ActRequest bound to pending item ${pendingId}`);
-    }
-    return this.executor.execute(
-      bodyOverride === undefined ? req : { ...req, payload: bodyOverride },
-    );
   }
 }
 

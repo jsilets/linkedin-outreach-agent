@@ -62,7 +62,7 @@ describe('CampaignService', () => {
 });
 
 describe('ApprovalService', () => {
-  it('approve writes an approval row and an event, and marks the draft sent', async () => {
+  it('approve writes an approval row and an event, and marks the draft approved', async () => {
     const w = wire();
     const { pendingItemRef } = await w.approvals.enqueuePending({
       accountId: 'acct-1',
@@ -74,7 +74,8 @@ describe('ApprovalService', () => {
 
     const decision = await w.approvals.approve(pendingItemRef, 'operator');
     expect(decision.decision).toBe('approved');
-    expect(decision.message.status).toBe('sent');
+    // Approval marks it 'approved' (queued to send); the dispatch tick sends it.
+    expect(decision.message.status).toBe('approved');
     expect(w.approvalRepo.rows).toHaveLength(1);
     expect(w.approvalRepo.rows[0]!.decision).toBe('approved');
     expect(w.eventRepo.rows.map((e) => e.kind)).toContain('approval_decided');
@@ -96,7 +97,7 @@ describe('ApprovalService', () => {
     expect(w.eventRepo.rows.map((e) => e.kind)).toContain('approval_decided');
   });
 
-  it('edit_and_approve changes the body then sends', async () => {
+  it('edit_and_approve changes the body then marks it approved', async () => {
     const w = wire();
     const { pendingItemRef } = await w.approvals.enqueuePending({
       accountId: 'acct-1',
@@ -108,7 +109,7 @@ describe('ApprovalService', () => {
     const decision = await w.approvals.editAndApprove(pendingItemRef, 'operator', 'edited body');
     expect(decision.decision).toBe('edited');
     expect(decision.message.body).toBe('edited body');
-    expect(decision.message.status).toBe('sent');
+    expect(decision.message.status).toBe('approved');
   });
 
   it('lists pending draft items in a thread', async () => {

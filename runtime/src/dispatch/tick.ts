@@ -22,15 +22,17 @@
 // setInterval so a Railway process (or any host) can run it. No local/cloud
 // assumptions and no shared mutable tick state, so it is restartable.
 
-import type { CampaignStepType } from '@loa/shared';
+import type { AccountSchedule, CampaignStepType } from '@loa/shared';
+import { DEFAULT_SCHEDULE, SafetyDeferredError } from '@loa/shared';
 import type { db as shared } from '@loa/shared';
 import { gateAct, type ActRequest, type GateDeps, type GateOutcome } from '@loa/mcp';
-import type { TargetRepoPort } from '@loa/orchestrator';
+import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
 import type { SequenceStorePort } from '../store/index.js';
-import { advanceAfterStep } from './advance.js';
+import { advanceAfterStep, dueAfterDelay } from './advance.js';
 
 type CampaignStepRow = shared.CampaignStepRow;
 type TargetProgressRow = shared.TargetProgressRow;
+type MessageRow = shared.MessageRow;
 
 /** Stages from which a message step may fire: a 1st-degree connection or beyond.
  * LinkedIn only lets you message a connection, so a message before acceptance is
@@ -68,6 +70,9 @@ export interface DispatchTickDeps {
   sequence: SequenceStorePort;
   gate: GateDeps;
   targets: TargetStagePort;
+  /** Messages, so the tick can send human-approved drafts when the working-hours
+   * window opens (the approval path no longer dispatches directly). */
+  messages: MessageRepoPort;
   now?: () => Date;
   /** Optional sink for per-outcome logging (audit / metrics). */
   onOutcome?: (o: StepOutcome) => void;
@@ -116,6 +121,7 @@ export class DispatchTick {
   private readonly sequence: SequenceStorePort;
   private readonly gate: GateDeps;
   private readonly targets: TargetStagePort;
+  private readonly messages: MessageRepoPort;
   private readonly now: () => Date;
   private readonly onOutcome?: (o: StepOutcome) => void;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -125,20 +131,74 @@ export class DispatchTick {
     this.sequence = deps.sequence;
     this.gate = deps.gate;
     this.targets = deps.targets;
+    this.messages = deps.messages;
     this.now = deps.now ?? (() => new Date());
     this.onOutcome = deps.onOutcome;
   }
 
-  /** One pass: process every due cursor. Safe to call repeatedly. */
+  /** The account's working schedule (its own, else the global default). */
+  private async scheduleFor(accountId: string): Promise<AccountSchedule> {
+    const acct = await this.gate.safety.getAccount(accountId);
+    return acct.limits?.schedule ?? DEFAULT_SCHEDULE;
+  }
+
+  /** One pass: send any approved-and-due messages, then process every due
+   * cursor. Approved messages are sent first so an approval that landed off-hours
+   * goes out as soon as this tick runs inside the window. */
   async runTick(now: Date = this.now()): Promise<TickResult> {
-    const due = await this.sequence.dueTargetProgress(now);
     const outcomes: StepOutcome[] = [];
+
+    for (const msg of await this.messages.listApproved()) {
+      const outcome = await this.sendApproved(msg, now);
+      if (outcome) {
+        outcomes.push(outcome);
+        this.onOutcome?.(outcome);
+      }
+    }
+
+    const due = await this.sequence.dueTargetProgress(now);
     for (const progress of due) {
       const outcome = await this.step(progress, now);
       outcomes.push(outcome);
       this.onOutcome?.(outcome);
     }
     return { ran: due.length, outcomes };
+  }
+
+  /** Send one human-approved message through the executor (which re-checks
+   * safety at token mint). On a send, flip it to 'sent' and advance the target's
+   * sequence cursor. On a safety deferral (outside the working-hours window or a
+   * day off) leave it 'approved' to retry next tick — the operator never
+   * re-approves. Returns an outcome only when the send actually landed. */
+  private async sendApproved(msg: MessageRow, now: Date): Promise<StepOutcome | undefined> {
+    const req = msg.pendingReq as ActRequest | undefined;
+    if (!req) return undefined; // pre-binding orphan; nothing to dispatch
+    // The edited body lives on the message; the persisted request may hold the
+    // original draft, so send the message body.
+    const outbound: ActRequest = { ...req, payload: msg.body };
+    let actionId: string;
+    try {
+      const action = await this.gate.executor.execute(outbound);
+      if (action.result !== 'success') return undefined; // ok:false; retry next tick
+      actionId = action.id;
+    } catch (err) {
+      if (err instanceof SafetyDeferredError) return undefined; // window closed; retry next tick
+      // A genuine send failure: leave it approved for a later retry.
+      return undefined;
+    }
+
+    await this.messages.setStatus(msg.id, 'sent');
+    // Advance the sequence cursor for this target, if it is sequence-driven and
+    // still parked awaiting this approval.
+    const prog = await this.sequence.getTargetProgressByTarget(msg.targetId);
+    if (!prog || prog.state !== 'awaiting_approval') {
+      return { kind: 'executed', progressId: prog?.id ?? msg.targetId, actionId, nextStep: -1 };
+    }
+    const steps = (await this.sequence.listCampaignSteps(prog.campaignId)).filter((s) => s.enabled);
+    const schedule = await this.scheduleFor(prog.accountId);
+    const patch = advanceAfterStep(steps, prog.currentStep, now, schedule);
+    await this.sequence.advanceTargetProgress(prog.id, patch);
+    return { kind: 'executed', progressId: prog.id, actionId, nextStep: patch.currentStep! };
   }
 
   /** Advance one target-progress cursor by exactly one sequence step. */
@@ -174,10 +234,10 @@ export class DispatchTick {
         return { kind: 'completed', progressId: progress.id };
       }
       const nextStep = steps[nextIdx]!;
+      const schedule = await this.scheduleFor(progress.accountId);
       await this.sequence.advanceTargetProgress(progress.id, {
         currentStep: nextIdx,
-        nextStepAt:
-          nextStep.delaySeconds > 0 ? new Date(now.getTime() + nextStep.delaySeconds * 1000) : null,
+        nextStepAt: dueAfterDelay(now, nextStep.delaySeconds, schedule),
         lastStepAt: now,
       });
       return { kind: 'delayed', progressId: progress.id, nextStep: nextIdx };
@@ -241,8 +301,10 @@ export class DispatchTick {
       return { kind: 'awaiting_connection', progressId: progress.id };
     }
 
-    // Executed. Advance to the next step (or complete) with the shared rule.
-    const patch = advanceAfterStep(steps, idx, now);
+    // Executed. Advance to the next step (or complete) with the shared rule,
+    // day-aligning the next due time to the account's working schedule.
+    const schedule = await this.scheduleFor(progress.accountId);
+    const patch = advanceAfterStep(steps, idx, now, schedule);
     await this.sequence.advanceTargetProgress(progress.id, patch);
     return {
       kind: 'executed',

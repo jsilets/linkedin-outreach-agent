@@ -39,6 +39,9 @@ export interface MessageRepoPort {
   /** Every draft (pending) message across all threads. Backs the durable
    * pending queue: after a restart the binding is rebuilt from these rows. */
   listDrafts(): Promise<MessageRow[]>;
+  /** Every approved-but-unsent message. The dispatch tick sends these when the
+   * working-hours window opens (an off-hours approval needs no re-approval). */
+  listApproved(): Promise<MessageRow[]>;
 }
 
 export interface ApprovalRepoPort {
