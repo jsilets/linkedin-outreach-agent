@@ -191,12 +191,19 @@ function ActivityFeed({ items }: { items: ActivityItem[] }) {
     {
       key: 'result',
       header: 'Result',
-      sortValue: (a) => statusLabel(a.result),
-      cell: (a) => (
-        <span className="chip" style={{ ['--c' as string]: statusVar(a.result) }}>
-          {statusLabel(a.result)}
-        </span>
-      ),
+      // An invite_accepted row is inbound, not a send: show "Accepted", not the
+      // action result vocabulary ("Sent").
+      sortValue: (a) => (a.type === 'invite_accepted' ? 'Accepted' : statusLabel(a.result)),
+      cell: (a) => {
+        const isAccept = a.type === 'invite_accepted';
+        const key = isAccept ? 'connected' : a.result;
+        const label = isAccept ? 'Accepted' : statusLabel(a.result);
+        return (
+          <span className="chip" style={{ ['--c' as string]: statusVar(key) }}>
+            {label}
+          </span>
+        );
+      },
     },
     {
       key: 'lead',

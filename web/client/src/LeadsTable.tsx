@@ -1,7 +1,7 @@
 import type { Lead } from './api';
 import { DataTable, type Column } from './DataTable';
 import { formatRelative, formatStamp } from './format';
-import { actionLabel, statusLabel, statusVar } from './status';
+import { actionLabel, deriveLeadStatus, statusLabel, statusVar } from './status';
 
 function Chip({ statusKey }: { statusKey: string }) {
   return (
@@ -11,9 +11,11 @@ function Chip({ statusKey }: { statusKey: string }) {
   );
 }
 
-// The state that drives a lead's chip: the live progress cursor if enrolled,
-// otherwise its sourcing stage.
-function leadState(l: Lead): string {
+// The key the funnel filters on: the RAW progress cursor (or stage when not
+// enrolled), matching the segment keys the funnel bar is built from. Kept
+// separate from the displayed milestone so clicking a coarse funnel segment
+// still selects every lead in it.
+function leadFilterKey(l: Lead): string {
   return l.progressState ?? l.stage;
 }
 
@@ -23,14 +25,16 @@ function ts(iso: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-// When the next step is due. A past time means the lead is ready and waiting on
-// a send slot (daily cap / pacer), so it reads as "due 2h ago", not "2h ago".
+// When the next step will run. A FUTURE time is the scheduled delay (e.g. the
+// 24h wait after acceptance) and reads as "in 20h". A PAST time means the step
+// is already ripe and just waiting on a send slot — the daily cap, the pacer, or
+// the working-hours window (nothing sends overnight) — so "queued" is the honest
+// label, not "due 5h ago", which read like something was overdue/broken.
 function nextStepLabel(iso: string | null): string {
   if (!iso) return '—';
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return '—';
-  const rel = formatRelative(iso);
-  return t < Date.now() ? `due ${rel}` : rel;
+  return t > Date.now() ? formatRelative(iso) : 'queued';
 }
 
 // Whether the lead is still stepping (so a "next step" time is meaningful).
@@ -44,7 +48,7 @@ function isFlowing(l: Lead): boolean {
  * pagination are handled by DataTable and survive parent refetches.
  */
 export function LeadsTable({ leads, filter }: { leads: Lead[]; filter: string | null }) {
-  const rows = filter ? leads.filter((l) => leadState(l) === filter) : leads;
+  const rows = filter ? leads.filter((l) => leadFilterKey(l) === filter) : leads;
 
   if (leads.length === 0) return <div className="empty">No leads enrolled yet.</div>;
   if (rows.length === 0) return <div className="empty">No leads in this stage.</div>;
@@ -72,8 +76,8 @@ export function LeadsTable({ leads, filter }: { leads: Lead[]; filter: string | 
     {
       key: 'status',
       header: 'Status',
-      sortValue: (l) => statusLabel(leadState(l)),
-      cell: (l) => <Chip statusKey={leadState(l)} />,
+      sortValue: (l) => statusLabel(deriveLeadStatus(l)),
+      cell: (l) => <Chip statusKey={deriveLeadStatus(l)} />,
     },
     {
       key: 'next',
@@ -112,7 +116,7 @@ export function LeadsTable({ leads, filter }: { leads: Lead[]; filter: string | 
         rows={rows}
         columns={columns}
         rowKey={(l) => l.targetId}
-        rowClassName={(l) => (leadState(l) === 'awaiting_approval' ? 'needs-you' : undefined)}
+        rowClassName={(l) => (l.progressState === 'awaiting_approval' ? 'needs-you' : undefined)}
       />
     </div>
   );

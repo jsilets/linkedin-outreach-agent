@@ -35,10 +35,37 @@ type TargetProgressRow = shared.TargetProgressRow;
 /** How many connections to pull from each account's network per tick. */
 const DEFAULT_CONNECTIONS_LIMIT = 40;
 
-/** How one parked cursor resolved in a tick. Returned for observability + tests. */
+/** Display name off a target's external context, if present. */
+function leadName(target: { externalContext?: unknown }): string | null {
+  const ctx = target.externalContext;
+  if (ctx && typeof ctx === 'object' && 'name' in ctx) {
+    const n = (ctx as { name?: unknown }).name;
+    if (typeof n === 'string' && n.trim()) return n;
+  }
+  return null;
+}
+
+/** How one parked cursor resolved in a tick. Returned for observability + tests.
+ * The accepted variants carry accountId/campaignId/name so a host can log an
+ * invite_accepted event without a second lookup. */
 export type AcceptanceOutcome =
-  | { kind: 'connected'; targetId: string; progressId: string; nextStep: number }
-  | { kind: 'completed'; targetId: string; progressId: string } // accepted; no next step
+  | {
+      kind: 'connected';
+      targetId: string;
+      progressId: string;
+      nextStep: number;
+      accountId: string;
+      campaignId: string;
+      name: string | null;
+    }
+  | {
+      kind: 'completed'; // accepted; no next step
+      targetId: string;
+      progressId: string;
+      accountId: string;
+      campaignId: string;
+      name: string | null;
+    }
   | { kind: 'still_waiting'; progressId: string }; // parked target not yet accepted
 
 export interface AcceptanceTickResult {
@@ -127,14 +154,25 @@ export class AcceptanceTick {
     );
     const patch = advanceAfterStep(steps, progress.currentStep, now);
     await this.sequence.advanceTargetProgress(progress.id, patch);
+    const name = leadName(target);
     if (patch.state === 'completed') {
-      return { kind: 'completed', targetId: target.id, progressId: progress.id };
+      return {
+        kind: 'completed',
+        targetId: target.id,
+        progressId: progress.id,
+        accountId: progress.accountId,
+        campaignId: progress.campaignId,
+        name,
+      };
     }
     return {
       kind: 'connected',
       targetId: target.id,
       progressId: progress.id,
       nextStep: patch.currentStep!,
+      accountId: progress.accountId,
+      campaignId: progress.campaignId,
+      name,
     };
   }
 

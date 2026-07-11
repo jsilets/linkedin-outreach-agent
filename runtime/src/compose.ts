@@ -300,6 +300,21 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       connections,
       sequence: store.sequence,
       targets: store.target,
+      // Record an invite_accepted audit event on each acceptance so the web
+      // activity feed can surface "X accepted your invite" with a timestamp
+      // (the feed is otherwise built only from outbound actions, which an
+      // acceptance is not). Fire-and-forget: a logging failure must not stop
+      // the tick from releasing the cursor.
+      onOutcome: (o) => {
+        if (o.kind !== 'connected' && o.kind !== 'completed') return;
+        void orchestrator.eventLog
+          .recordEvent('invite_accepted', o.accountId, {
+            targetId: o.targetId,
+            campaignId: o.campaignId,
+            name: o.name,
+          })
+          .catch(() => {});
+      },
     });
   }
   // --- end acceptance-detection tick ---------------------------------------
