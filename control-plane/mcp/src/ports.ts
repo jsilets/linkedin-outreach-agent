@@ -373,6 +373,97 @@ export interface LeadListPort {
 }
 
 // ---------------------------------------------------------------------------
+// Discovery port: the autonomous lead-discovery + scoring feeder. Takes an
+// operator-defined ICP, discovers candidates, scores each against the ICP, and
+// writes a ranked, scored list into the SAME lead_lists / lead_list_members the
+// LeadListPort writes (the per-lead score lives in the member's external_context
+// blob, so it rides onto the campaign target via createCampaignFromList). Runs
+// open (no gating): discovery does a read-only people search, no LinkedIn Act.
+// Optional on Ports: present only when the feature flag is on.
+// ---------------------------------------------------------------------------
+
+/** Which candidate field an ICP attribute is matched against. */
+export type IcpField = 'title' | 'company' | 'seniority' | 'location' | 'industry';
+
+/** One weighted qualification signal. `negative` makes a hit disqualifying. */
+export interface IcpAttribute {
+  field: IcpField;
+  /** Values that count as a hit (OR-ed, case-insensitive substring). */
+  match: string[];
+  /** Relative importance. Default 1. */
+  weight?: number;
+  /** true = presence is a negative signal. Default false. */
+  negative?: boolean;
+}
+
+/**
+ * An operator-defined ideal customer profile. The `query` half drives candidate
+ * discovery (maps onto PeopleQuery facets); `description` + `attributes` drive
+ * qualification. Passed into a tool call; not (yet) a persisted record.
+ */
+export interface Icp {
+  /** Human label, e.g. "US/CA field-operations leaders". */
+  name: string;
+  /** Discovery facets. Mirrors the PeopleQuery free-tier facet set. */
+  query: {
+    keywords?: string;
+    titleKeywords?: string[];
+    companyKeywords?: string[];
+    companyUrns?: string[];
+    geoUrns?: string[];
+    network?: Array<'F' | 'S' | 'O'>;
+  };
+  /** Free-text description of the ideal customer, scored against candidate text. */
+  description?: string;
+  /** Structured, weighted attributes the heuristic scorer can read directly. */
+  attributes?: IcpAttribute[];
+  /** Drop candidates scoring below this (0..100). Default 0 (keep all, ranked). */
+  minScore?: number;
+  /** Max candidates to discover. Default 25. */
+  limit?: number;
+}
+
+/** Outcome of a discover -> score -> rank -> write run. Idempotent on
+ *  (listId, linkedinUrn), like source_to_list. */
+export interface DiscoveryResult {
+  listId: string;
+  discovered: number;
+  /** How many survived the minScore cut and were written (before dedup). */
+  scored: number;
+  inserted: number;
+  duplicates: number;
+  /** Highest score among the kept candidates (0 when none). */
+  topScore: number;
+}
+
+/** One agent-computed score to attach to an existing list member. */
+export interface LeadScoreInput {
+  linkedinUrn: string;
+  /** 0..100. */
+  score: number;
+  reasons?: string[];
+}
+
+/** Outcome of attaching agent scores: matched members vs urns with no member. */
+export interface ScoreLeadsResult {
+  updated: number;
+  missed: string[];
+}
+
+export interface DiscoveryPort {
+  /** Autonomous path: live search + heuristic score + ranked write. */
+  discoverLeads(params: {
+    accountId: string;
+    icp: Icp;
+    listId?: string;
+    listName?: string;
+  }): Promise<DiscoveryResult>;
+  /** Harness-driven path: write scores an agent already computed into the
+   *  members' external_context. */
+  scoreLeads(listId: string, scores: LeadScoreInput[]): Promise<ScoreLeadsResult>;
+}
+
+// ---------------------------------------------------------------------------
 // Account admin port: privileged safety controls. pause_account and kill_all
 // must stay callable even if the scheduler is wedged, so they live here and are
 // invoked directly, never routed through the gate/scheduler path.
@@ -415,4 +506,7 @@ export interface Ports {
   campaign: CampaignPort;
   lists: LeadListPort;
   admin: AccountAdminPort;
+  /** The lead-discovery feeder. Present only when LOA_DISCOVERY_ENABLED is on;
+   *  the discover_leads tool rejects with a clear error when it is absent. */
+  discovery?: DiscoveryPort;
 }

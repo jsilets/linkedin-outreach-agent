@@ -7,6 +7,7 @@
 // requires a reachable Postgres with the shared Drizzle schema migrated.
 
 import { db as shared } from '@loa/shared';
+import type { Json } from '@loa/shared';
 import { and, asc, eq, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import {
   PostgresDb,
@@ -327,6 +328,28 @@ class PgLeadListStore implements LeadListStorePort {
       .onConflictDoNothing()
       .returning({ id: leadListMembers.id });
     return { inserted: out.length };
+  }
+
+  async updateMemberContext(
+    listId: string,
+    linkedinUrn: string,
+    patch: Record<string, Json>,
+  ): Promise<boolean> {
+    // Merge the patch into the existing jsonb (|| is jsonb concat, right wins),
+    // so a score attaches without clobbering the profile fields already stored.
+    const out = await this.db.handle
+      .update(leadListMembers)
+      .set({
+        externalContext: sql`${leadListMembers.externalContext} || ${JSON.stringify(patch)}::jsonb`,
+      })
+      .where(
+        and(
+          eq(leadListMembers.listId, listId),
+          eq(leadListMembers.linkedinUrn, linkedinUrn),
+        ),
+      )
+      .returning({ id: leadListMembers.id });
+    return out.length > 0;
   }
 }
 

@@ -107,19 +107,21 @@ export interface DataSourcePort {
 `accountId` is threaded through because the default source runs a live search on
 that account's session. An external provider ignores it.
 
-### Seam 2: `QualifierPort` (scoring)
+### Seam 2: scoring
 
-Turns a candidate plus an ICP into a score. This is the OpenOutreach-style
-qualification step: Bayesian and/or LLM judgment against the ICP.
+There are two ways a candidate gets a score, and both land in the same place
+(the member's `external_context`). They are not competing designs; they serve
+different runs.
+
+**Path A: `QualifierPort` (in-process, autonomous, keyless).** A candidate plus
+an ICP in, a score out. Used by the one-shot `discover_leads` tool so a run needs
+no key and no agent in the loop.
 
 ```ts
 export interface LeadScore {
-  /** 0..100. Higher is a better ICP fit. */
-  score: number;
-  /** Short, operator-readable justification (shown in the UI, stored in blob). */
-  reasons: string[];
-  /** Which qualifier produced it, for auditing (e.g. "heuristic-v1"). */
-  model: string;
+  score: number;      // 0..100, higher is a better ICP fit
+  reasons: string[];  // operator-readable justification (UI + blob)
+  model: string;      // which scorer produced it (audit), e.g. "heuristic-v1"
 }
 
 export interface QualifierPort {
@@ -127,24 +129,29 @@ export interface QualifierPort {
 }
 ```
 
-Two implementations, chosen the same way `chooseLlm` picks a provider:
+The only implementation is **`HeuristicQualifier`**: a transparent, Bayesian-
+flavored scorer over the fields discovery already returns (title/headline,
+company, seniority keywords, geography, degree). Each ICP attribute contributes a
+weighted log-likelihood; the sum is squashed to 0..100. Deterministic, fast,
+free, offline-testable. This is the floor.
 
-1. **`HeuristicQualifier` (default, offline, no key).** A transparent, Bayesian-
-   flavored scorer over the fields discovery already returns (title/headline,
-   company, seniority keywords, geography, degree). Each ICP attribute
-   contributes a weighted log-likelihood; the sum is squashed to 0..100. It is
-   deterministic, fast, free, and testable with no network. It is the floor: the
-   module is useful with only this.
-2. **`LlmQualifier` (opt-in, when a key is present).** Sends the candidate and
-   the ICP to the configured provider (reusing the `ANTHROPIC_API_KEY` /
-   `OPENROUTER_API_KEY` selection already in `config.ts`) and asks for a JSON
-   `{score, reasons}`. This matches OpenOutreach's LLM-qualification path and
-   handles fuzzy ICPs the heuristic cannot. It is a **new, narrow port**, not an
-   addition to the locked `LLMProvider` interface (see Decisions).
+**Path B: the driving harness is the qualifier.** In practice LOA is driven by
+Claude Code or Codex over MCP, and that harness supplies the intelligence. So the
+"LLM qualification" is not an internal API call; it is the driving agent reading
+the candidates and the ICP and scoring them with its own judgment, then writing
+the scores back over MCP. The flow is:
 
-A `CompositeQualifier` can gate the expensive LLM pass behind the cheap
-heuristic (only LLM-score candidates the heuristic ranks above a floor), which
-keeps token spend proportional to the shortlist. Optional; not first-cut.
+1. `source_people` (existing) or `source_to_list` (existing) -> raw candidates.
+2. The agent scores each against the ICP in its own reasoning.
+3. `score_leads` (new) writes those scores into the list members'
+   `external_context`.
+
+This is the premium path and needs no key. There is deliberately **no internal
+`LlmQualifier`** that calls Anthropic or OpenRouter: the operator does not run
+one, and an in-process model call would duplicate the intelligence the harness
+already provides. (An OpenRouter-backed `QualifierPort` remains possible behind
+the same seam if a fully-unattended autonomous LLM run is ever wanted, but it is
+not built.)
 
 ## ICP input shape
 
@@ -154,7 +161,7 @@ drives qualification.
 
 ```ts
 export interface Icp {
-  /** Human label, e.g. "US/CA EV charging O&M leaders". */
+  /** Human label, e.g. "US/CA field-operations leaders". */
   name: string;
 
   /** Discovery facets. Maps directly onto PeopleQuery. */
@@ -169,7 +176,7 @@ export interface Icp {
 
   /** Qualification criteria. Free-text description plus optional weighted,
    *  structured attributes the heuristic can score without an LLM. */
-  description: string; // "Director+ owning field operations at EV charging networks"
+  description: string; // "Director+ owning field operations at target-industry firms"
   attributes?: Array<{
     /** What to look at: 'title' | 'company' | 'seniority' | 'location' | 'industry'. */
     field: IcpField;
@@ -205,7 +212,7 @@ Per-member `external_context` written at discovery time:
   "score": 87,
   "scoreModel": "heuristic-v1",
   "scoreReasons": ["title matches 'director of operations'", "US-based", "2nd degree"],
-  "icp": "US/CA EV charging O&M leaders",
+  "icp": "US/CA field-operations leaders",
   "profileUrl": "https://www.linkedin.com/in/...",
   "name": "...",
   "headline": "...",
@@ -235,50 +242,55 @@ Off by default. Presence-gated, matching how the runtime already treats optional
 capabilities (real executor, dispatch tick, LLM keys).
 
 - `LOA_DISCOVERY_ENABLED=true` turns the module on. When unset:
-  - the `discover_leads` MCP tool is not registered,
-  - the `POST /api/lists/discover` route returns 404,
-  - `compose()` does not build the feeder.
-- Qualifier selection is automatic: `HeuristicQualifier` unless a provider key is
-  present and `LOA_DISCOVERY_LLM=true`, then `LlmQualifier`. The heuristic path
-  runs fully offline, so the flag is safe to enable in dev and smoke.
+  - `compose()` leaves `ports.discovery` undefined,
+  - `discover_leads` and `score_leads` reject with "discovery is disabled".
+- No qualifier-selection flag: the autonomous path always uses the offline
+  `HeuristicQualifier` (no key), and the harness-driven path needs no scorer at
+  all. Safe to enable in dev and smoke.
 
 ## MCP + web surface
 
-One new MCP tool and one new web route, both feature-gated. Both call the same
-feeder, mirroring how `source_to_list` has a CLI and an MCP tool over one core.
+Two new MCP tools, both feature-gated behind `LOA_DISCOVERY_ENABLED` and absent
+otherwise (the handler rejects with a clear error when the port is not wired).
 
-- **`discover_leads`** (family: campaign, open, non-privileged): takes an ICP and
-  a `listId` or `listName`, runs discover -> qualify -> rank -> write, returns
+- **`discover_leads`** (path A, autonomous): takes an ICP and a `listId` or
+  `listName`, runs discover -> heuristic-score -> rank -> write, returns
   `{ listId, discovered, scored, inserted, duplicates, topScore }`. Idempotent on
   `(listId, linkedinUrn)` like `source_to_list`; re-running re-scores and inserts
   only new people.
-- **`POST /api/lists/discover`**: the web equivalent, so the operator can run
-  discovery from the Lists tab (an ICP form) and watch the scored list fill.
+- **`score_leads`** (path B, harness-driven): takes a `listId` and an array of
+  `{ linkedinUrn, score, reasons? }` and writes each score into that member's
+  `external_context`. This is the list-stage sibling of `attach_external_context`
+  (which only reaches campaign targets). The driving agent calls it after
+  reasoning over the candidates a `source_to_list` / `get_list` returned.
+
+The score, once on a member, rides onto the campaign target through the
+`external_context` copy in `createCampaignFromList`, unchanged.
 
 ## Implementation plan (phased, each independently landable)
 
-1. **Types + ports.** `Icp`, `Candidate`, `LeadScore`, `DataSourcePort`,
-   `QualifierPort` in a new `runtime/src/discovery/` module. No behavior yet.
-2. **Persist scores.** Extend `memberRowFromPerson` / `LeadListAdapter.insertMembers`
-   / store `insertMembers` to carry `external_context`. Unit test that a scored
-   write round-trips the blob and that `source_to_list` still writes `{}`.
-3. **Heuristic qualifier.** `HeuristicQualifier` + tests over canned candidates
-   and ICPs (deterministic, offline). This is the scoring floor.
-4. **Feeder core.** `discoverAndScore(deps, params)`: the discover -> score ->
-   rank -> write pipeline, ports injected. Tests with a fake data source + the
-   heuristic qualifier, asserting ranking, cutoff, and blob contents.
-5. **Wiring + flag.** `LOA_DISCOVERY_*` config, `compose()` builds the feeder when
-   enabled, `LiveSearchDataSource` over the existing `observe`.
-6. **MCP tool.** Register `discover_leads` behind the flag; port method on a new
-   `DiscoveryPort` added to `Ports`. Server test.
-7. **Web route + UI.** `POST /api/lists/discover`, ICP form in `ListsView`, score
-   column.
-8. **LLM qualifier (opt-in).** `LlmQualifier` behind `LOA_DISCOVERY_LLM`, reusing
-   the provider selection. Composite gating optional.
+1. **Types + ports.** `Icp` / `IcpAttribute` / `IcpField` + `DiscoveryPort` in
+   `@loa/mcp` (they cross the tool boundary); `Candidate`, `LeadScore`,
+   `DataSourcePort`, `QualifierPort` in a new `runtime/src/discovery/` module.
+2. **Heuristic qualifier.** `HeuristicQualifier` + tests over canned candidates
+   and ICPs (deterministic, offline). The scoring floor.
+3. **Data source + feeder core.** `LiveSearchDataSource` over `observe`, and
+   `discoverAndScore(deps, params)`: discover -> score -> rank -> write, ports
+   injected. Writes `external_context` (the store `insertMembers` already
+   persists it). Tests with a fake data source + heuristic, asserting ranking,
+   cutoff, and blob contents.
+4. **Member score write.** `updateMemberContext(listId, linkedinUrn, patch)` on
+   the store (both backends) for the harness-driven path. Round-trip test.
+5. **Wiring + flag.** `LOA_DISCOVERY_ENABLED` config; `compose()` sets
+   `ports.discovery` (a `DiscoveryAdapter` over the feeder + store) only when on.
+6. **MCP tools.** `discover_leads` and `score_leads`, both guarding on
+   `ports.discovery`. Server/handler tests.
+7. **UI.** Score column in `ListsView` detail, read from
+   `member.external_context.score` (surfaced through `getList`). Lists without
+   scores show a blank column, no regression.
 
-Steps 1 to 4 are pure and offline: they land and are fully tested with no live
-account and no key. Steps 5 to 7 make it operator-visible. Step 8 is the quality
-upgrade.
+Steps 1 to 4 are pure and offline: fully tested with no live account and no key.
+Steps 5 to 7 make it operator-visible.
 
 ## Testing
 
@@ -292,16 +304,23 @@ upgrade.
   small `limit`, per the verification-cadence rule (one spaced call, real HTTP
   signal), confirming a scored list appears in the UI.
 
-## Decisions to confirm before building
+## Decisions
 
-1. **Scorer as a new port, not an extension of `LLMProvider`.** `LLMProvider` is a
-   locked interface (`shared/src/interfaces.ts`) whose change needs a coordinated
-   migration across packages. Scoring is a different job (judge fit, not draft
-   copy), so this proposes a separate `QualifierPort`. Recommended.
-2. **First cut ships heuristic-only; LLM qualifier is step 8.** Keeps the initial
-   change offline-testable and free, and proves the pipeline before spending
-   tokens. Recommended.
+1. **The harness is the LLM qualifier; no internal model call.** LOA is driven by
+   Claude Code / Codex over MCP, which already supplies the intelligence. So the
+   premium scoring path is the driving agent scoring candidates itself and
+   writing them back via `score_leads`. No `LlmQualifier` calling
+   Anthropic/OpenRouter is built; an OpenRouter-backed `QualifierPort` stays
+   possible behind the seam but is not needed.
+2. **`QualifierPort` is separate from the locked `LLMProvider`.** `LLMProvider`
+   (`shared/src/interfaces.ts`) needs a coordinated cross-package migration to
+   change, and scoring is a different job (judge fit, not draft copy).
 3. **No `icps` table yet.** ICP is a call-time input, its identity recorded in the
-   list + member blob. Named, reusable ICP records are a follow-up. Recommended.
+   list + member blob. Named, reusable ICP records are a follow-up.
 4. **External data-source adapter is a seam only, not built now.** Default
-   discovery reuses the live people search. Recommended.
+   discovery reuses the live people search.
+5. **Web discovery route deferred.** The autonomous and harness-driven paths both
+   run over MCP (a live search needs the runtime's account session), so the
+   operator triggers discovery through the harness, not a web form. The web UI's
+   job is to show the resulting scored list. A `POST /api/lists/discover` that
+   proxies to the runtime MCP can follow if a no-harness UI trigger is wanted.

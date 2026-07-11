@@ -1,4 +1,4 @@
-// The agent-facing tool surface: 30 tools across 5 families.
+// The agent-facing tool surface, across 5 families.
 //
 // Each tool is declared with a zod input shape (raw shape, as the MCP SDK
 // expects), a family, a privileged flag, and a handler that receives the parsed
@@ -13,7 +13,7 @@ import { AUTONOMY_LEVELS, CAMPAIGN_STEP_TYPES } from '@loa/shared';
 import type { RequestContext } from './context.js';
 import { requirePrivileged } from './capability.js';
 import { gateAct, type GateOutcome } from './gate.js';
-import type { ActRequest, PeopleQuery, Ports, TargetInput } from './ports.js';
+import type { ActRequest, Icp, PeopleQuery, Ports, TargetInput } from './ports.js';
 
 export type ToolFamily = 'observe' | 'act' | 'campaign' | 'approval' | 'safety';
 
@@ -59,6 +59,36 @@ const peopleFacetShape = {
   geoUrns: z.array(z.string()).optional(),
   network: z.array(z.enum(['F', 'S', 'O'])).optional(),
 };
+
+// The ICP input for discover_leads: discovery facets under `query`, plus the
+// qualification `description` / `attributes` the scorer reads. Mirrors the Icp
+// port type; zod validates it at the tool boundary.
+const icpShape = z.object({
+  name: z.string().min(1),
+  query: z
+    .object({
+      keywords: z.string().optional(),
+      titleKeywords: z.array(z.string()).optional(),
+      companyKeywords: z.array(z.string()).optional(),
+      companyUrns: z.array(z.string()).optional(),
+      geoUrns: z.array(z.string()).optional(),
+      network: z.array(z.enum(['F', 'S', 'O'])).optional(),
+    })
+    .default({}),
+  description: z.string().optional(),
+  attributes: z
+    .array(
+      z.object({
+        field: z.enum(['title', 'company', 'seniority', 'location', 'industry']),
+        match: z.array(z.string()).min(1),
+        weight: z.number().positive().optional(),
+        negative: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+  minScore: z.number().min(0).max(100).optional(),
+  limit: z.number().int().positive().max(1000).optional(),
+});
 
 /** Assemble a PeopleQuery from the shared facet args + an optional keyword box.
  * Typed loosely because ToolDef erases each tool's parsed-arg shape to a raw
@@ -508,6 +538,72 @@ const campaignTools: ToolDef[] = [
       const people = await p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit);
       const { inserted, duplicates } = await p.lists.insertMembers(listId, people);
       return { listId, found: people.length, inserted, duplicates };
+    },
+  },
+  // --- discovery feeder (feature-flagged; rejects when ports.discovery is off)
+  {
+    name: 'discover_leads',
+    family: 'campaign',
+    description:
+      'Autonomous lead discovery + scoring. Give an ICP (a name, discovery ' +
+      'facets under `query`, and qualification `description`/`attributes`) and a ' +
+      'listId or listName; runs a live people search, scores each candidate ' +
+      'against the ICP with an offline heuristic, ranks them, and writes a scored ' +
+      'list. The per-lead score lands in the member external_context (shown in ' +
+      'the UI, carried onto campaign targets). Idempotent on (listId, ' +
+      'linkedinUrn). Returns { listId, discovered, scored, inserted, duplicates, ' +
+      'topScore }. Requires LOA_DISCOVERY_ENABLED.',
+    privileged: false,
+    inputShape: {
+      accountId: z.string(),
+      icp: icpShape,
+      listId: z.string().optional(),
+      listName: z.string().optional(),
+    },
+    handler: async (a, p) => {
+      if (!p.discovery) {
+        throw new Error('discovery is disabled; set LOA_DISCOVERY_ENABLED=true to enable it');
+      }
+      if (!a.listId && !a.listName) {
+        throw new Error('discover_leads: provide either listId or listName');
+      }
+      return p.discovery.discoverLeads({
+        accountId: a.accountId,
+        icp: a.icp as Icp,
+        ...(a.listId ? { listId: a.listId } : {}),
+        ...(a.listName ? { listName: a.listName } : {}),
+      });
+    },
+  },
+  {
+    name: 'score_leads',
+    family: 'campaign',
+    description:
+      'Attach scores you computed to leads already in a list. This is the ' +
+      'harness-driven qualification path: after reading a list (get_list) and ' +
+      'judging each lead against an ICP yourself, write your scores back here. ' +
+      'Each { linkedinUrn, score (0..100), reasons? } merges into that member ' +
+      "external_context (the list-stage sibling of attach_external_context, which " +
+      'only reaches campaign targets). Returns { updated, missed } where missed ' +
+      'lists urns with no matching member. Requires LOA_DISCOVERY_ENABLED.',
+    privileged: false,
+    inputShape: {
+      listId: z.string(),
+      scores: z
+        .array(
+          z.object({
+            linkedinUrn: z.string(),
+            score: z.number().min(0).max(100),
+            reasons: z.array(z.string()).optional(),
+          }),
+        )
+        .min(1),
+    },
+    handler: async (a, p) => {
+      if (!p.discovery) {
+        throw new Error('discovery is disabled; set LOA_DISCOVERY_ENABLED=true to enable it');
+      }
+      return p.discovery.scoreLeads(a.listId, a.scores);
     },
   },
 ];
