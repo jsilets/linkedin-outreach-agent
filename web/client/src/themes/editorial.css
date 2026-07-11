@@ -1,0 +1,39 @@
+/* Editorial (light) — the base theme. Serif display, airy, cool-neutral paper
+   (not cream), deep calm teal-green accent. Elevation via one soft shadow OR a
+   hairline border, never both on the same element. The dark mode in
+   editorial-dark.css is the same language on a dark surface. */
+:root[data-theme='light'] {
+  --surface-0: #f6f7f8;
+  --surface-1: #ffffff;
+  --surface-2: #eef0f2;
+  --surface-3: #e6e9ec;
+
+  --ink-1: #1c2127;
+  --ink-2: #4c545e;
+  --ink-3: #7c8590;
+  --line: #e2e6ea;
+  --line-strong: #cfd5db;
+
+  --accent: #1f6b5c;
+  --accent-ink: #ffffff;
+  --focus: #1f6b5c;
+
+  --st-approval: #b5771c;
+  --st-active: #2f6bb0;
+  --st-waiting: #3a8391;
+  --st-replied: #6f5aa6;
+  --st-done: #2f8266;
+  --st-failed: #b4483f;
+  --st-idle: #7c8590;
+
+  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, Menlo, monospace;
+
+  --text-h1: 2.125rem;
+  --text-h2: 1.5rem;
+
+  --radius-1: 8px;
+  --radius-2: 12px;
+  --shadow-1: 0 1px 2px rgba(20, 24, 28, 0.06), 0 2px 8px rgba(20, 24, 28, 0.05);
+}
