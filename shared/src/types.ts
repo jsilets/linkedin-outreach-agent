@@ -148,13 +148,38 @@ export interface DailyBudget {
 }
 
 /**
+ * When an account is allowed to do outbound work: a local-time hour window and
+ * the weekdays it runs. The SafetyGate defers every action outside this window
+ * (to the next active day's start). Applies to ALL action types uniformly, the
+ * same way the hour window always has.
+ */
+export interface AccountSchedule {
+  /** Local-hour window start, inclusive (0-23). */
+  hoursStart: number;
+  /** Local-hour window end, exclusive (1-24). start === end disables the hour gate. */
+  hoursEnd: number;
+  /** Active weekdays, 0=Sunday … 6=Saturday. A day absent here is a day off. */
+  days: number[];
+}
+
+/** Default schedule: 8am-8pm local, every day. Matches the legacy global window. */
+export const DEFAULT_SCHEDULE: AccountSchedule = {
+  hoursStart: 8,
+  hoursEnd: 20,
+  days: [0, 1, 2, 3, 4, 5, 6],
+};
+
+/**
  * Operator-set automation limits for one account. Kept separate from the daily
  * budget (which tracks today's counters) so editing a limit never collides with
  * usage accounting. `caps` is the per-action-type daily ceiling the SafetyGate
- * enforces. A cap of 0 disables that action entirely.
+ * enforces. A cap of 0 disables that action entirely. `schedule` is the optional
+ * per-account working-hours/days window; when absent the gate uses its global
+ * config default.
  */
 export interface AccountLimits {
   caps: Record<ActionType, number>;
+  schedule?: AccountSchedule;
 }
 
 /**

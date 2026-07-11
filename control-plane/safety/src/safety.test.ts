@@ -14,12 +14,14 @@ import { transition, isTerminal } from './state-machine.js';
 import {
   DefaultSafetyGate,
   activeHoursDefer,
+  scheduleDefer,
   isoDate,
   type DailyUsageCounter,
   type RecentActionClock,
   type WeeklyInviteCounter,
   type Clock,
 } from './safety-gate.js';
+import type { AccountSchedule } from '@loa/shared';
 
 // Local noon (not UTC) so it sits inside the default 8am-8pm active-hours
 // window in any timezone the tests run in; the window is exercised separately.
@@ -520,5 +522,47 @@ describe('missing cap entry fails closed', () => {
     expect(gate.canAct(acct, action('react')).kind).toBe('deny');
     // Types that DO have an entry still work.
     expect(gate.canAct(acct, action('connect')).kind).toBe('allow');
+  });
+});
+
+describe('working schedule (hours + days)', () => {
+  // 2026-07-06 is a Monday, so 07-10 = Friday, 07-11 = Saturday, 07-12 = Sunday.
+  const at = (y: number, mo: number, d: number, h: number) => new Date(y, mo, d, h, 0, 0);
+  // Saturday off, everything else on; 8am-8pm.
+  const satOff: AccountSchedule = { hoursStart: 8, hoursEnd: 20, days: [0, 1, 2, 3, 4, 5] };
+
+  it('allows inside the window on an active day', () => {
+    expect(scheduleDefer(at(2026, 6, 12, 12), satOff)).toBeNull(); // Sunday noon (kept on)
+    expect(scheduleDefer(at(2026, 6, 10, 12), satOff)).toBeNull(); // Friday noon
+  });
+
+  it('defers a Saturday send to Sunday 8am (Saturday is a day off)', () => {
+    const d = scheduleDefer(at(2026, 6, 11, 12), satOff); // Saturday noon
+    expect(d).not.toBeNull();
+    expect(d!.getDay()).toBe(0); // Sunday
+    expect(d!.getDate()).toBe(12);
+    expect(d!.getHours()).toBe(8);
+  });
+
+  it('skips the day off: a Friday-evening send lands Sunday, not Saturday', () => {
+    const d = scheduleDefer(at(2026, 6, 10, 21), satOff); // Friday 9pm, past the window
+    expect(d!.getDate()).toBe(12); // Sunday, hopping over Saturday
+    expect(d!.getHours()).toBe(8);
+  });
+
+  it('defers an early active-day send to that day at the window start', () => {
+    const d = scheduleDefer(at(2026, 6, 10, 6), satOff); // Friday 6am
+    expect(d!.getDate()).toBe(10); // same day
+    expect(d!.getHours()).toBe(8);
+  });
+
+  it('the gate defers a Saturday action for an account scheduled Saturday-off', () => {
+    const satClock: Clock = { now: () => at(2026, 6, 11, 12) };
+    const gate = new DefaultSafetyGate({ allowMissingCounters: true, clock: satClock });
+    const caps = { connect: 20, message: 20, view_profile: 60, follow: 20, withdraw_invite: 50, react: 30 };
+    const acct = account({ state: 'Active', limits: { caps, schedule: satOff } });
+    const d = gate.canAct(acct, action('message'));
+    expect(d.kind).toBe('defer');
+    if (d.kind === 'defer') expect(d.until.getDay()).toBe(0); // Sunday
   });
 });

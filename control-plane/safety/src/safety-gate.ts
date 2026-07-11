@@ -4,6 +4,7 @@
 
 import type {
   Account,
+  AccountSchedule,
   Action,
   ActionType,
   DailyBudget,
@@ -12,6 +13,7 @@ import type {
   Signal,
   Transition,
 } from '@loa/shared';
+import { DEFAULT_SCHEDULE } from '@loa/shared';
 
 import { DEFAULT_CONFIG, type CapTable, type SafetyConfig } from './config.js';
 import { isTerminal, transition, type StateEvent } from './state-machine.js';
@@ -254,10 +256,11 @@ export class DefaultSafetyGate implements SafetyGate {
       }
     }
 
-    // Working-hours window: a self-running engine should not send overnight.
-    // Outside the local window, defer to the next window start (this is a
-    // coarser gate than the daily cap, so it runs before pacing).
-    const windowDefer = activeHoursDefer(this.clock.now(), this.cfg);
+    // Working schedule (hours + days): a self-running engine should not send
+    // overnight or on the account's days off. Outside the window, defer to the
+    // next active day's start (coarser than the daily cap, so it runs before
+    // pacing). The account's own schedule wins; absent one, the global config.
+    const windowDefer = scheduleDefer(this.clock.now(), effectiveSchedule(acct, this.cfg));
     if (windowDefer) {
       return { kind: 'defer', until: windowDefer };
     }
@@ -405,4 +408,51 @@ export function activeHoursDefer(now: Date, cfg: SafetyConfig): Date | null {
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate(), start, 0, 0, 0);
   if (hour >= end) next.setDate(next.getDate() + 1); // past today's window -> tomorrow.
   return next;
+}
+
+/** The schedule that applies to an account: its own when set, else the global
+ * config's hour window run every day. */
+export function effectiveSchedule(acct: Account, cfg: SafetyConfig): AccountSchedule {
+  return (
+    acct.limits?.schedule ?? {
+      hoursStart: cfg.activeHoursStart,
+      hoursEnd: cfg.activeHoursEnd,
+      days: DEFAULT_SCHEDULE.days,
+    }
+  );
+}
+
+/**
+ * When (if ever) `now` falls outside a working schedule: the next moment the
+ * account is allowed to act, or null if it may act right now. Combines the local
+ * hour window with the active-weekday set. A day not in `days` is a day off; an
+ * hour window with start >= end disables the hour gate (act any hour on an
+ * active day). Deferrals target the start of the next active day (or today's
+ * window start when we are early on an active day).
+ */
+export function scheduleDefer(now: Date, schedule: AccountSchedule): Date | null {
+  const { hoursStart: start, hoursEnd: end, days } = schedule;
+  const hourGateOn = start < end;
+  const startHour = hourGateOn ? start : 0;
+  const dayOn = days.includes(now.getDay());
+  const hourOn = !hourGateOn || (now.getHours() >= start && now.getHours() < end);
+  if (dayOn && hourOn) return null; // inside the window on an active day.
+
+  // Walk forward to the next active day's window start that is still in the
+  // future. i=0 covers "active day, before the window opens today".
+  for (let i = 0; i <= 7; i++) {
+    const cand = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + i,
+      startHour,
+      0,
+      0,
+      0,
+    );
+    if (cand.getTime() > now.getTime() && days.includes(cand.getDay())) return cand;
+  }
+  // days is empty (no active day): nothing may send. Park a week out; a later
+  // schedule edit re-opens it. (The UI prevents saving zero active days.)
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7, startHour, 0, 0, 0);
 }

@@ -258,12 +258,13 @@ api.post('/accounts/link', async (req, res, next) => {
   }
 });
 
-// Edit an account's automation limits (per-action daily caps). A bad cap value
-// surfaces as a 400; unknown account also 400s via LimitsError.
+// Edit an account's automation limits: per-action daily caps and the optional
+// working-hours/days schedule. A bad value surfaces as a 400; unknown account
+// also 400s via LimitsError.
 api.patch('/accounts/:id/limits', async (req, res, next) => {
   try {
-    const caps = (req.body ?? {}).caps;
-    const limits = await updateAccountLimits(req.params.id, caps);
+    const body = req.body ?? {};
+    const limits = await updateAccountLimits(req.params.id, body.caps, body.schedule);
     res.json({ ok: true, limits });
   } catch (err) {
     if (err instanceof LimitsError) {

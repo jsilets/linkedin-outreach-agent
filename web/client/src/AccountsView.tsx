@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react';
-import { ACTION_TYPES, api, type Account, type ActionType } from './api';
+import {
+  ACTION_TYPES,
+  api,
+  DEFAULT_SCHEDULE,
+  type Account,
+  type AccountSchedule,
+  type ActionType,
+} from './api';
 
 // Human-readable labels for the per-action daily caps.
 const CAP_LABELS: Record<ActionType, string> = {
@@ -10,6 +17,25 @@ const CAP_LABELS: Record<ActionType, string> = {
   withdraw_invite: 'Withdraw invites',
   react: 'Reactions',
 };
+
+// Weekday initials, index 0=Sunday … 6=Saturday (JS Date.getDay order).
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+// 24h clock as a readable label ("8 AM", "8 PM", "midnight").
+function hourLabel(h: number): string {
+  if (h === 0 || h === 24) return 'midnight';
+  if (h === 12) return 'noon';
+  return h < 12 ? `${h} AM` : `${h - 12} PM`;
+}
+
+function sameSchedule(a: AccountSchedule, b: AccountSchedule): boolean {
+  return (
+    a.hoursStart === b.hoursStart &&
+    a.hoursEnd === b.hoursEnd &&
+    a.days.length === b.days.length &&
+    a.days.every((d) => b.days.includes(d))
+  );
+}
 
 export function AccountsView() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -127,15 +153,22 @@ export function AccountsView() {
   );
 }
 
-// One account's identity plus its editable daily automation limits. Each cap is
-// a plain number field; Save persists the whole set through the SafetyGate.
+// One account's identity plus its editable automation limits: per-action daily
+// caps AND the working-hours/days window the SafetyGate enforces. One Save
+// persists both together.
 function AccountCard({ account }: { account: Account }) {
   const [caps, setCaps] = useState<Record<ActionType, number>>(account.limits.caps);
+  const [schedule, setSchedule] = useState<AccountSchedule>(
+    account.limits.schedule ?? DEFAULT_SCHEDULE,
+  );
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const dirty = ACTION_TYPES.some((t) => caps[t] !== account.limits.caps[t]);
+  const savedSchedule = account.limits.schedule ?? DEFAULT_SCHEDULE;
+  const dirty =
+    ACTION_TYPES.some((t) => caps[t] !== account.limits.caps[t]) ||
+    !sameSchedule(schedule, savedSchedule);
 
   function setCap(type: ActionType, value: string) {
     const n = value === '' ? 0 : Math.max(0, Math.floor(Number(value)));
@@ -143,13 +176,35 @@ function AccountCard({ account }: { account: Account }) {
     setSaved(false);
   }
 
+  function toggleDay(day: number) {
+    setSchedule((prev) => {
+      const on = prev.days.includes(day);
+      // Never let the last active day be removed — an empty set means "never
+      // send", which the server rejects anyway.
+      if (on && prev.days.length === 1) return prev;
+      const days = on ? prev.days.filter((d) => d !== day) : [...prev.days, day];
+      days.sort((a, b) => a - b);
+      return { ...prev, days };
+    });
+    setSaved(false);
+  }
+
+  function setHour(which: 'hoursStart' | 'hoursEnd', value: string) {
+    const n = Math.max(0, Math.min(24, Math.floor(Number(value) || 0)));
+    setSchedule((prev) => ({ ...prev, [which]: n }));
+    setSaved(false);
+  }
+
+  const hoursValid = schedule.hoursEnd > schedule.hoursStart;
+
   async function save() {
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
-      const limits = await api.updateAccountLimits(account.id, caps);
+      const limits = await api.updateAccountLimits(account.id, caps, schedule);
       setCaps(limits.caps);
+      if (limits.schedule) setSchedule(limits.schedule);
       setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed.');
@@ -164,6 +219,7 @@ function AccountCard({ account }: { account: Account }) {
         <strong>{account.handle}</strong>
         <span className="muted">{account.state}</span>
       </div>
+
       <div style={{ marginTop: 6 }}>
         <label className="muted">Daily limits (max actions per day, 0 disables)</label>
       </div>
@@ -188,8 +244,56 @@ function AccountCard({ account }: { account: Account }) {
           </div>
         ))}
       </div>
-      <div className="toolbar" style={{ marginTop: 10 }}>
-        <button className="btn" onClick={save} disabled={!dirty || saving}>
+
+      <div style={{ marginTop: 'var(--space-4)' }}>
+        <label className="muted">Working schedule (the account only acts inside this window)</label>
+      </div>
+      <div className="schedule">
+        <div className="schedule-days" role="group" aria-label="Working days">
+          {DAY_LABELS.map((label, day) => {
+            const on = schedule.days.includes(day);
+            return (
+              <button
+                key={day}
+                type="button"
+                className={`day-toggle${on ? ' on' : ''}`}
+                aria-pressed={on}
+                onClick={() => toggleDay(day)}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="schedule-hours">
+          <span className="muted">Active hours</span>
+          <input
+            type="number"
+            min={0}
+            max={23}
+            step={1}
+            value={schedule.hoursStart}
+            onChange={(e) => setHour('hoursStart', e.target.value)}
+            aria-label="Start hour"
+          />
+          <span className="muted">{hourLabel(schedule.hoursStart)}</span>
+          <span className="schedule-dash">to</span>
+          <input
+            type="number"
+            min={1}
+            max={24}
+            step={1}
+            value={schedule.hoursEnd}
+            onChange={(e) => setHour('hoursEnd', e.target.value)}
+            aria-label="End hour"
+          />
+          <span className="muted">{hourLabel(schedule.hoursEnd)}</span>
+        </div>
+        {!hoursValid && <div className="error">End hour must be after start hour.</div>}
+      </div>
+
+      <div className="toolbar" style={{ marginTop: 'var(--space-3)' }}>
+        <button className="btn" onClick={save} disabled={!dirty || !hoursValid || saving}>
           {saving ? 'Saving...' : 'Save limits'}
         </button>
         <span className="spacer" />
