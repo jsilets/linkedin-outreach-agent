@@ -11,7 +11,7 @@ The default executor is `LOA_EXECUTOR=fake`, which exercises the whole surface w
 The framework is an MCP server. It is the hands plus a server-side safety gate, not the brain. The brain can come from two places:
 
 - **Driven mode (primary):** an external agent, Claude Code or Codex running on your own model subscription, connects to the MCP server as the client. It calls the Observe tools, writes the copy itself, and calls the gated Act tools. No LLM key and no per-token cost on the framework side.
-- **Autonomous mode (fallback):** with no external agent attached, the framework runs its own loop and calls an LLM through a key. The internal LLM is optional and selected by which key is set (OpenRouter, else Anthropic, else an offline fake), and used only in this mode.
+- **Autonomous mode (partial):** the framework has an internal agent loop and an optional LLM, selected by which key is set (OpenRouter, else Anthropic, else an offline fake). Nothing schedules the loop yet — only the smoke scenario runs it — so today the internal LLM's real job is classifying replies for the reply-detection tick. Driving over MCP is how outreach actually runs.
 
 Both are safe the same way: the autonomy and approval gate is enforced server-side regardless of which brain drives. Under `supervised` autonomy every send and reply queues to human approval.
 
@@ -38,6 +38,8 @@ linkedin-outreach-agent/
     agent/          @loa/agent        LLM-driven decision loop
     safety/         @loa/safety       SafetyGate implementation and account state machine
   account-runner/   @loa/account-runner per-account browser runner (session, safety, executor, detector as folders)
+  runtime/          @loa/runtime      deployable composition root: wires store, gate, executor, ticks, and the MCP server
+  web/              @loa/web          campaign dashboard UI + JSON API (approval writes proxy to the runtime's MCP server)
   shared/           @loa/shared       domain types, enums, locked interfaces, Drizzle schema
   infra/            @loa/infra        deployment, migrations, proxy and vault wiring
 ```

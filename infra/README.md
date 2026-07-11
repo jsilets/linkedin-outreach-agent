@@ -6,9 +6,12 @@ migrations. No application logic lives here.
 
 ## The deployable unit
 
-The system runs as ONE process. `@loa/runtime` composes the control-plane brain
-and an in-process account executor, starts the MCP HTTP server on `MCP_PORT`,
-and serves `GET /healthz` -> `{"ok":true,...}`. So the whole deployment today is:
+The system runs as ONE container with two processes. `@loa/runtime` composes the
+control-plane brain and an in-process account executor and starts the MCP HTTP
+server on `MCP_PORT` (image default 8090); `@loa/web` serves the UI + JSON API on
+`PORT` (image default 8080), proxies `/mcp` to the runtime, and serves
+`GET /healthz` -> `{"ok":true,...}` as the public face. So the whole deployment
+today is:
 
 - one app container (this runtime), plus
 - one Postgres database.
@@ -28,7 +31,8 @@ does locally. With no `ANTHROPIC_API_KEY` the runtime uses a fake LLM; with no
 
 - `Dockerfile` — the single app image (builder runs `npm run build`; runtime
   stage installs Xvfb + a headful Chromium and runs `node runtime/dist/main.js`).
-- `entrypoint.sh` — starts Xvfb, exports `DISPLAY`, execs the runtime.
+- `entrypoint.sh` — starts Xvfb, exports `DISPLAY`, starts the runtime and the
+  web server, exits when either does.
 - `railway.json` — Railway config-as-code (Dockerfile build, `/healthz` check,
   pre-deploy migrate, restart policy).
 - `RAILWAY.md` — the Railway deploy runbook.
@@ -49,7 +53,7 @@ Requires Docker with Compose.
     docker compose run --rm migrate    # apply the schema once
     docker compose up app              # start the app
 
-Then hit health on `MCP_PORT` (default 8080):
+Then hit health on the web port (the image sets `PORT=8080`):
 
     curl localhost:8080/healthz        # -> {"ok":true,...}
 
@@ -67,8 +71,8 @@ Postgres, per-service volumes. Full runbook in `RAILWAY.md`. In short:
 2. Add the Postgres plugin (provides `DATABASE_URL`).
 3. Add the app service from this repo; Railway builds `infra/Dockerfile` per
    `railway.json`.
-4. Set secrets (`ANTHROPIC_API_KEY`, `COOKIE_VAULT_KEY`, `MCP_PORT`,
-   `LOA_LLM_MODEL`, and later `PROXY_*`).
+4. Set secrets (`ANTHROPIC_API_KEY`, `COOKIE_VAULT_KEY`, `LOA_LLM_MODEL`, and
+   later `PROXY_*`).
 5. Attach a volume at `/data/profile`.
 6. Migrations run automatically before each release (`preDeployCommand`).
 7. `railway up`, then check `/healthz`.
@@ -84,7 +88,7 @@ Cross-reference the repo-root `.env.example`.
 | `ANTHROPIC_API_KEY`| for real LLM    | LLM provider key. Unset -> fake LLM. |
 | `LOA_LLM_MODEL`    | no              | LLM model id (default `claude-fable-5`). |
 | `COOKIE_VAULT_KEY` | for real runs   | Symmetric key for the cookie vault. `openssl rand -base64 32`. |
-| `MCP_PORT`         | no              | Port the MCP server binds (default 8080). |
+| `MCP_PORT`         | no              | Port the MCP server binds (code default 8080; image sets 8090). Must differ from the web `PORT` (8080). |
 | `PROXY_URL`        | for real runs   | Sticky egress proxy URL. See `PROXY.md`. |
 | `PROXY_USERNAME`   | for real runs   | Proxy auth. |
 | `PROXY_PASSWORD`   | for real runs   | Proxy auth. |

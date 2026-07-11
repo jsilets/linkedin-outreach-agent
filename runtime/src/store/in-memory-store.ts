@@ -301,6 +301,7 @@ class InMemSequenceStore implements SequenceStorePort {
   constructor(
     private readonly targets: InMemTargetRepo,
     private readonly actions: InMemActionStore,
+    private readonly messages: InMemMessageRepo,
   ) {}
 
   async listCampaignSteps(campaignId: string): Promise<CampaignStepRow[]> {
@@ -403,6 +404,16 @@ class InMemSequenceStore implements SequenceStorePort {
     return [...this.progress.values()].filter((p) => p.state === 'awaiting_connection');
   }
 
+  async activeEnrollments(): Promise<TargetProgressRow[]> {
+    return [...this.progress.values()].filter(
+      (p) =>
+        p.state === 'in_progress' ||
+        p.state === 'pending' ||
+        p.state === 'awaiting_approval' ||
+        p.state === 'awaiting_connection',
+    );
+  }
+
   async advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void> {
     const cur = this.progress.get(id);
     if (!cur) throw new Error(`no target progress: ${id}`);
@@ -438,6 +449,13 @@ class InMemSequenceStore implements SequenceStorePort {
         errorMessage: reason,
         updatedAt: new Date(),
       });
+    }
+    // Cancel this target's undelivered outbound messages so an approved-but-unsent
+    // draft never fires after the person has left the funnel.
+    for (const [mid, m] of this.messages.rows) {
+      if (m.targetId !== targetId || m.direction !== 'outbound') continue;
+      if (m.status !== 'draft' && m.status !== 'approved') continue;
+      this.messages.rows.set(mid, { ...m, status: 'cancelled', updatedAt: new Date() });
     }
   }
 
@@ -554,7 +572,11 @@ export class InMemoryStore implements RuntimeStore {
   readonly message: InMemMessageRepo = new InMemMessageRepo();
   readonly approval: InMemApprovalRepo = new InMemApprovalRepo();
   readonly event: InMemEventRepo = new InMemEventRepo();
-  readonly sequence: InMemSequenceStore = new InMemSequenceStore(this.target, this.action);
+  readonly sequence: InMemSequenceStore = new InMemSequenceStore(
+    this.target,
+    this.action,
+    this.message,
+  );
   readonly leadList: InMemLeadListStore = new InMemLeadListStore();
   async listTargetsByCampaign(campaignId: string): Promise<TargetRow[]> {
     return [...this.target.rows.values()].filter((t) => t.campaignId === campaignId);

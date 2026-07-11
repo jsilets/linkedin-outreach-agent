@@ -24,7 +24,7 @@ import type {
   TargetProgressPatch,
 } from './index.js';
 
-const { campaignSteps, targetProgress, targets, actions, leadLists, leadListMembers } =
+const { campaignSteps, targetProgress, targets, actions, messages, leadLists, leadListMembers } =
   shared.schema;
 
 class PgAccountStore implements AccountStorePort {
@@ -186,6 +186,20 @@ class PgSequenceStore implements SequenceStorePort {
       .where(eq(targetProgress.state, 'awaiting_connection'));
   }
 
+  async activeEnrollments(): Promise<shared.TargetProgressRow[]> {
+    return this.db.handle
+      .select()
+      .from(targetProgress)
+      .where(
+        or(
+          eq(targetProgress.state, 'in_progress'),
+          eq(targetProgress.state, 'pending'),
+          eq(targetProgress.state, 'awaiting_approval'),
+          eq(targetProgress.state, 'awaiting_connection'),
+        ),
+      );
+  }
+
   async advanceTargetProgress(id: string, patch: TargetProgressPatch): Promise<void> {
     await this.db.handle
       .update(targetProgress)
@@ -206,6 +220,18 @@ class PgSequenceStore implements SequenceStorePort {
             eq(targetProgress.state, 'awaiting_approval'),
             eq(targetProgress.state, 'awaiting_connection'),
           ),
+        ),
+      );
+    // Cancel this target's undelivered outbound messages so an approved-but-unsent
+    // draft never fires after the person has left the funnel.
+    await this.db.handle
+      .update(messages)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(
+        and(
+          eq(messages.targetId, targetId),
+          eq(messages.direction, 'outbound'),
+          or(eq(messages.status, 'draft'), eq(messages.status, 'approved')),
         ),
       );
   }

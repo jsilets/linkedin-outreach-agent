@@ -4,7 +4,7 @@ import type {
   LocatorPort,
   PagePort,
 } from '@loa/account-runner';
-import type { PeopleQuery } from '@loa/mcp';
+import type { ObservePort, PeopleQuery } from '@loa/mcp';
 import {
   buildVoyagerSearchUrl,
   buildVoyagerGraphqlPath,
@@ -13,6 +13,9 @@ import {
   normalizeSearchResponse,
   normalizeInboxResponse,
   normalizeConnectionsResponse,
+  normalizeConversation,
+  normalizeProfileResponse,
+  profileIdFromUrn,
   profileUrnFromEntityUrn,
   ensureOnLinkedIn,
   LiveInboxReader,
@@ -628,5 +631,190 @@ describe('LiveConnectionsReader.readConnections', () => {
     // It hit the modern dash relationships connections endpoint with the decoration.
     expect(page.calls[0]).toContain('/voyager/api/relationships/dash/connections');
     expect(page.calls[0]).toContain('ConnectionListWithProfile');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Profile reader — profileView -> ProfileSummary.
+// ---------------------------------------------------------------------------
+
+describe('profileIdFromUrn', () => {
+  it('extracts the tail id from an fsd_profile urn', () => {
+    expect(profileIdFromUrn('urn:li:fsd_profile:ACoAAF9')).toBe('ACoAAF9');
+  });
+  it('passes a bare id / public identifier through unchanged', () => {
+    expect(profileIdFromUrn('dana-lopez')).toBe('dana-lopez');
+  });
+});
+
+describe('normalizeProfileResponse', () => {
+  it('reads a full profileView payload', () => {
+    const body = {
+      profile: {
+        firstName: 'Dana',
+        lastName: 'Lopez',
+        headline: 'VP Engineering at Acme',
+        publicIdentifier: 'dana-lopez',
+        occupation: 'ignored when headline present',
+      },
+    };
+    const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:ACoAAF9');
+    expect(p).toMatchObject({
+      linkedinUrn: 'urn:li:fsd_profile:ACoAAF9',
+      handle: 'dana-lopez',
+      name: 'Dana Lopez',
+      headline: 'VP Engineering at Acme',
+    });
+    // raw carries the profile slice for callers wanting more than the summary.
+    expect((p.raw as { firstName?: string }).firstName).toBe('Dana');
+  });
+
+  it('handles a sparse payload (missing name/headline/publicId)', () => {
+    const p = normalizeProfileResponse({ profile: {} }, 'urn:li:fsd_profile:ACoAAF9');
+    expect(p).toMatchObject({
+      linkedinUrn: 'urn:li:fsd_profile:ACoAAF9',
+      handle: 'ACoAAF9', // falls back to the urn tail when no publicIdentifier
+      name: '',
+      headline: '',
+    });
+  });
+
+  it('falls back to miniProfile fields when the top-level profile lacks them', () => {
+    const body = {
+      profile: {
+        miniProfile: {
+          firstName: 'Sam',
+          lastName: 'Reed',
+          occupation: 'Founder',
+          publicIdentifier: 'sam-reed',
+        },
+      },
+    };
+    const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:x');
+    expect(p).toMatchObject({ handle: 'sam-reed', name: 'Sam Reed', headline: 'Founder' });
+  });
+});
+
+describe('LiveObserve.getProfile', () => {
+  it('drives the profileView endpoint and normalizes the payload', async () => {
+    const page = new SearchFakePage([
+      { profile: { firstName: 'Dana', lastName: 'Lopez', headline: 'VP Eng', publicIdentifier: 'dana-lopez' } },
+    ]);
+    const p = await observeWith(page).getProfile('acct', 'urn:li:fsd_profile:ACoAAF9');
+    expect(p.name).toBe('Dana Lopez');
+    expect(page.calls[0]).toContain('/voyager/api/identity/profiles/ACoAAF9/profileView');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Conversation reader — one thread -> ConversationSummary (both directions).
+// ---------------------------------------------------------------------------
+
+/** A trimmed messaging payload holding a single thread with several events. */
+function conversationPayload(
+  threadUrn: string,
+  events: Array<{ sender: string; text: string; at: number; outbound?: boolean }>,
+) {
+  return {
+    elements: [
+      {
+        entityUrn: threadUrn,
+        events: events.map((e) => ({
+          deliveredAt: e.at,
+          ...(e.outbound ? { outbound: true } : {}),
+          from: { miniProfile: { entityUrn: `urn:li:fsd_profile:${e.sender}` } },
+          eventContent: { attributedBody: { text: e.text } },
+        })),
+      },
+    ],
+  };
+}
+
+describe('normalizeConversation (thread mapping)', () => {
+  it('maps both inbound and outbound events, oldest-first', () => {
+    const thread = 'urn:li:msg_conversation:t1';
+    const body = conversationPayload(thread, [
+      { sender: 'p1', text: 'hello back', at: 20 },
+      { sender: 'me', text: 'hi there', at: 10, outbound: true },
+    ]);
+    const summary = normalizeConversation(body, thread);
+    expect(summary).not.toBeNull();
+    expect(summary!.threadRef).toBe(thread);
+    expect(summary!.messages).toEqual([
+      { direction: 'outbound', body: 'hi there', at: new Date(10) },
+      { direction: 'inbound', body: 'hello back', at: new Date(20) },
+    ]);
+  });
+
+  it('returns null when the thread is not in the payload', () => {
+    const body = conversationPayload('urn:li:msg_conversation:other', [
+      { sender: 'p1', text: 'hi', at: 5 },
+    ]);
+    expect(normalizeConversation(body, 'urn:li:msg_conversation:missing')).toBeNull();
+  });
+});
+
+describe('LiveObserve.getConversation', () => {
+  it('maps a found thread (inbound + outbound) via the messaging endpoint', async () => {
+    const thread = 'urn:li:msg_conversation:t1';
+    const page = new SearchFakePage([
+      conversationPayload(thread, [
+        { sender: 'me', text: 'hi there', at: 10, outbound: true },
+        { sender: 'p1', text: 'hello back', at: 20 },
+      ]),
+    ]);
+    const summary = await observeWith(page).getConversation('acct', thread);
+    expect(summary.messages.map((m) => `${m.direction}:${m.body}`)).toEqual([
+      'outbound:hi there',
+      'inbound:hello back',
+    ]);
+    expect(page.calls[0]).toContain('/voyager/api/messaging/conversations');
+  });
+
+  it('throws naming the ref when the thread is not in the recent window', async () => {
+    const page = new SearchFakePage([
+      conversationPayload('urn:li:msg_conversation:other', [{ sender: 'p1', text: 'hi', at: 5 }]),
+    ]);
+    await expect(
+      observeWith(page).getConversation('acct', 'urn:li:msg_conversation:missing'),
+    ).rejects.toThrow(/urn:li:msg_conversation:missing/);
+  });
+
+  it('throws a specific pending-send error for a pending: ref (no voyager call)', async () => {
+    const page = new SearchFakePage([{}]);
+    await expect(
+      observeWith(page).getConversation('acct', 'pending:acct:target-9'),
+    ).rejects.toThrow(/pending .*placeholder|no LinkedIn thread exists yet/i);
+    // It short-circuits before touching the page.
+    expect(page.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real mode never fabricates: the unimplemented reads throw a loud error rather
+// than return canned data. compose() wires the observe port to `new LiveObserve`
+// whenever a real session exists (see compose.ts observe block), so these
+// rejections are exactly what an MCP caller hits in real mode. compose itself
+// needs a live browser session to build real mode, which is impractical to fake
+// in a unit test, so we assert the behavior on LiveObserve directly and rely on
+// reading the one-line compose wiring for the rest.
+// ---------------------------------------------------------------------------
+
+describe('LiveObserve unimplemented reads (real mode)', () => {
+  const observe: ObservePort = observeWith(new SearchFakePage([{}]));
+
+  it('getRecentPosts rejects with a do-not-personalize error', async () => {
+    await expect(observe.getRecentPosts('acct', 'urn:li:fsd_profile:x', 3)).rejects.toThrow(
+      /not implemented yet; do not personalize/i,
+    );
+  });
+
+  it('getPostEngagers and getCompanyJobs also reject (no canned data)', async () => {
+    await expect(observe.getPostEngagers('acct', 'urn:li:activity:1', 3)).rejects.toThrow(
+      /not implemented yet/i,
+    );
+    await expect(observe.getCompanyJobs('acct', 'urn:li:company:1', 3)).rejects.toThrow(
+      /not implemented yet/i,
+    );
   });
 });

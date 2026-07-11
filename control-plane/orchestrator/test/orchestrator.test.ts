@@ -81,7 +81,7 @@ describe('ApprovalService', () => {
     expect(w.eventRepo.rows.map((e) => e.kind)).toContain('approval_decided');
   });
 
-  it('reject writes an approval row + event and leaves the draft unsent', async () => {
+  it('reject writes an approval row + event and marks the draft rejected', async () => {
     const w = wire();
     const { pendingItemRef } = await w.approvals.enqueuePending({
       accountId: 'acct-1',
@@ -92,9 +92,11 @@ describe('ApprovalService', () => {
     });
     const decision = await w.approvals.reject(pendingItemRef, 'operator');
     expect(decision.decision).toBe('rejected');
-    expect(decision.message.status).toBe('draft');
+    // Terminal 'rejected': it leaves the pending queue and blocks a later approve.
+    expect(decision.message.status).toBe('rejected');
     expect(w.approvalRepo.rows[0]!.decision).toBe('rejected');
     expect(w.eventRepo.rows.map((e) => e.kind)).toContain('approval_decided');
+    await expect(w.approvals.approve(pendingItemRef, 'operator')).rejects.toThrow(/already decided/);
   });
 
   it('edit_and_approve changes the body then marks it approved', async () => {

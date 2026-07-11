@@ -40,6 +40,11 @@ type TargetRow = shared.TargetRow;
 /** How many recent threads to pull from each active account's inbox per tick. */
 const DEFAULT_INBOX_LIMIT = 20;
 
+/** How long a per-account inbox read is reused. Both the reply tick and the
+ * dispatch send-time probe read the same inbox; caching keeps a tick pass with
+ * several due sends from hammering the messaging endpoint. */
+const INBOX_CACHE_TTL_MS = 60_000;
+
 /** How one inbound message resolved in a tick. Returned for observability + tests. */
 export type ReplyOutcome =
   | { kind: 'routed'; targetId: string; threadUrn: string; intent: Intent }
@@ -121,6 +126,8 @@ export class ReplyTick {
   private readonly onOutcome?: (o: ReplyOutcome) => void;
   /** Messages already routed; keeps a reply from re-routing each tick. */
   private readonly seen = new Set<string>();
+  /** Per-account inbox read cache (short TTL), shared by runTick + probeTarget. */
+  private readonly inboxCache = new Map<string, { at: number; messages: InboundMessage[] }>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
 
@@ -149,7 +156,7 @@ export class ReplyTick {
 
     const outcomes: ReplyOutcome[] = [];
     for (const [accountId, enrolled] of byAccount) {
-      const inbound = await this.inbox.readInbox(accountId, this.inboxLimit);
+      const inbound = await this.readInboxCached(accountId);
       for (const msg of inbound) {
         const outcome = await this.handle(accountId, enrolled, msg);
         outcomes.push(outcome);
@@ -157,6 +164,41 @@ export class ReplyTick {
       }
     }
     return { accounts: byAccount.size, outcomes };
+  }
+
+  /** Read an account's inbox, reusing a recent read within the TTL. */
+  private async readInboxCached(accountId: string): Promise<InboundMessage[]> {
+    const cached = this.inboxCache.get(accountId);
+    const now = Date.now();
+    if (cached && now - cached.at < INBOX_CACHE_TTL_MS) return cached.messages;
+    const messages = await this.inbox.readInbox(accountId, this.inboxLimit);
+    this.inboxCache.set(accountId, { at: now, messages });
+    return messages;
+  }
+
+  /**
+   * Send-time reply probe for the dispatch tick: has this target sent an inbound
+   * message newer than `since`? Reads the same (cached) inbox as runTick, routes
+   * any new match through the SAME classify+route flow (which pulls the funnel and
+   * cancels outstanding messages), and returns true if any matching reply exists —
+   * routed now or already seen. The target's own campaign is read off the row, so
+   * no extra lookup is needed. A throw propagates so the caller can fail closed.
+   */
+  async probeTarget(accountId: string, target: TargetRow, since: Date | null): Promise<boolean> {
+    const inbound = await this.readInboxCached(accountId);
+    const matches = inbound.filter(
+      (m) =>
+        matchesTarget(m, target) &&
+        (since == null || m.receivedAt.getTime() > since.getTime()),
+    );
+    if (matches.length === 0) return false;
+    for (const msg of matches) {
+      const key = messageKey(msg);
+      if (this.seen.has(key)) continue;
+      this.seen.add(key);
+      await this.classifyAndRoute(target, target.campaignId, msg);
+    }
+    return true;
   }
 
   /** Map, dedupe, classify, and route one inbound message. */
@@ -186,14 +228,26 @@ export class ReplyTick {
     // above covers the restart case).
     this.seen.add(key);
 
+    const intent = await this.classifyAndRoute(target, progress.campaignId, msg);
+    return { kind: 'routed', targetId: target.id, threadUrn: msg.threadUrn, intent };
+  }
+
+  /** Classify one inbound message and route it (pulling the funnel + cancelling
+   * outstanding messages via the router). Shared by handle() and probeTarget().
+   * Returns the classified intent. */
+  private async classifyAndRoute(
+    target: TargetRow,
+    campaignId: string,
+    msg: InboundMessage,
+  ): Promise<Intent> {
     const intent = await this.llm.classifyReply(toClassifierMessage(msg, target));
     await this.router.route({
       targetId: target.id,
-      campaignId: progress.campaignId,
+      campaignId,
       intent,
       now: this.now(),
     });
-    return { kind: 'routed', targetId: target.id, threadUrn: msg.threadUrn, intent };
+    return intent;
   }
 
   /** Start a restartable interval loop. No-op if already started. */

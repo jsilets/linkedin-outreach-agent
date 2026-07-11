@@ -74,9 +74,8 @@ function inbound(over: Partial<InboundMessage> = {}): InboundMessage {
   };
 }
 
-const FAR_FUTURE = new Date(8640000000000000);
 function activeEnrollments(store: InMemoryStore) {
-  return { activeEnrollments: () => store.sequence.dueTargetProgress(FAR_FUTURE) };
+  return { activeEnrollments: () => store.sequence.activeEnrollments() };
 }
 
 describe('ReplyTick', () => {
@@ -128,6 +127,66 @@ describe('ReplyTick', () => {
     // Still enrolled and active — nothing was pulled out.
     const [after] = await store.sequence.listTargetProgress(CAMP);
     expect(after.state).toBe('in_progress');
+  });
+
+  it('routes a reply from a lead parked in awaiting_approval', async () => {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    // The lead is parked waiting on a human approval when it replies; the reply
+    // tick must still see it (activeEnrollments covers awaiting_approval) and pull
+    // it out of the funnel.
+    const prog = await store.sequence.getTargetProgressByTarget(TGT);
+    await store.sequence.advanceTargetProgress(prog!.id, { state: 'awaiting_approval' });
+    const orchestrator = makeOrchestratorServices(store, noopScheduler);
+
+    const tick = new ReplyTick({
+      inbox: new FakeInbox([inbound()]),
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: llm('Interested'),
+    });
+
+    const res = await tick.runTick();
+
+    expect(res.outcomes[0]).toMatchObject({ kind: 'routed', targetId: TGT });
+    expect((await store.sequence.getTargetProgressByTarget(TGT))!.state).toBe('replied');
+  });
+
+  it('probeTarget finds and routes a reply newer than since, and reports one exists', async () => {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    const orchestrator = makeOrchestratorServices(store, noopScheduler);
+    const target = (await store.target.findById(TGT))!;
+
+    const tick = new ReplyTick({
+      inbox: new FakeInbox([inbound({ receivedAt: new Date('2026-07-06T12:00:00Z') })]),
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: llm('Interested'),
+    });
+
+    // A reply newer than `since` -> true, and it is routed (funnel pulled).
+    const before = new Date('2026-07-06T11:00:00Z');
+    expect(await tick.probeTarget(ACCT, target, before)).toBe(true);
+    expect((await store.sequence.getTargetProgressByTarget(TGT))!.state).toBe('replied');
+
+    // A `since` after the reply -> no newer reply -> false.
+    const store2 = new InMemoryStore();
+    await seedEnrolledTarget(store2);
+    const orchestrator2 = makeOrchestratorServices(store2, noopScheduler);
+    const target2 = (await store2.target.findById(TGT))!;
+    const tick2 = new ReplyTick({
+      inbox: new FakeInbox([inbound({ receivedAt: new Date('2026-07-06T12:00:00Z') })]),
+      enrollments: activeEnrollments(store2),
+      targets: store2.target,
+      router: orchestrator2.replyRouter,
+      llm: llm('Interested'),
+    });
+    const after = new Date('2026-07-06T13:00:00Z');
+    expect(await tick2.probeTarget(ACCT, target2, after)).toBe(false);
+    expect((await store2.sequence.getTargetProgressByTarget(TGT))!.state).toBe('in_progress');
   });
 
   it('routes a message once and marks a repeat of it as already-seen', async () => {

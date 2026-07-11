@@ -57,11 +57,20 @@ export const messageDirectionEnum = pgEnum('message_direction', [
   'outbound',
 ]);
 
-// 'draft'    — proposed, awaiting human approval (the pending queue).
-// 'approved' — a human approved it; the dispatch tick sends it at the next open
-//              working-hours window (so an off-hours approval needs no re-approval).
-// 'sent'     — actually dispatched to LinkedIn.
-export const messageStatusEnum = pgEnum('message_status', ['draft', 'approved', 'sent']);
+// 'draft'     — proposed, awaiting human approval (the pending queue).
+// 'approved'  — a human approved it; the dispatch tick sends it at the next open
+//               working-hours window (so an off-hours approval needs no re-approval).
+// 'rejected'  — the operator declined the draft. Terminal; never sent.
+// 'cancelled' — the system killed a draft/approved message because the person
+//               replied or was suppressed. Terminal; never sent.
+// 'sent'      — actually dispatched to LinkedIn.
+export const messageStatusEnum = pgEnum('message_status', [
+  'draft',
+  'approved',
+  'rejected',
+  'cancelled',
+  'sent',
+]);
 
 export const targetStageEnum = pgEnum('target_stage', [
   'sourced',

@@ -9,10 +9,9 @@
 # single service, and the vault must be shared.
 #
 # RAM expectation: the runtime alone is small (a few hundred MB). Budget ~2GB
-# once real browser runs land, since one headful Chromium plus the runtime fits
-# there. Real browser runs are a P0 item and are not exercised yet, but the
-# image is built to be structurally correct for them: Xvfb plus a headful
-# Chromium are installed and the entrypoint starts the virtual display.
+# with LOA_EXECUTOR=real, since one headful Chromium plus the runtime fits
+# there. Xvfb plus a headful Chromium are installed and the entrypoint starts
+# the virtual display, so real browser runs work out of the box.
 #
 # Nothing sensitive is baked in. DATABASE_URL, ANTHROPIC_API_KEY, LOA_LLM_MODEL,
 # COOKIE_VAULT_KEY, MCP_PORT and the PROXY_* vars all arrive at runtime from the

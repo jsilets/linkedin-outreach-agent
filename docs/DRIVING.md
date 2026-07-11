@@ -27,14 +27,15 @@ Observe, Act, and Campaign tools. A human operator connects with the privileged
 context and gets the Approval and Safety families. Both talk to the same server,
 so the same autonomy gate governs both.
 
-### Autonomous mode (fallback)
+### Autonomous mode (partial)
 
-When no external agent is attached, the framework runs its own internal loop and
-calls an LLM through a key. The provider is optional and selected server-side by
-which key is present: `OPENROUTER_API_KEY` uses OpenRouter (any model in
-`vendor/model` form via `OPENROUTER_MODEL`), else `ANTHROPIC_API_KEY` uses
-Claude, else the runtime falls back to a deterministic fake. Use this only when
-you do not want to keep a driving session attached.
+The framework has an internal agent loop and an optional LLM, selected
+server-side by which key is present: `OPENROUTER_API_KEY` uses OpenRouter (any
+model in `vendor/model` form via `OPENROUTER_MODEL`), else `ANTHROPIC_API_KEY`
+uses Claude, else the runtime falls back to a deterministic fake. Nothing
+schedules the loop yet — only the smoke scenario runs it — so today the internal
+LLM's real job is classifying replies for the reply-detection tick. Treat driven
+mode as the way outreach runs.
 
 Both modes are safe the same way: the autonomy and approval gate is enforced
 server-side regardless of which brain drives. Under the `supervised` autonomy
@@ -63,15 +64,21 @@ one-time warning, so you can run without secrets on your own machine.
 
 A common setup is two MCP client connections to the same URL: one with the agent
 token for the driver, one with the operator token for approvals. The MCP
-endpoint is `POST /mcp`; health is `GET /healthz` on `MCP_PORT` (default 8080)
-and stays open for platform health checks.
+endpoint is `POST /mcp`; `GET /healthz` stays open for platform health checks.
+Locally the MCP server binds `MCP_PORT` (code default 8080); in the deployed
+container it binds `MCP_PORT=8090` internally and the web server proxies `/mcp`
+on the public port (`PORT`, 8080).
 
 ## Which tools each role uses
 
 Agent (driver, non-privileged):
 
 - Observe: `get_profile`, `get_recent_posts`, `get_post_engagers`,
-  `get_company_jobs`, `get_conversation`, `search_people`, `source_people`.
+  `get_company_jobs`, `get_conversation`, `search_people`, `source_people`. In
+  real executor mode the live reads are `get_profile`, `get_conversation`,
+  `search_people`, and `list_recent_connections`; `get_recent_posts`,
+  `get_post_engagers`, and `get_company_jobs` have no live backend yet and return
+  an error, so do not personalize from them until they are implemented.
 - Act (routed through the gate): `send_connection`, `send_message`,
   `view_profile`, `follow`, `withdraw_invite`, `react_to_post`.
 - Campaign and state: `create_campaign`, `add_targets`,
@@ -98,7 +105,9 @@ budget. This is the same loop the example driver in `examples/driver/` encodes.
 2. Read the queue. Call `get_queue` for the account to see what is already
    pending, so you do not re-enqueue the same target.
 3. For each target within budget:
-   - `get_profile` and `get_recent_posts` to gather signal.
+   - `get_profile` and `get_recent_posts` to gather signal. In real mode
+     `get_profile` is live but `get_recent_posts` is not yet, so it errors; lean
+     on `get_profile` and your own research until posts have a live backend.
    - Optional enrichment: run the agent's own web search or research, then feed
      the result in with `attach_external_context` (see below). The framework
      does not discover or enrich prospects itself.

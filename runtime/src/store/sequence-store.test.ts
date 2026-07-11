@@ -88,6 +88,38 @@ describe('InMemoryStore sequence surface', () => {
     expect(await store.sequence.listTargetProgress(CAMP)).toHaveLength(0);
   });
 
+  it('pullTargetFromFunnel cancels the target\'s undelivered outbound messages', async () => {
+    await store.sequence.enrollTarget(CAMP, 'tgt-1', ACCT);
+    const draft = await store.message.create({ accountId: ACCT, targetId: 'tgt-1', direction: 'outbound', body: 'd', threadRef: 't', status: 'draft' });
+    const approved = await store.message.create({ accountId: ACCT, targetId: 'tgt-1', direction: 'outbound', body: 'a', threadRef: 't', status: 'approved' });
+    const sent = await store.message.create({ accountId: ACCT, targetId: 'tgt-1', direction: 'outbound', body: 's', threadRef: 't', status: 'sent' });
+    const inbound = await store.message.create({ accountId: ACCT, targetId: 'tgt-1', direction: 'inbound', body: 'i', threadRef: 't', status: 'draft' });
+    const other = await store.message.create({ accountId: ACCT, targetId: 'tgt-2', direction: 'outbound', body: 'o', threadRef: 't2', status: 'draft' });
+
+    await store.sequence.pullTargetFromFunnel('tgt-1', 'reply');
+
+    expect((await store.message.findById(draft.id))!.status).toBe('cancelled');
+    expect((await store.message.findById(approved.id))!.status).toBe('cancelled');
+    expect((await store.message.findById(sent.id))!.status).toBe('sent'); // already delivered
+    expect((await store.message.findById(inbound.id))!.status).toBe('draft'); // inbound untouched
+    expect((await store.message.findById(other.id))!.status).toBe('draft'); // another target untouched
+  });
+
+  it('activeEnrollments returns live cursors (including awaiting_approval) and drops terminal ones', async () => {
+    const inProg = await store.sequence.enrollTarget(CAMP, 'tgt-a', ACCT);
+    const parked = await store.sequence.enrollTarget(CAMP, 'tgt-b', ACCT);
+    await store.sequence.advanceTargetProgress(parked.id, { state: 'awaiting_approval' });
+    const awaitingConn = await store.sequence.enrollTarget(CAMP, 'tgt-c', ACCT);
+    await store.sequence.advanceTargetProgress(awaitingConn.id, { state: 'awaiting_connection' });
+    const done = await store.sequence.enrollTarget(CAMP, 'tgt-d', ACCT);
+    await store.sequence.advanceTargetProgress(done.id, { state: 'completed' });
+    const replied = await store.sequence.enrollTarget(CAMP, 'tgt-e', ACCT);
+    await store.sequence.advanceTargetProgress(replied.id, { state: 'replied' });
+
+    const active = await store.sequence.activeEnrollments();
+    expect(active.map((p) => p.id).sort()).toEqual([inProg.id, parked.id, awaitingConn.id].sort());
+  });
+
   it('campaignCounts aggregates target stages and progress states', async () => {
     await store.target.create({ campaignId: CAMP, prospectRef: 'a', linkedinUrn: 'u:a', externalContext: {}, stage: 'sourced' });
     await store.target.create({ campaignId: CAMP, prospectRef: 'b', linkedinUrn: 'u:b', externalContext: {}, stage: 'invited' });

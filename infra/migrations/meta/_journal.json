@@ -71,6 +71,13 @@
       "when": 1783784832577,
       "tag": "0009_low_harrier",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1783787908651,
+      "tag": "0010_send_safety_statuses",
+      "breakpoints": true
     }
   ]
 }

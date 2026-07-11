@@ -11,7 +11,7 @@ doc.
 ## Cadence: respect the safety model
 
 Daily caps are small, on the order of ~20 actions per account per day, and the
-account has warm-up and cooldown states. Do not run a tight loop. A few wakes per
+account has throttled and cooldown states. Do not run a tight loop. A few wakes per
 working day is the right shape: each wake does a little work, then stops.
 
 A reasonable cron cadence is four wakes on weekday mornings and early afternoon,
@@ -37,7 +37,10 @@ budget:
 3. For a small number of targets within remaining budget: `get_profile` and
    `get_recent_posts`, optional web research to `attach_external_context`, draft
    with the agent's own model, then `send_connection` or `send_message`. Under
-   `supervised` these enqueue.
+   `supervised` these enqueue. Note on real executor mode: `get_profile`,
+   `get_conversation`, `search_people`, and `list_recent_connections` read live;
+   `get_recent_posts`, `get_post_engagers`, and `get_company_jobs` have no live
+   backend yet and return an error, so do not personalize from them.
 4. Optionally, in the operator role, `list_pending` then `approve` /
    `edit_and_approve` / `reject`.
 5. `get_metrics` for a one-line summary, then stop.

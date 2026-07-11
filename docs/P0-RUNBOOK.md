@@ -41,12 +41,13 @@ Follow `infra/RAILWAY.md` in full. In short:
 3. Add the app service from this repo; Railway builds `infra/Dockerfile` per
    `infra/railway.json`.
 4. Set variables. Reference the Postgres `DATABASE_URL`, and set
-   `COOKIE_VAULT_KEY`, `MCP_PORT=8080`. Leave `ANTHROPIC_API_KEY` unset for a
+   `COOKIE_VAULT_KEY`. Leave the ports at the image defaults (web on `PORT=8080`,
+   MCP internal on `MCP_PORT=8090`). Leave `ANTHROPIC_API_KEY` unset for a
    driven run. Add the `PROXY_*` vars for the one account.
 5. Attach a volume at `/data/profile` so the browser profile survives restarts.
 6. Migrations run automatically before each release (`preDeployCommand`).
-7. `railway up`, then check `GET /healthz` returns `{"ok":true,...}` on
-   `MCP_PORT`.
+7. `railway up`, then check `GET /healthz` on the service domain returns
+   `{"ok":true,...}`.
 
 At this point you have a live MCP endpoint at `https://YOUR-APP.../mcp` and a
 green health check. The tables `accounts`, `campaigns`, and `actions` exist.
@@ -54,13 +55,15 @@ green health check. The tables `accounts`, `campaigns`, and `actions` exist.
 ## 3. Assisted first login to seed the cookie vault
 
 The account needs a real logged-in session stored in the encrypted vault before
-any outreach. This is a hands-on, human-in-the-loop step: log in as the account
-through the proxied browser context so LinkedIn sees a normal login from the
-account's sticky IP, and let the runner persist the session into the vault
-(`COOKIE_VAULT_KEY`) on the `/data/profile` volume. Expect to clear a
-verification email or SMS on first login. This login path is P0 and not yet
-automated end to end, so do it attentively and confirm the session persisted
-before moving on.
+any outreach. Log in as the account in a browser behind the account's sticky
+proxy IP (expect to clear a verification email or SMS on first login), then
+seal the session cookies into the vault either way:
+
+- Web UI: Accounts tab, paste the `li_at` and `JSESSIONID` cookie values.
+- CLI: `npm run link-account` from the repo root.
+
+Both write `${LOA_VAULT_DIR}/{accountId}.vault.json` encrypted with
+`COOKIE_VAULT_KEY`. Confirm the vault file exists before moving on.
 
 ## 4. Proxy leak test
 
@@ -120,6 +123,10 @@ Now run a real cycle, supervised, approving every send by hand.
    run one cycle: `get_account_state`, `get_queue`, then per target
    `get_profile` / `get_recent_posts`, optional `attach_external_context`, draft,
    and `send_connection`. Each send comes back `queued` with a `pendingId`.
+   Note on real executor mode: `get_profile`, `get_conversation`,
+   `search_people`, and `list_recent_connections` read live;
+   `get_recent_posts`, `get_post_engagers`, and `get_company_jobs` have no live
+   backend yet and return an error, so do not personalize from them.
 4. Approve by hand from the operator connection: `list_pending`, then read each
    draft and `approve`, `edit_and_approve`, or `reject`. Only approved items
    dispatch. Watch the first sends land on LinkedIn.
