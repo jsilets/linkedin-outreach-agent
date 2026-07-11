@@ -30,3 +30,36 @@ export function funnelLabel(step: Step): string {
   if (step.delaySeconds > 0) return `${base} (+${formatDelay(step.delaySeconds)})`;
   return base;
 }
+
+// Relative time from now, e.g. "in 2h", "3d ago", "just now". Future = "in X",
+// past = "X ago". Null-safe for missing timestamps.
+export function formatRelative(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '—';
+  const deltaSec = Math.round((then - Date.now()) / 1000);
+  const future = deltaSec >= 0;
+  const abs = Math.abs(deltaSec);
+  if (abs < 45) return 'just now';
+  const mins = Math.round(abs / 60);
+  const hours = Math.round(abs / 3600);
+  const days = Math.round(abs / 86400);
+  let mag: string;
+  if (abs < 3600) mag = `${mins}m`;
+  else if (abs < 86400) mag = `${hours}h`;
+  else mag = `${days}d`;
+  return future ? `in ${mag}` : `${mag} ago`;
+}
+
+// Absolute short timestamp for hover/detail, e.g. "Jul 10, 21:34".
+export function formatStamp(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}

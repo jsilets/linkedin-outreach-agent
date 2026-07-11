@@ -117,7 +117,7 @@ export function AccountsView() {
             No accounts linked yet.
           </p>
         )}
-        <div className="grid" style={{ gap: 16, marginTop: 10 }}>
+        <div className="grid" style={{ gap: 0, marginTop: 'var(--space-2)' }}>
           {accounts.map((a) => (
             <AccountCard key={a.id} account={a} />
           ))}
@@ -159,8 +159,8 @@ function AccountCard({ account }: { account: Account }) {
   }
 
   return (
-    <div style={{ border: '1px solid var(--border, #333)', borderRadius: 8, padding: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+    <div className="subrow">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
         <strong>{account.handle}</strong>
         <span className="muted">{account.state}</span>
       </div>

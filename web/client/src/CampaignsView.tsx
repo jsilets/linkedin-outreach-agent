@@ -1,32 +1,23 @@
 import { useEffect, useState } from 'react';
-import { api, type Account, type CampaignDetail, type CampaignSummary } from './api';
+import {
+  api,
+  type Account,
+  type CampaignDetail,
+  type CampaignSummary,
+  type Lead,
+  type Pending,
+} from './api';
+import { ApprovalsPanel } from './ApprovalsPanel';
 import { FlowEditor } from './FlowEditor';
+import { FunnelBar, MiniFunnel } from './FunnelBar';
+import { LeadsTable } from './LeadsTable';
+import { statusLabel, statusVar } from './status';
 
-const STAGE_ORDER = [
-  'sourced',
-  'queued',
-  'invited',
-  'connected',
-  'in_conversation',
-  'replied',
-  'won',
-  'lost',
-];
-
-function StagePills({ byStage }: { byStage: Record<string, number> }) {
-  const entries = Object.entries(byStage).sort(
-    (a, b) => STAGE_ORDER.indexOf(a[0]) - STAGE_ORDER.indexOf(b[0]),
-  );
-  if (entries.length === 0) return <span className="muted">no targets</span>;
+function StatusBadge({ status }: { status: string }) {
   return (
-    <div className="stages">
-      {entries.map(([stage, n]) => (
-        <span className="pill" key={stage}>
-          {stage.replace(/_/g, ' ')}
-          <span className="n">{n}</span>
-        </span>
-      ))}
-    </div>
+    <span className="status-badge" style={{ ['--c' as string]: statusVar(status) }}>
+      {statusLabel(status)}
+    </span>
   );
 }
 
@@ -53,13 +44,21 @@ export function CampaignsView() {
     <div className="grid">
       {list.map((c) => (
         <div className="card campaign-row" key={c.id} onClick={() => setSelected(c.id)}>
-          <div>
-            <h3>{c.goal}</h3>
-            <div className="muted">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <h3 style={{ margin: 0 }}>{c.goal}</h3>
+              <StatusBadge status={c.status} />
+              {c.pendingCount > 0 && (
+                <span className="chip" style={{ ['--c' as string]: statusVar('awaiting_approval') }}>
+                  {c.pendingCount} to approve
+                </span>
+              )}
+            </div>
+            <div className="muted" style={{ marginBottom: 8 }}>
               {c.owner} · {c.autonomyLevel} · {c.targetCount} targets
             </div>
+            <MiniFunnel counts={c.byProgressState} />
           </div>
-          <StagePills byStage={c.byStage} />
         </div>
       ))}
     </div>
@@ -68,6 +67,9 @@ export function CampaignsView() {
 
 function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [pending, setPending] = useState<Pending[]>([]);
+  const [filter, setFilter] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState('');
@@ -76,13 +78,18 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
 
   function load() {
     api.campaign(id).then(setDetail).catch((e) => setError(String(e)));
+    api.leads(id).then(setLeads).catch(() => {});
+    api.pending(id).then(setPending).catch(() => {});
   }
   useEffect(() => {
     load();
-    api.accounts().then((a) => {
-      setAccounts(a);
-      if (a[0]) setAccountId((prev) => prev || a[0]!.id);
-    }).catch(() => {});
+    api
+      .accounts()
+      .then((a) => {
+        setAccounts(a);
+        if (a[0]) setAccountId((prev) => prev || a[0]!.id);
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -92,13 +99,13 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
     try {
       const res = await api.launchCampaign(id, accountId);
       setLaunchMsg(
-        `Launched: enrolled ${res.enrolled} ${res.enrolled === 1 ? 'target' : 'targets'}` +
-          (res.alreadyEnrolled ? ` (${res.alreadyEnrolled} already enrolled)` : '') +
+        `Enrolled ${res.enrolled} ${res.enrolled === 1 ? 'lead' : 'leads'}` +
+          (res.alreadyEnrolled ? ` (${res.alreadyEnrolled} already flowing)` : '') +
           '. The dispatch loop will start stepping them.',
       );
       load();
     } catch (e) {
-      setLaunchMsg(e instanceof Error ? e.message : 'Launch failed.');
+      setLaunchMsg(e instanceof Error ? e.message : 'Enroll failed.');
     } finally {
       setLaunching(false);
     }
@@ -107,29 +114,51 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
   if (error) return <div className="error">{error}</div>;
   if (!detail) return <p className="muted">Loading...</p>;
 
-  const launched = Object.values(detail.byProgressState).reduce((a, b) => a + b, 0);
+  const unenrolled = Math.max(0, detail.targetCount - detail.enrolledCount);
 
   return (
     <div>
       <span className="back" onClick={onBack}>
         &larr; All campaigns
       </span>
+
       <div className="card" style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: '0 0 6px' }}>{detail.goal}</h2>
-        <div className="muted" style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+          <h2 style={{ margin: 0 }}>{detail.goal}</h2>
+          <StatusBadge status={detail.status} />
+        </div>
+        <div className="muted" style={{ marginBottom: 16 }}>
           {detail.owner} · {detail.autonomyLevel} · strategy: {detail.messageStrategy}
         </div>
-        <div className="stages" style={{ marginBottom: 8 }}>
-          <StagePills byStage={detail.byStage} />
+        <FunnelBar counts={detail.byProgressState} selected={filter} onSelect={setFilter} />
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          {filter
+            ? `Showing ${statusLabel(filter)} — click the segment again to clear.`
+            : 'Click a segment to see exactly who is there.'}
         </div>
-        <div className="stages">
-          {Object.entries(detail.byProgressState).map(([state, n]) => (
-            <span className="pill" key={state}>
-              {state.replace(/_/g, ' ')}
-              <span className="n">{n}</span>
+      </div>
+
+      {detail.pendingCount > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="section-head">
+            <span
+              className="status-badge"
+              style={{ ['--c' as string]: statusVar('awaiting_approval') }}
+            >
+              Needs your approval
             </span>
-          ))}
+            <span className="count-tag">{pending.length}</span>
+          </div>
+          <ApprovalsPanel pending={pending} onChange={load} />
         </div>
+      )}
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="section-head">
+          <h3>Leads</h3>
+          <span className="count-tag">{detail.enrolledCount} enrolled</span>
+        </div>
+        <LeadsTable leads={leads} filter={filter} />
       </div>
 
       <div className="card">
@@ -138,35 +167,87 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <h3 style={{ marginTop: 0 }}>Launch</h3>
-        <div className="muted" style={{ marginBottom: 12 }}>
-          Enroll this campaign&apos;s targets under a linked account. Save the funnel above first;
-          the dispatch loop then steps each lead through it. {launched > 0 ? `${launched} already enrolled.` : ''}
-        </div>
-        <div className="toolbar" style={{ margin: 0 }}>
-          {accounts.length === 0 ? (
-            <span className="muted">No linked accounts. Link one in the Accounts tab first.</span>
-          ) : (
-            <>
-              <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-                {accounts.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    {a.handle} ({a.state})
-                  </option>
-                ))}
-              </select>
-              <button className="btn" onClick={launch} disabled={!accountId || launching}>
-                {launching ? 'Launching...' : 'Launch campaign'}
-              </button>
-            </>
-          )}
-        </div>
+        {detail.status === 'draft' ? (
+          <>
+            <h3 style={{ marginTop: 0 }}>Launch</h3>
+            <div className="muted" style={{ marginBottom: 12 }}>
+              Enroll this campaign&apos;s targets under a linked account. Save the flow above first;
+              the dispatch loop then steps each lead through it.
+            </div>
+            <LaunchControls
+              accounts={accounts}
+              accountId={accountId}
+              setAccountId={setAccountId}
+              launching={launching}
+              onLaunch={launch}
+              label="Launch campaign"
+            />
+          </>
+        ) : (
+          <>
+            <h3 style={{ marginTop: 0 }}>Enrollment</h3>
+            <div className="muted" style={{ marginBottom: 12 }}>
+              {detail.enrolledCount} {detail.enrolledCount === 1 ? 'lead is' : 'leads are'} enrolled and
+              stepping through the flow automatically.
+              {unenrolled > 0
+                ? ` ${unenrolled} target${unenrolled === 1 ? '' : 's'} not yet enrolled.`
+                : ' Every target is enrolled.'}
+            </div>
+            {unenrolled > 0 && (
+              <LaunchControls
+                accounts={accounts}
+                accountId={accountId}
+                setAccountId={setAccountId}
+                launching={launching}
+                onLaunch={launch}
+                label={`Enroll ${unenrolled} new target${unenrolled === 1 ? '' : 's'}`}
+              />
+            )}
+          </>
+        )}
         {launchMsg && (
-          <div className={launchMsg.startsWith('Launched') ? 'saved' : 'error'} style={{ marginTop: 10 }}>
+          <div
+            className={launchMsg.startsWith('Enrolled') ? 'saved' : 'error'}
+            style={{ marginTop: 10 }}
+          >
             {launchMsg}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function LaunchControls({
+  accounts,
+  accountId,
+  setAccountId,
+  launching,
+  onLaunch,
+  label,
+}: {
+  accounts: Account[];
+  accountId: string;
+  setAccountId: (id: string) => void;
+  launching: boolean;
+  onLaunch: () => void;
+  label: string;
+}) {
+  if (accounts.length === 0) {
+    return <span className="muted">No linked accounts. Link one in the Accounts tab first.</span>;
+  }
+  return (
+    <div className="toolbar" style={{ margin: 0 }}>
+      <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
+        {accounts.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.handle} ({a.state})
+          </option>
+        ))}
+      </select>
+      <button className="btn" onClick={onLaunch} disabled={!accountId || launching}>
+        {launching ? 'Working…' : label}
+      </button>
     </div>
   );
 }

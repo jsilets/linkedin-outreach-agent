@@ -3,6 +3,7 @@ import { AccountsView } from './AccountsView';
 import { CampaignsView } from './CampaignsView';
 import { ListsView } from './ListsView';
 import { MetricsView } from './MetricsView';
+import { ThemeSwitcher } from './ThemeSwitcher';
 
 type Tab = 'campaigns' | 'metrics' | 'accounts' | 'lists';
 
@@ -20,7 +21,7 @@ export function App() {
             Campaigns
           </button>
           <button className={tab === 'metrics' ? 'active' : ''} onClick={() => setTab('metrics')}>
-            Volume
+            Activity
           </button>
           <button className={tab === 'lists' ? 'active' : ''} onClick={() => setTab('lists')}>
             Lists
@@ -29,6 +30,7 @@ export function App() {
             Accounts
           </button>
         </nav>
+        <ThemeSwitcher />
       </header>
       {tab === 'campaigns' && <CampaignsView />}
       {tab === 'metrics' && <MetricsView />}

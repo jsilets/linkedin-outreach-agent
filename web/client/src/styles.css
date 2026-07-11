@@ -1,15 +1,70 @@
+/* Theme token sets: the editorial language in light and dark, each under
+   :root[data-theme='NAME']. The bare :root below mirrors the light (base) values
+   so the very first paint (before JS sets data-theme) is styled. */
+@import './themes/editorial.css';
+@import './themes/editorial-dark.css';
+
+/* ── Shared tokens (theme-independent) + light (base) first-paint mirror ────── */
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --panel-2: #1e222b;
-  --border: #2a2f3a;
-  --text: #e6e9ef;
-  --muted: #9aa3b2;
-  --accent: #4f8cff;
-  --accent-soft: #24345a;
-  --danger: #ff6b6b;
-  --ok: #46c093;
-  --radius: 10px;
+  /* Type ramp (fixed rem, root 16px). Themes may override --text-h1/--text-h2. */
+  --text-caption: 0.75rem;
+  --text-meta: 0.8125rem;
+  --text-body: 0.9375rem;
+  --text-sub: 1.0625rem;
+  --text-h2: 1.5rem;
+  --text-h1: 2.125rem;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur: 180ms;
+
+  /* Editorial (light) mirror — keeps first paint styled as the default light
+     theme before data-theme is applied. */
+  --surface-0: #f6f7f8;
+  --surface-1: #ffffff;
+  --surface-2: #eef0f2;
+  --surface-3: #e6e9ec;
+  --ink-1: #1c2127;
+  --ink-2: #4c545e;
+  --ink-3: #7c8590;
+  --line: #e2e6ea;
+  --line-strong: #cfd5db;
+  --accent: #1f6b5c;
+  --accent-ink: #ffffff;
+  --focus: #1f6b5c;
+  --st-approval: #b5771c;
+  --st-active: #2f6bb0;
+  --st-waiting: #3a8391;
+  --st-replied: #6f5aa6;
+  --st-done: #2f8266;
+  --st-failed: #b4483f;
+  --st-idle: #7c8590;
+  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, Menlo, monospace;
+  --radius-1: 8px;
+  --radius-2: 12px;
+  --shadow-1: 0 1px 2px rgba(20, 24, 28, 0.06), 0 2px 8px rgba(20, 24, 28, 0.05);
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }
 
 * {
@@ -18,141 +73,201 @@
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--surface-0);
+  color: var(--ink-1);
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  color: var(--ink-1);
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: var(--text-h1);
+  font-weight: var(--weight-semibold);
+}
+h2 {
+  font-size: var(--text-h2);
+  font-weight: var(--weight-semibold);
+}
+h3 {
+  font-size: var(--text-sub);
+  font-weight: var(--weight-semibold);
 }
 
 a {
   color: var(--accent);
   text-decoration: none;
 }
+a:hover {
+  text-decoration: underline;
+}
 
+/* One visible keyboard focus treatment on every interactive element. */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-1);
+}
+
+/* ── Page shell ───────────────────────────────────────────────────────────── */
 .app {
   max-width: 1040px;
   margin: 0 auto;
-  padding: 24px 20px 64px;
+  padding: var(--space-6) var(--space-5) var(--space-16);
 }
 
 header.top {
   display: flex;
-  align-items: baseline;
-  gap: 20px;
-  margin-bottom: 24px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  margin-bottom: var(--space-6);
 }
 
 header.top h1 {
-  font-size: 18px;
+  font-size: var(--text-sub);
   margin: 0;
+  margin-right: auto;
 }
 
 nav {
   display: flex;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: var(--space-1);
 }
 
-nav button,
-.tab {
+nav button {
   background: transparent;
   border: 1px solid transparent;
-  color: var(--muted);
-  padding: 6px 12px;
-  border-radius: var(--radius);
+  color: var(--ink-2);
+  padding: var(--space-2) var(--space-3);
+  min-height: 44px;
+  border-radius: var(--radius-1);
   cursor: pointer;
   font: inherit;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+nav button:hover {
+  color: var(--ink-1);
+  background: var(--surface-2);
 }
 
 nav button.active {
-  color: var(--text);
-  background: var(--panel-2);
-  border-color: var(--border);
+  color: var(--ink-1);
+  background: var(--surface-2);
+  border-color: var(--line-strong);
 }
 
+/* ── Theme toggle (single sun/moon icon button) ───────────────────────────── */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.theme-toggle:hover {
+  color: var(--ink-1);
+  border-color: var(--line-strong);
+}
+
+/* ── Panels ───────────────────────────────────────────────────────────────── */
+/* One elevation level: a hairline border defines the panel. Light themes get
+   their soft shadow OR the border, never both (see the floating tooltip for the
+   one place --shadow-1 is used). */
 .card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  padding: var(--space-4);
 }
 
 .grid {
   display: grid;
-  gap: 12px;
+  /* Single column that can shrink to the container. Without minmax(0,1fr) a
+     grid item's default min-width:auto lets a wide child (e.g. a data table)
+     blow the column past the viewport and drag every card with it. Multi-column
+     form grids set their own grid-template-columns inline and are unaffected. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
 }
 
 .campaign-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
   cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 
 .campaign-row:hover {
-  border-color: var(--accent);
+  border-color: var(--line-strong);
+  background: var(--surface-2);
 }
 
 .campaign-row h3 {
-  margin: 0 0 4px;
-  font-size: 15px;
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-body);
 }
 
 .muted {
-  color: var(--muted);
+  color: var(--ink-2);
 }
 
-.stages {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.pill {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.pill .n {
-  color: var(--accent);
-  font-weight: 600;
-  margin-left: 4px;
-}
-
+/* ── Funnel node strip (flow preview) ─────────────────────────────────────── */
 .funnel {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin: 12px 0 20px;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 var(--space-5);
 }
 
 .funnel .node {
-  background: var(--accent-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 4px 10px;
-  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-meta);
 }
 
 .funnel .arrow {
-  color: var(--muted);
+  color: var(--ink-3);
 }
 
+/* ── Flow editor steps ────────────────────────────────────────────────────── */
 .steps {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-3);
 }
 
 .step {
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  border-radius: var(--radius);
-  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: var(--radius-1);
+  padding: var(--space-3);
 }
 
 .step.disabled {
@@ -162,18 +277,15 @@ nav button.active {
 .step-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
 }
 
 .step-head .order {
-  color: var(--muted);
+  color: var(--ink-3);
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   width: 22px;
-}
-
-.step-head select {
-  font: inherit;
 }
 
 .step-head .spacer {
@@ -183,29 +295,37 @@ nav button.active {
 .step-body label,
 .card .grid > div > label {
   display: block;
-  font-size: 12px;
-  color: var(--muted);
-  margin-bottom: 4px;
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+  margin-bottom: var(--space-1);
 }
 
 code {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 4px;
-  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  padding: 0 var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
 }
 
+/* ── Form controls ────────────────────────────────────────────────────────── */
 input,
 select,
 textarea {
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 8px;
+  background: var(--surface-0);
+  color: var(--ink-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-1);
+  padding: var(--space-2) var(--space-2);
   font: inherit;
+  font-size: var(--text-body);
   width: 100%;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--ink-3);
 }
 
 textarea {
@@ -213,44 +333,84 @@ textarea {
   resize: vertical;
 }
 
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+/* Primary button fill is a deeper shade of --accent so the white --accent-ink
+   label clears 4.5:1 in every theme (pure --accent + white lands ~3.4:1 in the
+   dark theme). --accent itself stays exact for links, borders, and selection. */
 .btn {
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  padding: 7px 14px;
+  background: color-mix(in srgb, var(--accent) 80%, black);
+  color: var(--accent-ink);
+  border: 1px solid transparent;
+  border-radius: var(--radius-1);
+  padding: var(--space-2) var(--space-4);
+  min-height: 44px;
   cursor: pointer;
   font: inherit;
+  font-weight: var(--weight-medium);
+  transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 68%, black);
 }
 
 .btn.ghost {
   background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text);
+  border: 1px solid var(--line-strong);
+  color: var(--ink-1);
+}
+
+.btn.ghost:hover:not(:disabled) {
+  background: var(--surface-2);
 }
 
 .btn.icon {
   background: transparent;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  padding: 4px 9px;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  padding: var(--space-1) var(--space-2);
+  min-height: 32px;
+}
+
+.btn.icon:hover:not(:disabled) {
+  color: var(--ink-1);
+  border-color: var(--line-strong);
 }
 
 .btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: default;
+}
+
+.btn.tiny {
+  min-height: 34px;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-meta);
+}
+
+/* The approval action: amber = "waiting on you", the one attention color. */
+/* Dark text on amber = a deep shade of the fill's own hue (never gray-on-color). */
+.btn.approve {
+  background: var(--st-approval);
+  color: color-mix(in srgb, var(--st-approval) 20%, black);
+  font-weight: var(--weight-semibold);
+}
+
+.btn.approve:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--st-approval) 88%, black);
 }
 
 .row-actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1);
 }
 
 .toolbar {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
-  margin: 16px 0;
+  flex-wrap: wrap;
+  margin: var(--space-4) 0;
 }
 
 .toolbar .spacer {
@@ -258,19 +418,31 @@ textarea {
 }
 
 .error {
-  color: var(--danger);
-  margin: 8px 0;
+  color: var(--st-failed);
+  margin: var(--space-2) 0;
 }
 
 .saved {
-  color: var(--ok);
+  color: var(--st-done);
 }
 
-.chart {
-  width: 100%;
-  overflow-x: auto;
+.empty {
+  color: var(--ink-2);
+  padding: var(--space-2) 0;
 }
 
+.back {
+  display: inline-block;
+  margin-bottom: var(--space-3);
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.back:hover {
+  color: var(--ink-1);
+}
+
+/* ── Tables (base) ────────────────────────────────────────────────────────── */
 table {
   width: 100%;
   border-collapse: collapse;
@@ -279,22 +451,374 @@ table {
 th,
 td {
   text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-meta);
+  vertical-align: top;
 }
 
 th {
-  color: var(--muted);
-  font-weight: 500;
+  color: var(--ink-2);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+}
+
+/* Horizontal scroll lives on the table wrapper, never the page. */
+.chart {
+  width: 100%;
+  overflow-x: auto;
+}
+
+/* ── DataTable (sortable + paginated) ─────────────────────────────────────── */
+.data-table {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.dt-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.dt-search {
+  width: auto;
+  min-width: 240px;
+  max-width: 360px;
+}
+
+.dt-toolbar .dt-range {
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+
+.data-table th {
+  padding: 0;
+}
+
+.data-table th.sortable {
+  cursor: pointer;
+}
+
+.dt-th {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--text-meta);
+  font-weight: var(--weight-medium);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  text-align: left;
+  transition: color var(--dur) var(--ease);
+}
+
+.dt-th:hover {
+  color: var(--ink-1);
+}
+
+.dt-th.num {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.dt-sort {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--ink-3);
+}
+
+.dt-th[aria-sort='ascending'] .dt-sort,
+.dt-th[aria-sort='descending'] .dt-sort {
+  color: var(--accent);
+}
+
+.data-table td.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.dt-pager {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+
+.dt-pager .spacer {
+  flex: 1;
+}
+
+.dt-range {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Funnel bar: pipeline as proportional, clickable segments ─────────────── */
+.funnel-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  width: 100%;
+  margin: var(--space-1) 0 2px;
+}
+
+.funnel-bar .seg {
+  flex-basis: 0;
+  min-width: 96px;
+  background: color-mix(in srgb, var(--c) 12%, var(--surface-2));
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    opacity var(--dur) var(--ease);
+}
+
+.funnel-bar .seg:hover {
+  background: color-mix(in srgb, var(--c) 20%, var(--surface-2));
+}
+
+/* Selected segment: raised surface + a full 1px accent ring. No inset glow. */
+.funnel-bar .seg.active {
+  background: var(--surface-3);
+  border-color: var(--accent);
+}
+
+.funnel-bar .seg.muted-seg {
+  opacity: 0.5;
+}
+
+.funnel-bar .seg .seg-n {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 1.1875rem;
+  font-weight: var(--weight-semibold);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--c);
+}
+
+.funnel-bar .seg .seg-label {
+  display: block;
+  font-size: var(--text-caption);
+  color: var(--ink-2);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mini funnel strip on campaign cards: a single thin proportional bar. */
+.mini-funnel {
+  display: flex;
+  width: 100%;
+  height: 6px;
+  border-radius: var(--radius-1);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.mini-funnel .mseg {
+  height: 100%;
+}
+
+/* ── Status chip: neutral surface + a dot in the status color + neutral label ── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px var(--space-2) 2px 7px;
+  border-radius: var(--radius-1);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+  white-space: nowrap;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--c);
+  flex: none;
+}
+
+/* ── Status badge: campaign-level status, slightly larger, same neutral rule ── */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-1);
+  font-size: var(--text-meta);
+  font-weight: var(--weight-medium);
+  vertical-align: middle;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+}
+
+.status-badge::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c);
+  flex: none;
+}
+
+/* ── Section headers within a detail view ─────────────────────────────────── */
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+
+.section-head h3 {
+  margin: 0;
+}
+
+.count-tag {
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  padding: 1px var(--space-2);
+}
+
+/* ── Lead / activity table cell treatments ────────────────────────────────── */
+.lead-table td .who {
+  font-weight: var(--weight-medium);
+}
+
+.lead-table td .co {
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+}
+
+td.when {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.lead-table td.err {
+  color: var(--st-failed);
+  font-size: var(--text-meta);
+  max-width: 220px;
+}
+
+.lead-table tr.needs-you td {
+  background: color-mix(in srgb, var(--st-approval) 8%, transparent);
+}
+
+/* ── Approvals queue: divided rows inside one panel, never nested cards ────── */
+.approvals-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.approval {
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--line);
+}
+
+.approval:first-child {
+  border-top: none;
+  padding-top: var(--space-1);
+}
+
+.approval .approval-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.approval .approval-head .to {
+  font-weight: var(--weight-medium);
+}
+
+.approval .approval-head .age {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+/* The drafted message: a read-only content region (a control surface), styled
+   like the textarea it becomes when editing — not a card. */
+.approval .draft {
+  white-space: pre-wrap;
+  background: var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  padding: var(--space-3);
+  font-size: var(--text-body);
+  line-height: 1.55;
+  color: var(--ink-1);
+}
+
+.approval textarea.draft {
+  font: inherit;
+  font-size: var(--text-body);
+  color: var(--ink-1);
+}
+
+.approval .approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  align-items: center;
+}
+
+/* ── Volume chart ─────────────────────────────────────────────────────────── */
+.chart-figure {
+  position: relative;
+}
+
+.chart-scroll {
+  width: 100%;
+  overflow-x: auto;
 }
 
 .legend {
   display: flex;
-  gap: 14px;
-  margin: 8px 0;
-  font-size: 12px;
-  color: var(--muted);
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-2) 0 var(--space-3);
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+
+.legend span.item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .legend .swatch {
@@ -302,12 +826,83 @@ th {
   width: 10px;
   height: 10px;
   border-radius: 2px;
-  margin-right: 5px;
-  vertical-align: middle;
+  flex: none;
 }
 
-.back {
-  display: inline-block;
-  margin-bottom: 12px;
-  cursor: pointer;
+.vbar {
+  transition: opacity var(--dur) var(--ease);
+}
+
+.chart-grid-line {
+  stroke: var(--line);
+}
+
+.chart-axis-text {
+  fill: var(--ink-3);
+  font-family: var(--font-mono);
+}
+
+.chart-band-hover {
+  fill: var(--surface-2);
+}
+
+/* Floating tooltip: fixed so it escapes the horizontal scroll container and is
+   never clipped. --shadow-1 lifts it off the surface in the light themes. */
+.chart-tooltip {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  min-width: 132px;
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-1);
+  box-shadow: var(--shadow-1);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-meta);
+  color: var(--ink-1);
+}
+
+.chart-tooltip .tt-date {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  margin-bottom: var(--space-1);
+}
+
+.chart-tooltip .tt-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 1px 0;
+}
+
+.chart-tooltip .tt-row .swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.chart-tooltip .tt-row .tt-n {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Sub-panel rows (e.g. one linked account) — divided rows, not nested cards ── */
+.subrow {
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--line);
+}
+
+.subrow:first-child {
+  border-top: none;
+}
+
+/* Reduced motion: collapse every transition. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
 }

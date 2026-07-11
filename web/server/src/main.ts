@@ -7,6 +7,7 @@ import path from 'node:path';
 import express from 'express';
 import { AUTH_COOKIE, authCookieOk, basicAuthOk, issueAuthToken, safeEqual } from './auth.js';
 import { createMcpProxy } from './mcp-proxy.js';
+import { callMcpTool, McpError } from './mcp-client.js';
 import { VaultError } from '@loa/account-runner';
 import {
   createCampaignFromList,
@@ -14,8 +15,11 @@ import {
   deleteCampaign,
   deleteList,
   EmptyListError,
+  getActivity,
   getCampaign,
+  getCampaignLeads,
   getList,
+  getPending,
   getVolume,
   launchCampaign,
   LaunchError,
@@ -136,6 +140,20 @@ api.get('/campaigns/:id', async (req, res, next) => {
       return;
     }
     res.json(campaign);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Per-lead drill-down for one campaign. Optional ?state filter matches a lead's
+// progress state or stage (case-insensitive, spaces↔underscores).
+api.get('/campaigns/:id/leads', async (req, res, next) => {
+  try {
+    const state =
+      typeof req.query.state === 'string' && req.query.state.trim().length > 0
+        ? req.query.state.trim()
+        : undefined;
+    res.json(await getCampaignLeads(req.params.id, state));
   } catch (err) {
     next(err);
   }
@@ -331,6 +349,99 @@ api.post('/lists/:id/campaign', async (req, res, next) => {
   }
 });
 
+// Pending message approvals across campaigns (or one, via ?campaignId).
+api.get('/pending', async (req, res, next) => {
+  try {
+    const campaignId =
+      typeof req.query.campaignId === 'string' && req.query.campaignId.length > 0
+        ? req.query.campaignId
+        : undefined;
+    res.json(await getPending(campaignId));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Reverse-chron feed of real actions (optionally scoped to one campaign).
+api.get('/activity', async (req, res, next) => {
+  try {
+    const campaignId =
+      typeof req.query.campaignId === 'string' && req.query.campaignId.length > 0
+        ? req.query.campaignId
+        : undefined;
+    res.json(await getActivity({ campaignId, limit: clampLimit(req.query.limit) }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Bulk approve. Registered before the parameterized :messageId routes; distinct
+// segment count means no route collision, but keep it first for clarity. Each
+// approval is enqueued sequentially; the runtime paces the actual sends.
+api.post('/pending/approve', async (req, res, next) => {
+  try {
+    const ids = (req.body ?? {}).messageIds;
+    if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) {
+      res.status(400).json({ error: 'messageIds must be an array of strings.' });
+      return;
+    }
+    const results: Array<{ messageId: string; ok: boolean; error?: string }> = [];
+    for (const messageId of ids as string[]) {
+      try {
+        await callMcpTool('approve', { pendingId: messageId });
+        results.push({ messageId, ok: true });
+      } catch (err) {
+        results.push({ messageId, ok: false, error: err instanceof Error ? err.message : 'approve failed' });
+      }
+    }
+    res.json({ results });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Approve one pending draft. A non-empty body edits the draft before sending
+// (edit_and_approve); otherwise the draft is approved as-is (approve). Both
+// dispatch a real send through the runtime executor.
+api.post('/pending/:messageId/approve', async (req, res, next) => {
+  try {
+    const edited = (req.body ?? {}).body;
+    const hasEdit = typeof edited === 'string' && edited.trim().length > 0;
+    const action = hasEdit ? 'edit_and_approve' : 'approve';
+    const args = hasEdit
+      ? { pendingId: req.params.messageId, body: edited }
+      : { pendingId: req.params.messageId };
+    await callMcpTool(action, args);
+    res.json({ ok: true, action });
+  } catch (err) {
+    if (err instanceof McpError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+// Reject one pending draft with a reason; the runtime drops the binding so it is
+// never sent.
+api.post('/pending/:messageId/reject', async (req, res, next) => {
+  try {
+    const reason = (req.body ?? {}).reason;
+    if (typeof reason !== 'string' || reason.trim().length === 0) {
+      res.status(400).json({ error: 'reason is required.' });
+      return;
+    }
+    await callMcpTool('reject', { pendingId: req.params.messageId, reason });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err instanceof McpError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
 app.use('/api', api);
 
 // Serve the built client if it exists (production / `npm start`). In dev the
@@ -388,6 +499,13 @@ function clampDays(raw: unknown): number {
   const n = Number(Array.isArray(raw) ? raw[0] : raw);
   if (!Number.isFinite(n) || n <= 0) return 30;
   return Math.min(Math.floor(n), 365);
+}
+
+// Activity feed page size: default 50, capped at 200.
+function clampLimit(raw: unknown): number {
+  const n = Number(Array.isArray(raw) ? raw[0] : raw);
+  if (!Number.isFinite(n) || n <= 0) return 50;
+  return Math.min(Math.floor(n), 200);
 }
 
 const port = Number(process.env.PORT ?? 4000);

@@ -1,0 +1,41 @@
+/* Editorial (dark) — the editorial language on a calm dark surface. Same serif
+   display, airy scale, radius, and teal-green accent as the light base; depth
+   comes from surface lightness, not shadow. Accent and status hues are lifted
+   for AA contrast on dark. The accent sits in the narrow band that reads as a
+   link on dark (>=4.5:1) yet, darkened 80% for the button fill, still clears
+   4.5:1 against white --accent-ink. */
+:root[data-theme='dark'] {
+  --surface-0: #16191d;
+  --surface-1: #1d2126;
+  --surface-2: #262b31;
+  --surface-3: #2f353c;
+
+  --ink-1: #e9ebee;
+  --ink-2: #b3bac2;
+  --ink-3: #838b94;
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.18);
+
+  --accent: #3d9c85;
+  --accent-ink: #ffffff;
+  --focus: #5cc4aa;
+
+  --st-approval: #d99a3a;
+  --st-active: #5b8dd9;
+  --st-waiting: #4f9fae;
+  --st-replied: #a692cc;
+  --st-done: #4fae8e;
+  --st-failed: #d0726b;
+  --st-idle: #838b94;
+
+  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, Menlo, monospace;
+
+  --text-h1: 2.125rem;
+  --text-h2: 1.5rem;
+
+  --radius-1: 8px;
+  --radius-2: 12px;
+  --shadow-1: 0 6px 20px rgba(0, 0, 0, 0.45);
+}

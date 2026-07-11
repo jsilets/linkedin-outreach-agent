@@ -22,6 +22,8 @@ export interface Step {
   enabled: boolean;
 }
 
+export type CampaignStatus = 'draft' | 'active' | 'done';
+
 export interface CampaignSummary {
   id: string;
   goal: string;
@@ -30,11 +32,58 @@ export interface CampaignSummary {
   messageStrategy: string;
   targetCount: number;
   byStage: Record<string, number>;
+  byProgressState: Record<string, number>;
+  status: CampaignStatus;
+  pendingCount: number;
 }
 
 export interface CampaignDetail extends CampaignSummary {
   steps: Step[];
-  byProgressState: Record<string, number>;
+  enrolledCount: number;
+}
+
+export interface Lead {
+  targetId: string;
+  name: string | null;
+  company: string | null;
+  headline: string | null;
+  profileUrl: string | null;
+  stage: string;
+  progressState: string | null;
+  currentStep: number | null;
+  nextStepAt: string | null;
+  lastStepAt: string | null;
+  errorMessage: string | null;
+  lastAction: { type: string; result: string; executedAt: string | null } | null;
+  pendingMessageId: string | null;
+}
+
+export interface Pending {
+  messageId: string;
+  campaignId: string | null;
+  campaignGoal: string | null;
+  targetId: string;
+  name: string | null;
+  company: string | null;
+  body: string;
+  intent: string | null;
+  accountId: string;
+  createdAt: string;
+}
+
+export interface ActivityItem {
+  actionId: string;
+  type: string;
+  result: string;
+  executedAt: string | null;
+  scheduledAt: string;
+  targetId: string;
+  name: string | null;
+  campaignId: string | null;
+}
+
+export interface BulkApproveResult {
+  results: Array<{ messageId: string; ok: boolean; error?: string }>;
 }
 
 export interface VolumeRow {
@@ -132,9 +181,44 @@ async function errorText(res: Response): Promise<string> {
   }
 }
 
+async function send<T>(url: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await errorText(res));
+  return res.json() as Promise<T>;
+}
+
 export const api = {
   campaigns: () => get<CampaignSummary[]>('/api/campaigns'),
   campaign: (id: string) => get<CampaignDetail>(`/api/campaigns/${id}`),
+  leads: (id: string, state?: string) => {
+    const q = state ? `?state=${encodeURIComponent(state)}` : '';
+    return get<Lead[]>(`/api/campaigns/${id}/leads${q}`);
+  },
+  pending: (campaignId?: string) => {
+    const q = campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '';
+    return get<Pending[]>(`/api/pending${q}`);
+  },
+  activity: (opts: { campaignId?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.campaignId) params.set('campaignId', opts.campaignId);
+    if (opts.limit) params.set('limit', String(opts.limit));
+    const q = params.toString();
+    return get<ActivityItem[]>(`/api/activity${q ? `?${q}` : ''}`);
+  },
+  approve: (messageId: string, body?: string) =>
+    send<{ ok: true; action: unknown }>(
+      `/api/pending/${messageId}/approve`,
+      'POST',
+      body ? { body } : {},
+    ),
+  reject: (messageId: string, reason: string) =>
+    send<{ ok: true }>(`/api/pending/${messageId}/reject`, 'POST', { reason }),
+  bulkApprove: (messageIds: string[]) =>
+    send<BulkApproveResult>('/api/pending/approve', 'POST', { messageIds }),
   accounts: () => get<Account[]>('/api/accounts'),
   lists: () => get<ListSummary[]>('/api/lists'),
   getList: (id: string) => get<ListDetail>(`/api/lists/${id}`),
