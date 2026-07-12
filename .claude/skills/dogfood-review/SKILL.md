@@ -21,20 +21,21 @@ should change. You are a reviewer and a scribe, not an operator.
 
 ## Hard boundary: read-only on runtime state
 
-You may read anything. You may **not** change the running system. Specifically,
-you must never:
+You may read anything, and you may propose fixes as pull requests (see step 5).
+You may **not** change the running system. Specifically, you must never:
 
 - restart, stop, or redeploy the runtime, the web server, or Postgres;
 - approve, reject, edit, send, or cancel any message or campaign action;
 - mutate any campaign, target, account, list, or database row (no `UPDATE`,
   `INSERT`, `DELETE`, no MCP write tools like `approve` / `send_message` /
   `pause_account`);
-- push commits or open PRs as part of the review.
+- merge anything, push to `main`, or touch the operator's checked-out working
+  tree. Fix branches live in their own `git worktree` and land only via a PR a
+  human reviews.
 
-Every proposed fix becomes a **journal entry** and, if it deserves tracked work,
-a **GitHub issue** — never a direct change to production state. If a finding is
-urgent (the pipeline is frozen right now), say so loudly in the journal and in
-your summary to the operator, and let a human act.
+If a finding is urgent (the pipeline is frozen right now), say so loudly in the
+journal and in your summary to the operator, and let a human act on the running
+system.
 
 ## Steps
 
@@ -66,9 +67,11 @@ Ask, section by section:
 - **Action outcomes** — Is one action type failing disproportionately (e.g.
   `connect` at a low success rate)? That points at a specific adapter or a
   LinkedIn DOM/endpoint change, not a systemic problem.
-- **Cap utilization** — Is `budget.date` stale (an earlier day than today)? Then
-  the running tally is not being reset/updated and utilization numbers lie. Are
-  any accounts pinned at 100% (throttled by their own caps)?
+- **Cap utilization** — computed from live successful-action counts over a
+  rolling 24h (the persisted `accounts.budget` row is a dead seed; see the
+  2026-07-12 journal entry). Are any accounts pinned at 100% (throttled by
+  their own caps)? A type at 0% on a day work was expected can mean a frozen
+  pipeline upstream, not idleness.
 - **Pending approvals** — Is the oldest draft days old? Either the operator
   forgot it, or — combined with a frozen pipeline — no new drafts are being
   created and the queue is stale.
@@ -99,7 +102,10 @@ and the `actions` row point you at the specific step and lead.
 
 ### 4. Append a dated entry to the ops journal
 
-Append (never rewrite history) to `docs/ops-journal.md`. One entry per review,
+Append (never rewrite history) to `docs/ops-journal.md`. The journal is the
+operator's LOCAL logbook — it is gitignored on purpose (it carries live
+operational data that does not belong in the public repo), so create it from
+the header convention below if it does not exist yet. One entry per review,
 newest at the bottom, in this shape:
 
 ```
@@ -110,17 +116,51 @@ newest at the bottom, in this shape:
 **Diagnosis:** the code seam and condition you traced it to, or "unclear,
 needs a live repro" if you could not pin it down. Cite files/functions.
 
-**Action taken or proposed:** what should change and where. If you filed a
-GitHub issue, link it. If nothing is wrong, say "no action — healthy" so the
-next reviewer knows the window was checked.
+**Action taken or proposed:** what should change and where. Link the PR or
+issue you opened. If nothing is wrong, say "no action — healthy" so the next
+reviewer knows the window was checked.
 ```
 
 If nothing is anomalous, still write a short "healthy" entry: the value of the
 loop is the unbroken record that someone looked.
 
-### 5. Summarize back to the operator
+### 5. Turn real findings into a PR (the improvement half of the loop)
+
+A diagnosis with a concrete, code-level fix should become a pull request for
+the operator to review — logging it and walking away is not improvement. Open a
+PR when ALL of these hold:
+
+- you traced the anomaly to a specific seam and can name the failing condition;
+- the fix is small and testable (an endpoint/queryId refresh, a wrong filter, a
+  reporting bug, a missing guard — not an architecture change);
+- the repo gates pass with your change (`npm run lint`, `npm run typecheck`,
+  `npm test`).
+
+How, without disturbing the operator's checkout:
+
+```
+git fetch origin
+git worktree add /tmp/dogfood-fix-<date> -b <descriptive-branch> origin/main
+# ...edit, add tests, run the gates IN THAT WORKTREE...
+git -C /tmp/dogfood-fix-<date> push -u origin <descriptive-branch>
+gh pr create --head <descriptive-branch> --title "..." --body "..."
+git worktree remove /tmp/dogfood-fix-<date>
+```
+
+PR rules: branch names are descriptive, no vendor/agent prefixes. The PR body
+cites the report evidence (error kind, counts, first/last seen) and the
+diagnosis, and states how you verified the fix. One PR per root cause — batch
+related findings, don't open five PRs for one disease. NEVER merge it yourself;
+NEVER commit directly to main. If the fix is too big, too risky, or you are not
+confident, open a GitHub issue instead and say so in the journal.
+
+If a fix would need a live-account probe to verify (e.g. a rotated LinkedIn
+queryId), note in the PR that the operator must run the matching shakeout
+(`npm run inbox-shakeout`, `npm run search-shakeout`) — do not run live-account
+probes yourself on a schedule.
+
+### 6. Summarize back to the operator
 
 End with a two-or-three-line summary: the single most important finding, whether
-anything is on fire right now, and the journal entry you appended. If you
-proposed a fix, name the branch or issue you would open — do not open a PR or
-touch runtime state yourself.
+anything is on fire right now, the journal entry you appended, and a link to any
+PR or issue you opened.

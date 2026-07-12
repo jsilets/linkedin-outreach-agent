@@ -37,3 +37,6 @@ test-results/
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/dogfood-review/
+
+# ops journal is the operator's LOCAL logbook (live operational data; public repo)
+docs/ops-journal.md
