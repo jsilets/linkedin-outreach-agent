@@ -284,11 +284,83 @@ export interface InboxReaderPort {
   readInbox(accountId: string, limit: number): Promise<InboundMessage[]>;
 }
 
-/** Voyager messaging conversations endpoint. Returns the most recent threads
- * with their last events inlined; free on a normal session. The count caps how
- * many threads come back (not messages). */
-function messagingPath(count: number): string {
-  return `/voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&q=syncToken&count=${count}`;
+/**
+ * The persisted-query id for the modern messenger conversations graphql call.
+ * Like DEFAULT_SEARCH_QUERY_ID / DEFAULT_PROFILE_QUERY_ID, LinkedIn rotates this
+ * hash as it ships new web builds; a stale hash eventually 400s. Override with
+ * LOA_INBOX_QUERY_ID once you capture a current one from a live browser's Network
+ * tab (the messengerConversations.<hash> fired on a /messaging/ load). This is a
+ * best-effort default that could NOT be verified live from this worktree — treat
+ * it as UNPROVEN and expect to set the env override after the first live run.
+ */
+const DEFAULT_INBOX_QUERY_ID = 'messengerConversations.7ff89bd4c9f4c4b5e4a9c8b9f7a1e6d2';
+
+function inboxQueryId(): string {
+  return process.env.LOA_INBOX_QUERY_ID?.trim() || DEFAULT_INBOX_QUERY_ID;
+}
+
+/**
+ * Build the origin-relative modern messenger conversations graphql path for one
+ * mailbox. Replaces the deprecated
+ * /voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&q=syncToken, which
+ * now fails (non-200). Mirrors profileComponentsPath: the outer `variables=(...)`
+ * grammar stays literal; only the mailboxUrn VALUE is percent-encoded (its colons
+ * must survive as %3A, exactly as the live browser sends them). `count` caps how
+ * many conversations come back (not messages). `mailboxUrn` is the viewer's own
+ * fsd_profile urn (see readMailboxUrn).
+ */
+export function messengerConversationsPath(mailboxUrn: string, count: number): string {
+  const encoded = encodeURIComponent(mailboxUrn);
+  const variables = `(mailboxUrn:${encoded},count:${count})`;
+  return (
+    `/voyager/api/voyagerMessagingGraphQL/graphql?queryId=${inboxQueryId()}` +
+    `&queryName=MessengerConversationsBySyncToken&variables=${variables}`
+  );
+}
+
+/** The account's own /voyager/api/me endpoint: the oldest, stablest Voyager read,
+ * used only to resolve the viewer's mailbox urn for the messenger query above. */
+const ME_PATH = '/voyager/api/me';
+
+/**
+ * Resolve the viewer's own fsd_profile urn (the messenger mailboxUrn) for an
+ * account's page. The modern messenger graphql query keys on this urn, which the
+ * legacy LEGACY_INBOX read did not need. LOA_MAILBOX_URN overrides the /me read
+ * as an escape hatch (single-account/debug); otherwise it is read live from
+ * /voyager/api/me and parsed defensively by mailboxUrnFromMe. Throws when it
+ * cannot be resolved so a messaging read fails loudly rather than querying the
+ * wrong mailbox.
+ */
+async function readMailboxUrn(page: PagePort): Promise<string> {
+  const override = process.env.LOA_MAILBOX_URN?.trim();
+  if (override) return override;
+  const { status, body } = await page.voyagerGet(ME_PATH, { accept: 'application/json' });
+  if (status !== 200) {
+    throw new Error(
+      `voyager /me returned HTTP ${status}; cannot resolve the mailbox owner urn for a ` +
+        `messaging read (set LOA_MAILBOX_URN to override)`,
+    );
+  }
+  const urn = mailboxUrnFromMe(body);
+  if (!urn) {
+    throw new Error(
+      'could not resolve the mailbox owner urn from /voyager/api/me ' +
+        '(set LOA_MAILBOX_URN to override)',
+    );
+  }
+  return urn;
+}
+
+/** Pull the viewer's fsd_profile urn out of a /voyager/api/me body. The response
+ * carries the viewer's profile as an fsd_profile or (older) fs_miniProfile urn;
+ * scan for either and re-wrap as the fsd_profile urn the messenger query keys on.
+ * Exported for the ops shakeout / unit tests to run over a captured body. */
+export function mailboxUrnFromMe(body: unknown): string | undefined {
+  const json = JSON.stringify(body ?? '');
+  const id =
+    json.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/)?.[1] ??
+    json.match(/urn:li:fs_miniProfile:([A-Za-z0-9_-]+)/)?.[1];
+  return id ? `urn:li:fsd_profile:${id}` : undefined;
 }
 
 /**
@@ -316,11 +388,15 @@ export class LiveInboxReader implements InboxReaderPort {
   async readInbox(accountId: string, limit: number): Promise<InboundMessage[]> {
     const page = await this.pages.pageFor(accountId);
     await ensureOnLinkedIn(page);
-    const { status, body } = await page.voyagerGet(messagingPath(limit), {
+    const mailboxUrn = await readMailboxUrn(page);
+    const { status, body } = await page.voyagerGet(messengerConversationsPath(mailboxUrn, limit), {
       accept: 'application/json',
     });
     if (status !== 200) {
-      throw new Error(`voyager messaging returned HTTP ${status}; the session may be invalid`);
+      throw new Error(
+        `voyager messaging returned HTTP ${status}; the session may be invalid or the inbox ` +
+          `queryId stale (set LOA_INBOX_QUERY_ID to a current one)`,
+      );
     }
     return normalizeInboxResponse(body).slice(0, limit);
   }
@@ -328,21 +404,24 @@ export class LiveInboxReader implements InboxReaderPort {
 
 /**
  * Walk a Voyager messaging conversations response into InboundMessage[]. Reads
- * both the decorated (`elements[]`) and normalized (`included[]`) shapes, keeps
- * only counterparty messages (a message whose sender is a participant, not the
- * viewer), and drops anything missing a thread urn, sender urn, or text.
- * Exported for the ops shakeout to run over a captured raw payload.
+ * BOTH the legacy shape (conversations with inlined `events[]`) and the modern
+ * messenger graphql shape (conversations with `messages.elements[]` under a
+ * `data.messengerConversations*` node); keeps only counterparty messages (a
+ * message whose sender is not the viewer) and drops anything missing a thread
+ * urn, sender urn, or text. Exported for the ops shakeout to run over a captured
+ * raw payload.
  */
 export function normalizeInboxResponse(body: unknown): InboundMessage[] {
   const root = body as VoyagerMessagingResponse | undefined;
-  const conversations = root?.elements ?? root?.data?.elements ?? asConversations(root?.included);
+  const conversations = collectConversations(root);
 
   const out: InboundMessage[] = [];
-  for (const conv of conversations ?? []) {
+  for (const conv of conversations) {
     const threadUrn = conv?.entityUrn ?? conv?.backendUrn;
     if (!threadUrn) continue;
-    for (const event of conv?.events ?? []) {
-      const msg = normalizeEvent(threadUrn, event);
+    const viewerUrn = viewerUrnFromConversation(conv);
+    for (const event of eventsOf(conv)) {
+      const msg = normalizeEvent(threadUrn, event, viewerUrn);
       if (msg) out.push(msg);
     }
   }
@@ -351,10 +430,57 @@ export function normalizeInboxResponse(body: unknown): InboundMessage[] {
   return out;
 }
 
-/** Pull EVENT/CONVERSATION entities out of a normalized `included[]` list. */
+/**
+ * Gather conversation entities from every shape this endpoint (legacy or modern)
+ * can return: the decorated `elements[]`, the normalized `data.elements`, the
+ * flat `included[]`, and the modern graphql `data.<queryName>.elements` (e.g.
+ * data.messengerConversationsBySyncToken.elements). The graphql query-name key
+ * varies by build, so any object under `data` carrying an `elements` array is
+ * treated as a conversation list.
+ */
+function collectConversations(root: VoyagerMessagingResponse | undefined): Conversation[] {
+  if (!root) return [];
+  const out: Conversation[] = [];
+  if (Array.isArray(root.elements)) out.push(...root.elements);
+  if (Array.isArray(root.data?.elements)) out.push(...(root.data?.elements ?? []));
+  const data = root.data as Record<string, unknown> | undefined;
+  if (data) {
+    for (const value of Object.values(data)) {
+      const elements = (value as { elements?: unknown } | null | undefined)?.elements;
+      if (Array.isArray(elements)) out.push(...(elements as Conversation[]));
+    }
+  }
+  const included = asConversations(root.included);
+  if (included) out.push(...included);
+  return out;
+}
+
+/** A conversation's messages across both shapes: legacy inlined `events[]` and
+ * modern `messages.elements[]`. */
+function eventsOf(conv: Conversation | undefined): MessagingEvent[] {
+  return [...(conv?.events ?? []), ...(conv?.messages?.elements ?? [])];
+}
+
+/**
+ * The viewer's own fsd_profile urn, derived from the conversation's own
+ * entityUrn. The modern messenger conversation urn embeds the mailbox owner:
+ * urn:li:msg_conversation:(urn:li:fsd_profile:<VIEWER>,<thread>). Reading it here
+ * lets normalizeEvent tell the viewer's outbound messages apart without a
+ * separate viewer-urn argument (the legacy shape carried an explicit
+ * outbound/fromViewer flag instead). Undefined when the urn is not the wrapped
+ * modern form, in which case the legacy flags are the only signal.
+ */
+function viewerUrnFromConversation(conv: Conversation | undefined): string | undefined {
+  return conv?.entityUrn?.match(/urn:li:fsd_profile:[A-Za-z0-9_-]+/)?.[0];
+}
+
+/** Pull EVENT/CONVERSATION entities out of a normalized `included[]` list (either
+ * shape: legacy `events[]` or modern `messages.elements[]`). */
 function asConversations(included: MessagingEntity[] | undefined): Conversation[] | undefined {
   if (!Array.isArray(included)) return undefined;
-  return included.filter((el) => Array.isArray(el?.events));
+  return included.filter(
+    (el) => Array.isArray(el?.events) || Array.isArray(el?.messages?.elements),
+  );
 }
 
 /** One messaging event parsed to its essentials, direction kept. Used by both
@@ -377,32 +503,47 @@ interface ParsedEvent {
  * `outbound`/`fromViewer` marker as outbound. // GUESS: verify against a real
  * payload.
  */
-function parseEvent(event: MessagingEvent | undefined): ParsedEvent | null {
+function parseEvent(event: MessagingEvent | undefined, viewerUrn?: string): ParsedEvent | null {
   if (!event) return null;
-  const attributed = event.eventContent?.attributedBody?.text ?? event.subject;
+  // Legacy: eventContent.attributedBody.text / subject. Modern: body.text.
+  const attributed = event.eventContent?.attributedBody?.text ?? event.subject ?? event.body?.text;
   const text = attributed?.trim();
   if (!text) return null; // non-text events (shares, reactions) carry no body.
 
+  // Legacy: from.*.miniProfile.entityUrn. Modern: sender.hostIdentityUrn.
   const sender = event.from?.messagingMember?.miniProfile ?? event.from?.miniProfile;
-  const senderUrn = sender?.entityUrn ?? event.from?.entityUrn;
+  const senderUrn = sender?.entityUrn ?? event.from?.entityUrn ?? event.sender?.hostIdentityUrn;
   if (!senderUrn) return null;
 
-  const publicId = sender?.publicIdentifier;
+  const publicId =
+    sender?.publicIdentifier ??
+    publicIdFromProfileUrl(event.sender?.participantType?.member?.profileUrl);
   const deliveredAt = event.deliveredAt ?? event.createdAt;
   return {
     senderUrn,
     text,
     ...(publicId ? { publicId } : {}),
     receivedAt: typeof deliveredAt === 'number' ? new Date(deliveredAt) : new Date(),
-    outbound: event.outbound === true || event.from?.fromViewer === true,
+    // Legacy flags, or (modern) the sender is the mailbox owner derived from the
+    // conversation urn. Either marks the message as the viewer's own.
+    outbound:
+      event.outbound === true ||
+      event.from?.fromViewer === true ||
+      (!!viewerUrn && senderUrn === viewerUrn),
   };
+}
+
+/** The /in/<publicId> tail of a modern messenger profileUrl, when present. */
+function publicIdFromProfileUrl(url: string | undefined): string | undefined {
+  return url?.match(/\/in\/([^/?#]+)/)?.[1];
 }
 
 function normalizeEvent(
   threadUrn: string,
   event: MessagingEvent | undefined,
+  viewerUrn?: string,
 ): InboundMessage | null {
-  const parsed = parseEvent(event);
+  const parsed = parseEvent(event, viewerUrn);
   if (!parsed) return null;
   // A message the account itself sent is outbound; the inbox reader skips it.
   if (parsed.outbound) return null;
@@ -437,13 +578,14 @@ export function normalizeConversation(
   threadRef: string,
 ): ConversationSummary | null {
   const root = body as VoyagerMessagingResponse | undefined;
-  const conversations = root?.elements ?? root?.data?.elements ?? asConversations(root?.included);
+  const conversations = collectConversations(root);
 
-  for (const conv of conversations ?? []) {
+  for (const conv of conversations) {
     if (conv?.entityUrn !== threadRef && conv?.backendUrn !== threadRef) continue;
+    const viewerUrn = viewerUrnFromConversation(conv);
     const messages: ConversationSummary['messages'] = [];
-    for (const event of conv?.events ?? []) {
-      const parsed = parseEvent(event);
+    for (const event of eventsOf(conv)) {
+      const parsed = parseEvent(event, viewerUrn);
       if (!parsed) continue;
       messages.push({
         direction: parsed.outbound ? 'outbound' : 'inbound',
@@ -816,11 +958,16 @@ export class LiveObserve implements ObservePort {
     }
     const page = await this.pages.pageFor(accountId);
     await ensureOnLinkedIn(page);
-    const { status, body } = await page.voyagerGet(messagingPath(CONVERSATION_WINDOW), {
-      accept: 'application/json',
-    });
+    const mailboxUrn = await readMailboxUrn(page);
+    const { status, body } = await page.voyagerGet(
+      messengerConversationsPath(mailboxUrn, CONVERSATION_WINDOW),
+      { accept: 'application/json' },
+    );
     if (status !== 200) {
-      throw new Error(`voyager messaging returned HTTP ${status}; the session may be invalid`);
+      throw new Error(
+        `voyager messaging returned HTTP ${status}; the session may be invalid or the inbox ` +
+          `queryId stale (set LOA_INBOX_QUERY_ID to a current one)`,
+      );
     }
     const summary = normalizeConversation(body, threadRef);
     if (!summary) {
@@ -1170,7 +1317,10 @@ interface VoyagerMessagingResponse {
 interface Conversation {
   entityUrn?: string;
   backendUrn?: string;
+  /** Legacy shape: events inlined on the conversation. */
   events?: MessagingEvent[];
+  /** Modern messenger shape: messages under a paged list. */
+  messages?: { elements?: MessagingEvent[] };
 }
 
 interface MessagingMiniProfile {
@@ -1182,7 +1332,7 @@ interface MessagingEvent {
   entityUrn?: string;
   createdAt?: number;
   deliveredAt?: number;
-  /** LinkedIn's own marker for a message the viewer sent. */
+  /** LinkedIn's own marker for a message the viewer sent (legacy). */
   outbound?: boolean;
   subject?: string;
   from?: {
@@ -1192,6 +1342,13 @@ interface MessagingEvent {
     messagingMember?: { miniProfile?: MessagingMiniProfile };
   };
   eventContent?: { attributedBody?: { text?: string } };
+  /** Modern messenger shape: the message body and its sender. */
+  body?: { text?: string };
+  sender?: {
+    /** The sender's fsd_profile urn. */
+    hostIdentityUrn?: string;
+    participantType?: { member?: { profileUrl?: string } };
+  };
 }
 
 /** Any entity in the normalized `included[]`; only conversations carry events. */
@@ -1298,14 +1455,24 @@ interface ConnectionEntity extends ConnectionElement {
 //     memberDistance) against a real payload. The shakeout dumps the raw body so
 //     these can be checked and adjusted if LinkedIn renamed them.
 //
-// The inbox reader (readInbox / normalizeInboxResponse) is grounded in the same
-// prior art but UNPROVEN against a live messaging payload: the conversations
-// endpoint path, the event field names (eventContent.attributedBody.text,
-// from.*.miniProfile.entityUrn, deliveredAt), and the inbound/outbound marker
-// all need one real run to confirm. normalizeInboxResponse is exported so the
-// ops shakeout can dump a raw body and adjust the names. getConversation shares
-// this endpoint and the same parseEvent parser, so it inherits the same
-// unverified field names (plus the entityUrn/backendUrn thread-match).
+// The inbox reader (readInbox / normalizeInboxResponse) was migrated off the
+// deprecated /voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX read
+// (now fails non-200) to the modern messenger graphql query
+// (/voyager/api/voyagerMessagingGraphQL/graphql, messengerConversations). It is
+// UNPROVEN against a live payload from THIS account:
+//   - The DEFAULT_INBOX_QUERY_ID hash is a best-effort default that could NOT be
+//     captured live here (a stale hash 400s — capture a fresh
+//     messengerConversations.<hash> from a /messaging/ load and set
+//     LOA_INBOX_QUERY_ID).
+//   - The mailbox resolution: readMailboxUrn reads /voyager/api/me and parses the
+//     viewer's fsd_profile urn (mailboxUrnFromMe). LOA_MAILBOX_URN overrides it.
+//   - The modern field names (messages.elements[].body.text, sender.hostIdentityUrn,
+//     sender.participantType.member.profileUrl) and the viewer-urn-embedded-in-the-
+//     conversation-urn outbound heuristic. normalizeInboxResponse still handles the
+//     LEGACY shape too, and is exported so the ops shakeout can dump a raw body and
+//     adjust the names. getConversation shares this endpoint and the same parseEvent
+//     parser, so it inherits the same unverified field names (plus the
+//     entityUrn/backendUrn thread-match).
 //
 // The profile reader (getProfile / normalizeProfileResponse) was migrated off
 // the DEPRECATED /voyager/api/identity/profiles/{id}/profileView (now HTTP 410
