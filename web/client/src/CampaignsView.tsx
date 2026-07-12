@@ -158,7 +158,18 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
           <h3>Leads</h3>
           <span className="count-tag">{detail.enrolledCount} enrolled</span>
         </div>
-        <LeadsTable leads={leads} filter={filter} />
+        <LeadsTable
+          leads={leads}
+          filter={filter}
+          onRemove={async (targetId) => {
+            try {
+              await api.removeCampaignTargets(id, [targetId]);
+              load();
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            }
+          }}
+        />
       </div>
 
       <div className="card">

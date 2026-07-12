@@ -22,6 +22,7 @@ export type {
   CampaignStepView,
   SequenceStepInput,
   EnrollResult,
+  RemoveTargetsResult,
   HealthReport,
   AuditRecord,
   ProfileSummary,
@@ -40,9 +41,9 @@ export type {
   IcpAttribute,
   IcpField,
   DiscoveryPort,
-  DiscoveryResult,
   LeadScoreInput,
   ScoreLeadsResult,
+  ScoreListResult,
 } from './ports.js';
 
 export { gateAct, mayExecuteDirectly, type GateOutcome, type GateDeps } from './gate.js';

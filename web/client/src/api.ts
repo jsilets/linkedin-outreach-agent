@@ -48,6 +48,8 @@ export interface Lead {
   company: string | null;
   headline: string | null;
   profileUrl: string | null;
+  score: number | null;
+  offIcp: boolean;
   stage: string;
   progressState: string | null;
   currentStep: number | null;
@@ -148,6 +150,10 @@ export interface ListMember {
   degree: string | null;
   location: string | null;
   currentCompany: string | null;
+  score: number | null;
+  scoreReasons: string[] | null;
+  icp: string | null;
+  offIcp: boolean;
 }
 
 export interface ListDetail {
@@ -162,12 +168,6 @@ export interface CreateListResult {
   id: string;
   name: string;
   description: string | null;
-}
-
-export interface CreateCampaignFromListResult {
-  ok: true;
-  campaignId: string;
-  targetCount: number;
 }
 
 export interface LinkAccountBody {
@@ -238,6 +238,10 @@ export const api = {
   accounts: () => get<Account[]>('/api/accounts'),
   lists: () => get<ListSummary[]>('/api/lists'),
   getList: (id: string) => get<ListDetail>(`/api/lists/${id}`),
+  removeListMembers: (id: string, memberIds: string[]) =>
+    send<{ removed: number }>(`/api/lists/${id}/members/remove`, 'POST', { memberIds }),
+  removeCampaignTargets: (id: string, targetIds: string[], reason?: string) =>
+    send<{ removed: number }>(`/api/campaigns/${id}/targets/remove`, 'POST', { targetIds, reason }),
   createList: async (body: { name: string; description?: string }): Promise<CreateListResult> => {
     const res = await fetch('/api/lists', {
       method: 'POST',
@@ -246,18 +250,6 @@ export const api = {
     });
     if (!res.ok) throw new Error(await errorText(res));
     return res.json() as Promise<CreateListResult>;
-  },
-  createCampaignFromList: async (
-    listId: string,
-    body: { goal: string; owner?: string; messageStrategy?: string },
-  ): Promise<CreateCampaignFromListResult> => {
-    const res = await fetch(`/api/lists/${listId}/campaign`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(await errorText(res));
-    return res.json() as Promise<CreateCampaignFromListResult>;
   },
   linkAccount: async (body: LinkAccountBody): Promise<LinkAccountResult> => {
     const res = await fetch('/api/accounts/link', {

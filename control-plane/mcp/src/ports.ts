@@ -262,6 +262,17 @@ export interface EnrollResult {
   accountId: string;
   enrolled: number;
   progressIds: string[];
+  /** Targets skipped because an operator removed them from the campaign;
+   *  removal is permanent, so enrollment never resurrects them. */
+  skippedRemoved: number;
+}
+
+/** Outcome of removing targets from a campaign. */
+export interface RemoveTargetsResult {
+  /** How many targets were ejected (belonged to the campaign and existed). */
+  removed: number;
+  /** targetIds that were not found in this campaign (skipped). */
+  notFound: string[];
 }
 
 /** A target to add, carrying a real LinkedIn identity. This is the shape a
@@ -280,6 +291,9 @@ export interface TargetInput {
   currentCompany?: string;
   location?: string;
   degree?: string;
+  /** Extra blob merged onto the target's external context (e.g. an ICP score
+   *  envelope carried from a list). Merged over the derived profile fields. */
+  externalContext?: Json;
 }
 
 export interface CampaignPort {
@@ -315,6 +329,17 @@ export interface CampaignPort {
     targetIds: string[],
     accountId: string,
   ): Promise<EnrollResult>;
+  /** Operator removal: eject targets from a campaign, selected by target id
+   * and/or LinkedIn URN (the URN is what the agent has from a list). Stops each
+   * target's sequence, cancels its undelivered sends, and marks the target stage
+   * 'lost'. A logical removal — target rows are kept so the audit trail and any
+   * sent history stay intact. Returns how many were removed and any selectors
+   * not matched in the campaign. */
+  removeTargets(
+    campaignId: string,
+    selector: { targetIds?: string[]; linkedinUrns?: string[] },
+    reason?: string,
+  ): Promise<RemoveTargetsResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,7 +358,9 @@ export interface ListSummary {
   memberCount: number;
 }
 
-/** One person in a lead list. Mirrors a PersonSearchResult, flattened. */
+/** One person in a lead list. Mirrors a PersonSearchResult, flattened, plus the
+ *  ICP fit score read out of the member's external_context (null when the member
+ *  has not been scored). offIcp is the advisory below-threshold flag. */
 export interface ListMember {
   id: string;
   linkedinUrn: string;
@@ -343,6 +370,14 @@ export interface ListMember {
   degree: string | null;
   location: string | null;
   currentCompany: string | null;
+  /** 0..100 ICP fit score, or null when unscored. */
+  score: number | null;
+  /** Short justification lines for the score. */
+  scoreReasons: string[] | null;
+  /** The ICP label the score was computed against. */
+  icp: string | null;
+  /** score !== null && score < ICP_FIT_THRESHOLD. Advisory off-ICP flag. */
+  offIcp: boolean;
 }
 
 /** A lead list with its members (list detail). */
@@ -370,6 +405,9 @@ export interface LeadListPort {
   /** Write people into a list, skipping anyone already in it (unique on
    * listId + linkedinUrn). Returns how many were newly inserted vs skipped. */
   insertMembers(listId: string, people: PersonSearchResult[]): Promise<InsertMembersResult>;
+  /** Remove members from a list by LinkedIn URN. Returns how many were removed
+   * (a urn not in the list is silently skipped). */
+  removeMembers(listId: string, linkedinUrns: string[]): Promise<{ removed: number }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,23 +455,6 @@ export interface Icp {
   description?: string;
   /** Structured, weighted attributes the heuristic scorer can read directly. */
   attributes?: IcpAttribute[];
-  /** Drop candidates scoring below this (0..100). Default 0 (keep all, ranked). */
-  minScore?: number;
-  /** Max candidates to discover. Default 25. */
-  limit?: number;
-}
-
-/** Outcome of a discover -> score -> rank -> write run. Idempotent on
- *  (listId, linkedinUrn), like source_to_list. */
-export interface DiscoveryResult {
-  listId: string;
-  discovered: number;
-  /** How many survived the minScore cut and were written (before dedup). */
-  scored: number;
-  inserted: number;
-  duplicates: number;
-  /** Highest score among the kept candidates (0 when none). */
-  topScore: number;
 }
 
 /** One agent-computed score to attach to an existing list member. */
@@ -450,17 +471,38 @@ export interface ScoreLeadsResult {
   missed: string[];
 }
 
+/** Outcome of scoring the members of a list against an ICP. The counts describe
+ *  only the members scored in this run; members left untouched because a
+ *  higher-quality scorer already scored them are reported in skippedOtherScorer. */
+export interface ScoreListResult {
+  listId: string;
+  /** How many members were scored in this run. */
+  scored: number;
+  /** How many of the scored members fall below the ICP fit threshold (off-ICP). */
+  offIcp: number;
+  /** Highest score among the members scored this run (0 when none were scored). */
+  topScore: number;
+  /** How many members were skipped because they carry a score from a different
+   *  scorer (e.g. a harness score) and overwrite was false. */
+  skippedOtherScorer: number;
+}
+
+/**
+ * The list-scoring surface. Sourcing (source_to_list) and scoring are separate
+ * steps: this scores people who are already in a list. Two scorers, same target
+ * (the member's external_context): the offline heuristic (scoreList) and the
+ * harness's own judgment (scoreLeads). Neither makes a live search.
+ */
 export interface DiscoveryPort {
-  /** Autonomous path: live search + heuristic score + ranked write. */
-  discoverLeads(params: {
-    accountId: string;
-    icp: Icp;
-    listId?: string;
-    listName?: string;
-  }): Promise<DiscoveryResult>;
   /** Harness-driven path: write scores an agent already computed into the
    *  members' external_context. */
   scoreLeads(listId: string, scores: LeadScoreInput[]): Promise<ScoreLeadsResult>;
+  /** Offline path: run the built-in heuristic over the members ALREADY in a list
+   *  and write the scores. The keyless fallback when no agent scores the list.
+   *  A member already scored by a different scorer (e.g. a harness score) is left
+   *  untouched unless overwrite is true, so a higher-quality score is not silently
+   *  downgraded. */
+  scoreList(listId: string, icp: Icp, overwrite?: boolean): Promise<ScoreListResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +548,7 @@ export interface Ports {
   campaign: CampaignPort;
   lists: LeadListPort;
   admin: AccountAdminPort;
-  /** The lead-discovery feeder. Present only when LOA_DISCOVERY_ENABLED is on;
-   *  the discover_leads tool rejects with a clear error when it is absent. */
+  /** The list-scoring surface (heuristic score_list + harness score_leads).
+   *  Always wired; offline, so no feature flag. */
   discovery?: DiscoveryPort;
 }

@@ -42,8 +42,23 @@ export class CampaignService {
   }
 
   async addTargets(campaignId: string, inputs: AddTargetInput[]): Promise<Target[]> {
+    // Dedupe on linkedinUrn against the campaign's existing targets (any stage,
+    // so a previously removed/lost target is not re-added — removal sticks) and
+    // within the input batch itself. Only genuinely new rows get created.
+    // Read-then-insert is not race-safe: two concurrent calls can both see a urn
+    // as fresh (targets has no unique index on campaignId+linkedinUrn). Fine
+    // under the current single-operator runtime; the real fix is that index plus
+    // onConflictDoNothing, which needs a migration against live data.
+    const existing = await this.targets.listByCampaign(campaignId);
+    const seen = new Set(existing.map((t) => t.linkedinUrn));
+    const fresh: AddTargetInput[] = [];
+    for (const t of inputs) {
+      if (seen.has(t.linkedinUrn)) continue;
+      seen.add(t.linkedinUrn);
+      fresh.push(t);
+    }
     const rows = await this.targets.createMany(
-      inputs.map((t) => ({
+      fresh.map((t) => ({
         campaignId,
         prospectRef: t.prospectRef,
         linkedinUrn: t.linkedinUrn,
@@ -53,6 +68,7 @@ export class CampaignService {
     await this.log.recordEvent('targets_added', null, {
       campaignId,
       count: rows.length,
+      skipped: inputs.length - rows.length,
     });
     return rows.map(rowToTarget);
   }

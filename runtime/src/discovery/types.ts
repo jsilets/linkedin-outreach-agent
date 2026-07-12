@@ -39,13 +39,6 @@ export interface LeadScore {
   model: string;
 }
 
-/** Where candidates come from. The default wraps the live people search; an
- *  external provider (Apollo/Clay/...) can drop in behind the same port. */
-export interface DataSourcePort {
-  /** Discover up to `limit` candidates for an ICP. May page internally. */
-  discover(accountId: string, icp: Icp, limit: number): Promise<Candidate[]>;
-}
-
 /** Turns a candidate + ICP into a score. Heuristic (offline) or LLM-backed. */
 export interface QualifierPort {
   score(candidate: Candidate, icp: Icp): Promise<LeadScore>;

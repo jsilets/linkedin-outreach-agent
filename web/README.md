@@ -94,8 +94,8 @@ Accounts:
 Lead lists:
 
 - `GET /api/lists`, `POST /api/lists`, `GET /api/lists/:id`,
-  `DELETE /api/lists/:id` - manage lead lists.
-- `POST /api/lists/:id/campaign` - create a campaign from a list.
+  `DELETE /api/lists/:id` - manage lead lists. Turning a list into a campaign
+  happens through the MCP `enroll_from_list` tool, which gates on ICP fit score.
 
 Approvals and activity (writes proxy to the runtime's MCP server):
 

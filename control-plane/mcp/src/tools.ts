@@ -9,7 +9,7 @@
 // requirePrivileged() first. Observe / campaign / metrics tools run open.
 
 import { z } from 'zod';
-import { AUTONOMY_LEVELS, CAMPAIGN_STEP_TYPES } from '@loa/shared';
+import { AUTONOMY_LEVELS, CAMPAIGN_STEP_TYPES, ICP_FIT_THRESHOLD } from '@loa/shared';
 import type { RequestContext } from './context.js';
 import { requirePrivileged } from './capability.js';
 import { gateAct, type GateOutcome } from './gate.js';
@@ -60,9 +60,9 @@ const peopleFacetShape = {
   network: z.array(z.enum(['F', 'S', 'O'])).optional(),
 };
 
-// The ICP input for discover_leads: discovery facets under `query`, plus the
-// qualification `description` / `attributes` the scorer reads. Mirrors the Icp
-// port type; zod validates it at the tool boundary.
+// The ICP input for score_list: the qualification `description` / `attributes`
+// the heuristic reads (the `query` facets are unused by scoring — sourcing owns
+// those). Mirrors the Icp port type; zod validates it at the tool boundary.
 const icpShape = z.object({
   name: z.string().min(1),
   query: z
@@ -86,8 +86,6 @@ const icpShape = z.object({
       }),
     )
     .optional(),
-  minScore: z.number().min(0).max(100).optional(),
-  limit: z.number().int().positive().max(1000).optional(),
 });
 
 /** Assemble a PeopleQuery from the shared facet args + an optional keyword box.
@@ -337,7 +335,10 @@ const campaignTools: ToolDef[] = [
     description:
       'Add targets to a campaign. Pass prospectRefs (bare strings) and/or people ' +
       '(search_people results, which carry the real entityUrn + profileUrl so the ' +
-      'target enrolls with its true identity). At least one must be non-empty.',
+      'target enrolls with its true identity). At least one must be non-empty. ' +
+      'People already in the campaign (matched by linkedinUrn) are skipped, so ' +
+      're-adding is safe and a prior removal sticks (a removed target is not ' +
+      're-added).',
     privileged: false,
     inputShape: {
       campaignId: z.string(),
@@ -480,6 +481,35 @@ const campaignTools: ToolDef[] = [
     },
     handler: (a, p) => p.campaign.enrollTargets(a.campaignId, a.targetIds, a.accountId),
   },
+  {
+    name: 'remove_from_campaign',
+    family: 'campaign',
+    description:
+      'Remove people from a campaign — the fix for off-ICP targets already ' +
+      'enrolled. Select by linkedinUrn (what get_list/rescore give you) and/or ' +
+      'targetId. Each match has its sequence stopped, any approved-but-unsent ' +
+      'message cancelled, and its target marked lost (a logical removal: the row ' +
+      'is kept for the audit trail, and it lands in terminal "skipped", not ' +
+      '"replied", so reply metrics stay honest). Returns { removed, notFound }. ' +
+      'Provide at least one of linkedinUrns or targetIds.',
+    privileged: false,
+    inputShape: {
+      campaignId: z.string(),
+      linkedinUrns: z.array(z.string()).optional(),
+      targetIds: z.array(z.string()).optional(),
+      reason: z.string().optional(),
+    },
+    handler: (a, p) => {
+      if (!a.linkedinUrns?.length && !a.targetIds?.length) {
+        throw new Error('remove_from_campaign: provide at least one linkedinUrn or targetId');
+      }
+      return p.campaign.removeTargets(
+        a.campaignId,
+        { targetIds: a.targetIds, linkedinUrns: a.linkedinUrns },
+        a.reason,
+      );
+    },
+  },
   // --- lead lists (lead gen, visible in the web UI's ListsView) -------------
   {
     name: 'create_list',
@@ -508,6 +538,22 @@ const campaignTools: ToolDef[] = [
     privileged: false,
     inputShape: { listId: z.string() },
     handler: (a, p) => p.lists.getList(a.listId),
+  },
+  {
+    name: 'remove_from_list',
+    family: 'campaign',
+    description:
+      'Remove people from a lead list by their LinkedIn URN (the linkedinUrn ' +
+      'field get_list returns). Use this to eject off-ICP or mistargeted leads a ' +
+      'search swept in before they are enrolled. Returns { removed } — the count ' +
+      'actually deleted (a urn not in the list is skipped). Does not touch any ' +
+      'campaign a lead was already enrolled into; use remove_from_campaign for that.',
+    privileged: false,
+    inputShape: {
+      listId: z.string(),
+      linkedinUrns: z.array(z.string()).min(1),
+    },
+    handler: (a, p) => p.lists.removeMembers(a.listId, a.linkedinUrns),
   },
   {
     name: 'source_to_list',
@@ -540,41 +586,104 @@ const campaignTools: ToolDef[] = [
       return { listId, found: people.length, inserted, duplicates };
     },
   },
-  // --- discovery feeder (feature-flagged; rejects when ports.discovery is off)
   {
-    name: 'discover_leads',
+    name: 'enroll_from_list',
     family: 'campaign',
     description:
-      'Autonomous lead discovery + scoring. Give an ICP (a name, discovery ' +
-      'facets under `query`, and qualification `description`/`attributes`) and a ' +
-      'listId or listName; runs a live people search, scores each candidate ' +
-      'against the ICP with an offline heuristic, ranks them, and writes a scored ' +
-      'list. The per-lead score lands in the member external_context (shown in ' +
-      'the UI, carried onto campaign targets). Idempotent on (listId, ' +
-      'linkedinUrn). Returns { listId, discovered, scored, inserted, duplicates, ' +
-      'topScore }. Requires LOA_DISCOVERY_ENABLED.',
+      'Turn a scored lead list into campaign targets, gated by fit score. Only ' +
+      'members whose score is >= minScore are added (unscored members count as 0, ' +
+      'so they are excluded). The gate defaults to the ICP fit threshold (50), so ' +
+      'unscored and off-ICP members are left out by default — pass minScore 0 ' +
+      'explicitly to enroll everyone. This is the seam that keeps off-ICP people ' +
+      'out of a campaign. Re-runs are safe: people already in the campaign ' +
+      '(including previously removed ones) are skipped and reported as ' +
+      'alreadyInCampaign. Target an existing campaign with campaignId, or create ' +
+      'one by passing goal (+ optional messageStrategy/owner). Pass accountId to ' +
+      'also enroll the added targets under that sender (otherwise they land at ' +
+      'stage sourced for you to enroll later). The fit score rides onto each ' +
+      'target. Returns { campaignId, eligible, skippedBelowScore, ' +
+      'alreadyInCampaign, added, enrolled }. Run score_list (or score_leads) ' +
+      'first so scores are fresh.',
     privileged: false,
     inputShape: {
-      accountId: z.string(),
-      icp: icpShape,
-      listId: z.string().optional(),
-      listName: z.string().optional(),
+      listId: z.string(),
+      minScore: z.number().min(0).max(100).default(ICP_FIT_THRESHOLD),
+      campaignId: z.string().optional(),
+      goal: z.string().optional(),
+      messageStrategy: z.string().optional(),
+      owner: z.string().optional(),
+      accountId: z.string().optional(),
     },
     handler: async (a, p) => {
-      if (!p.discovery) {
-        throw new Error('discovery is disabled; set LOA_DISCOVERY_ENABLED=true to enable it');
+      const list = await p.lists.getList(a.listId);
+      if (!list) throw new Error(`enroll_from_list: list ${a.listId} not found`);
+      const eligible = list.members.filter((m) => (m.score ?? 0) >= a.minScore);
+      const skippedBelowScore = list.members.length - eligible.length;
+      if (eligible.length === 0) {
+        throw new Error(
+          `enroll_from_list: no members at or above minScore ${a.minScore} (of ${list.members.length})`,
+        );
       }
-      if (!a.listId && !a.listName) {
-        throw new Error('discover_leads: provide either listId or listName');
+
+      let campaignId = a.campaignId;
+      if (!campaignId) {
+        if (!a.goal) {
+          throw new Error('enroll_from_list: provide campaignId, or goal to create a campaign');
+        }
+        const campaign = await p.campaign.createCampaign({
+          goal: a.goal,
+          autonomyLevel: 'supervised',
+          messageStrategy: a.messageStrategy ?? 'one specific, relevant reason; short',
+          owner: a.owner ?? 'operator',
+        });
+        campaignId = campaign.id;
       }
-      return p.discovery.discoverLeads({
-        accountId: a.accountId,
-        icp: a.icp as Icp,
-        ...(a.listId ? { listId: a.listId } : {}),
-        ...(a.listName ? { listName: a.listName } : {}),
+
+      const inputs: TargetInput[] = eligible.map((m) => {
+        const publicId = m.profileUrl?.split('/in/')[1]?.replace(/\/.*$/, '');
+        return {
+          prospectRef: publicId || m.linkedinUrn,
+          linkedinUrn: m.linkedinUrn,
+          ...(m.profileUrl ? { profileUrl: m.profileUrl } : {}),
+          ...(m.name ? { name: m.name } : {}),
+          ...(m.headline ? { headline: m.headline } : {}),
+          ...(m.currentCompany ? { currentCompany: m.currentCompany } : {}),
+          externalContext: {
+            ...(m.score !== null ? { score: m.score } : {}),
+            ...(m.scoreReasons ? { scoreReasons: m.scoreReasons } : {}),
+            ...(m.icp ? { icp: m.icp } : {}),
+          },
+        };
       });
+      // addTargets dedupes on linkedinUrn, so a re-run (or people already in the
+      // campaign, including previously removed ones) yields 0 new targets. That
+      // is not an error: report it as alreadyInCampaign and return normally.
+      const targets = await p.campaign.addTargets(campaignId, inputs);
+      const alreadyInCampaign = eligible.length - targets.length;
+
+      let enrolled = 0;
+      if (a.accountId && targets.length > 0) {
+        const res = await p.campaign.enrollTargets(
+          campaignId,
+          targets.map((t) => t.id),
+          a.accountId,
+        );
+        enrolled = res.enrolled;
+      }
+      return {
+        campaignId,
+        eligible: eligible.length,
+        skippedBelowScore,
+        alreadyInCampaign,
+        added: targets.length,
+        enrolled,
+      };
     },
   },
+  // --- list scoring (offline: source_to_list fetches, these score) ----------
+  // Sourcing and scoring are separate steps. score_leads takes the driving
+  // agent's own fit judgment; score_list runs the built-in heuristic as a
+  // keyless fallback. Neither makes a live search.
   {
     name: 'score_leads',
     family: 'campaign',
@@ -585,7 +694,7 @@ const campaignTools: ToolDef[] = [
       'Each { linkedinUrn, score (0..100), reasons? } merges into that member ' +
       "external_context (the list-stage sibling of attach_external_context, which " +
       'only reaches campaign targets). Returns { updated, missed } where missed ' +
-      'lists urns with no matching member. Requires LOA_DISCOVERY_ENABLED.',
+      'lists urns with no matching member. Always available (no live search).',
     privileged: false,
     inputShape: {
       listId: z.string(),
@@ -601,9 +710,38 @@ const campaignTools: ToolDef[] = [
     },
     handler: async (a, p) => {
       if (!p.discovery) {
-        throw new Error('discovery is disabled; set LOA_DISCOVERY_ENABLED=true to enable it');
+        throw new Error('discovery port is not wired');
       }
       return p.discovery.scoreLeads(a.listId, a.scores);
+    },
+  },
+  {
+    name: 'score_list',
+    family: 'campaign',
+    description:
+      'Score the people in a list against an ICP with the built-in heuristic, ' +
+      'offline (no live search). This is the keyless fallback for scoring; the ' +
+      'higher-quality path is to judge fit yourself and write it with score_leads. ' +
+      'Give an ICP (name + qualification description/attributes; query facets are ' +
+      'not used here). Writes a score into each member external_context, so ' +
+      'get_list then shows the score and off-ICP flag. Run it after source_to_list ' +
+      'so no list is left unscored, or again after tightening the ICP to re-judge ' +
+      'without re-fetching. Then remove_from_list the off-ICP ones. A member ' +
+      'already scored by another scorer (e.g. a score_leads/harness score) is left ' +
+      'untouched and reported in skippedOtherScorer, since a harness score is ' +
+      'higher-quality; pass overwrite=true to re-score it anyway. Returns ' +
+      '{ listId, scored, offIcp, topScore, skippedOtherScorer }.',
+    privileged: false,
+    inputShape: {
+      listId: z.string(),
+      icp: icpShape,
+      overwrite: z.boolean().default(false),
+    },
+    handler: async (a, p) => {
+      if (!p.discovery) {
+        throw new Error('discovery port is not wired');
+      }
+      return p.discovery.scoreList(a.listId, a.icp as Icp, a.overwrite);
     },
   },
 ];

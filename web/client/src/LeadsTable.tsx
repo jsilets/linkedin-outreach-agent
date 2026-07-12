@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Lead } from './api';
 import { DataTable, type Column } from './DataTable';
 import { formatRelative, formatStamp } from './format';
@@ -57,11 +58,34 @@ function isFlowing(l: Lead): boolean {
  * happened. Filtered to a single funnel segment when `filter` is set. Sort and
  * pagination are handled by DataTable and survive parent refetches.
  */
-export function LeadsTable({ leads, filter }: { leads: Lead[]; filter: string | null }) {
+export function LeadsTable({
+  leads,
+  filter,
+  onRemove,
+}: {
+  leads: Lead[];
+  filter: string | null;
+  /** Eject a target from the campaign. When omitted, no Remove column shows. */
+  onRemove?: (targetId: string) => void | Promise<void>;
+}) {
   const rows = filter ? leads.filter((l) => leadFilterKey(l) === filter) : leads;
+  const [removing, setRemoving] = useState<string | null>(null);
 
   if (leads.length === 0) return <div className="empty">No leads enrolled yet.</div>;
   if (rows.length === 0) return <div className="empty">No leads in this stage.</div>;
+
+  async function remove(l: Lead) {
+    if (!onRemove) return;
+    if (!window.confirm(`Remove ${l.name ?? 'this lead'} from the campaign? Their sequence stops and any unsent message is cancelled.`)) {
+      return;
+    }
+    setRemoving(l.targetId);
+    try {
+      await onRemove(l.targetId);
+    } finally {
+      setRemoving(null);
+    }
+  }
 
   const columns: Column<Lead>[] = [
     {
@@ -78,10 +102,18 @@ export function LeadsTable({ leads, filter }: { leads: Lead[]; filter: string | 
             ) : (
               (l.name ?? 'Unknown')
             )}
+            {l.offIcp && <span className="icp-badge" style={{ marginLeft: 6 }}>off-ICP</span>}
           </div>
           {l.company && <div className="co">{l.company}</div>}
         </>
       ),
+    },
+    {
+      key: 'fit',
+      header: 'Fit',
+      numeric: true,
+      sortValue: (l) => l.score,
+      cell: (l) => (l.score === null ? <span className="muted">—</span> : l.score),
     },
     {
       key: 'status',
@@ -120,6 +152,24 @@ export function LeadsTable({ leads, filter }: { leads: Lead[]; filter: string | 
       cellClassName: 'err',
       cell: (l) => l.errorMessage ?? '',
     },
+    ...(onRemove
+      ? [
+          {
+            key: 'actions',
+            header: '',
+            sortable: false,
+            cell: (l: Lead) => (
+              <button
+                className="btn tiny danger"
+                disabled={removing === l.targetId}
+                onClick={() => remove(l)}
+              >
+                {removing === l.targetId ? 'Removing…' : 'Remove'}
+              </button>
+            ),
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -128,7 +178,9 @@ export function LeadsTable({ leads, filter }: { leads: Lead[]; filter: string | 
         rows={rows}
         columns={columns}
         rowKey={(l) => l.targetId}
-        rowClassName={(l) => (l.progressState === 'awaiting_approval' ? 'needs-you' : undefined)}
+        rowClassName={(l) =>
+          l.progressState === 'awaiting_approval' ? 'needs-you' : l.offIcp ? 'row-warn' : undefined
+        }
       />
     </div>
   );

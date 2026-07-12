@@ -62,13 +62,6 @@ export interface RuntimeConfig {
    * from a connect step into the next step.
    */
   acceptancePollIntervalMs?: number;
-  /**
-   * Turn on the lead-discovery + scoring feeder. Off by default: when unset,
-   * compose() leaves ports.discovery undefined and the discover_leads /
-   * score_leads tools reject. Set LOA_DISCOVERY_ENABLED=true to enable. The
-   * autonomous path uses an offline heuristic scorer, so no key is required.
-   */
-  discoveryEnabled: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
@@ -78,7 +71,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     profileDir: env.LOA_PROFILE_DIR ?? '/data/profile',
     vaultDir: env.LOA_VAULT_DIR ?? '/data/vault',
     allowNoProxy: env.LOA_ALLOW_NO_PROXY === 'true',
-    discoveryEnabled: env.LOA_DISCOVERY_ENABLED === 'true',
   };
   if (env.DATABASE_URL) cfg.databaseUrl = env.DATABASE_URL;
   if (env.OPENROUTER_API_KEY) cfg.openRouterApiKey = env.OPENROUTER_API_KEY;

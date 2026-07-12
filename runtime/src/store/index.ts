@@ -100,6 +100,10 @@ export interface SequenceStorePort {
   /** Pull a target out of every funnel it is in (terminal 'replied' state) and
    * stop further steps. Idempotent; a no-op if the target is not enrolled. */
   pullTargetFromFunnel(targetId: string, reason: string): Promise<void>;
+  /** Operator removal: stop the sequence and cancel undelivered sends, but land
+   * the cursor in terminal 'skipped' (not 'replied', which would inflate reply
+   * metrics) — the target was ejected, it did not reply. Idempotent. */
+  excludeTargetFromFunnel(targetId: string, reason: string): Promise<void>;
 
   // --- read-side aggregates for the UI ---
   campaignCounts(campaignId: string): Promise<{
@@ -126,6 +130,9 @@ export interface LeadListStorePort {
   /** Insert members, skipping any already present (unique on listId +
    * linkedinUrn). Returns how many rows were newly inserted. */
   insertMembers(rows: shared.NewLeadListMemberRow[]): Promise<{ inserted: number }>;
+  /** Remove members from a list by their LinkedIn URN (the stable identity the
+   * agent sees in get_list). Returns how many rows were removed. */
+  removeMembers(listId: string, linkedinUrns: string[]): Promise<{ removed: number }>;
   /** Merge a patch into one member's external_context (matched on listId +
    * linkedinUrn). Used by the harness-driven score_leads path to attach a score
    * an agent computed. Returns true when a member matched, false otherwise. */

@@ -110,6 +110,40 @@ Use the same cron cadence, `0 9,12,15 * * 1-5`, so both harnesses respect the
 same wake spacing. Whichever harness you pick, one scheduled task equals one
 bounded cycle.
 
+## Feeding the top of funnel (discovery routine)
+
+The driver above *drains* a campaign: it sends to targets that are already
+enrolled. A second, separate routine *fills* it: discover or source leads, score
+them against your ICP, drop the off-ICP ones, and enroll the good ones. This keeps
+the funnel from running dry without ever letting a mistargeted lead through.
+
+Run it on a **slower** cron than the send driver: a campaign needs feeding much
+less often than sending. Once or twice a week is usually right:
+
+```
+0 10 * * 1
+```
+
+That is 10am on Mondays. The feeder does a read-only people search (not an Act,
+so it does not spend the send budget), plus offline scoring and list edits, so it
+is safe to run independently of the send cadence.
+
+One wake runs the feeder playbook in [`examples/driver/FEEDER.md`](../examples/driver/FEEDER.md): fill
+the list (`source_to_list`), score it (`score_leads` with your own judgment, or
+`score_list` for the keyless heuristic), `remove_from_list` the off-ICP members,
+then `enroll_from_list` above a `minScore` (defaults to 50, the ICP fit
+threshold, if omitted). It reports how many were flagged off-ICP and enrolled,
+then stops.
+
+Schedule it the same way as the send driver, pointing at the feeder prompt:
+
+```
+/schedule "0 10 * * 1" run the loa feeder for list LIST_ID into campaign CAMPAIGN_ID at minScore 60, one cycle, then stop
+```
+
+No feature flag is involved: `source_to_list` does a read-only search, and the
+scoring, removal, and enroll tools are all offline and always available.
+
 ## Stopping a run
 
 The kill switch is server-side and independent of the schedule, so pausing the

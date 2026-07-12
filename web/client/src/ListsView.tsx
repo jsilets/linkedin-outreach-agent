@@ -102,15 +102,53 @@ export function ListsView() {
 function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   const [detail, setDetail] = useState<ListDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+
+  function load() {
+    api.getList(id).then(setDetail).catch((e) => setError(String(e)));
+  }
 
   useEffect(() => {
-    api.getList(id).then(setDetail).catch((e) => setError(String(e)));
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  async function remove(m: ListMember) {
+    if (!window.confirm(`Remove ${m.name ?? 'this lead'} from the list?`)) return;
+    setRemoving(m.id);
+    setError(null);
+    try {
+      await api.removeListMembers(id, [m.id]);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Remove failed.');
+    } finally {
+      setRemoving(null);
+    }
+  }
 
   if (error) return <div className="error">{error}</div>;
   if (!detail) return <p className="muted">Loading...</p>;
 
+  const offIcpCount = detail.members.filter((m) => m.offIcp).length;
+
   const columns: Column<ListMember>[] = [
+    {
+      key: 'score',
+      header: 'Fit',
+      numeric: true,
+      // Sort unscored rows to the end; off-ICP rows carry a badge.
+      sortValue: (m) => m.score,
+      cell: (m) =>
+        m.score === null ? (
+          <span className="muted">—</span>
+        ) : (
+          <span title={(m.scoreReasons ?? []).join('\n') || undefined}>
+            {m.score}
+            {m.offIcp && <span className="icp-badge" style={{ marginLeft: 6 }}>off-ICP</span>}
+          </span>
+        ),
+    },
     {
       key: 'name',
       header: 'Name',
@@ -154,6 +192,20 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
           '—'
         ),
     },
+    {
+      key: 'actions',
+      header: '',
+      sortable: false,
+      cell: (m) => (
+        <button
+          className="btn tiny danger"
+          disabled={removing === m.id}
+          onClick={() => remove(m)}
+        >
+          {removing === m.id ? 'Removing…' : 'Remove'}
+        </button>
+      ),
+    },
   ];
 
   return (
@@ -170,6 +222,11 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
         <div className="section-head">
           <h3>Leads</h3>
           <span className="count-tag">{detail.members.length}</span>
+          {offIcpCount > 0 && (
+            <span className="icp-badge" style={{ marginLeft: 'var(--space-2)' }}>
+              {offIcpCount} off-ICP
+            </span>
+          )}
         </div>
         {detail.members.length === 0 ? (
           <div className="empty">No leads in this list yet.</div>
@@ -178,6 +235,8 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
             rows={detail.members}
             columns={columns}
             rowKey={(m) => m.id}
+            rowClassName={(m) => (m.offIcp ? 'row-warn' : undefined)}
+            initialSort={{ key: 'score', dir: 'desc' }}
             search={(m) =>
               [m.name, m.headline, m.currentCompany, m.location].filter(Boolean).join(' ')
             }

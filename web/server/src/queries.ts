@@ -2,7 +2,16 @@
 import { join } from 'node:path';
 import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import { buildStorageStateFromPastedCookies, saveStorageState } from '@loa/account-runner';
-import { ACTION_TYPES, DEFAULT_CAPS, defaultLimits, extractCompany } from '@loa/shared';
+import {
+  ACTION_TYPES,
+  ACTIVE_PROGRESS_STATES,
+  CANCELABLE_MESSAGE_STATUSES,
+  CONTACTED_TARGET_STAGES,
+  DEFAULT_CAPS,
+  defaultLimits,
+  extractCompany,
+  readIcpScore,
+} from '@loa/shared';
 import type { AccountLimits, AccountSchedule, ActionType } from '@loa/shared';
 import { db, schema, type Db } from './db.js';
 import { normalizeSteps, type NormalizedStep } from './steps.js';
@@ -23,8 +32,11 @@ const {
 /** Lifecycle a campaign has reached, derived from its enrollment cursors. */
 export type CampaignStatus = 'draft' | 'active' | 'done';
 
-// Progress states that mean the sequence is still moving a target forward.
-const ACTIVE_PROGRESS_STATES = ['in_progress', 'awaiting_approval', 'awaiting_connection'] as const;
+// Progress states that render a campaign "active" in lifecycle derivation. A
+// narrower set than the shared ACTIVE_PROGRESS_STATES (removal-eligibility): a
+// pending cursor is enrolled-but-not-started, which does not by itself make the
+// campaign lifecycle active.
+const ACTIVE_LIFECYCLE_STATES = ['in_progress', 'awaiting_approval', 'awaiting_connection'] as const;
 
 /**
  * Derive campaign lifecycle from its progress-state histogram: no enrollment
@@ -34,7 +46,7 @@ const ACTIVE_PROGRESS_STATES = ['in_progress', 'awaiting_approval', 'awaiting_co
 function deriveStatus(byProgressState: Record<string, number>): CampaignStatus {
   const enrolled = Object.values(byProgressState).reduce((sum, n) => sum + n, 0);
   if (enrolled === 0) return 'draft';
-  const active = ACTIVE_PROGRESS_STATES.some((s) => (byProgressState[s] ?? 0) > 0);
+  const active = ACTIVE_LIFECYCLE_STATES.some((s) => (byProgressState[s] ?? 0) > 0);
   return active ? 'active' : 'done';
 }
 
@@ -217,14 +229,19 @@ function readLeadContext(raw: unknown): {
   company: string | null;
   headline: string | null;
   profileUrl: string | null;
+  score: number | null;
+  offIcp: boolean;
 } {
   const ec = (raw ?? {}) as LeadContext;
   const headline = str(ec.headline);
+  const { score, offIcp } = readIcpScore(raw);
   return {
     name: str(ec.name),
     company: str(ec.company) ?? extractCompany(headline ?? undefined) ?? null,
     headline,
     profileUrl: str(ec.profileUrl),
+    score,
+    offIcp,
   };
 }
 
@@ -234,6 +251,10 @@ export interface Lead {
   company: string | null;
   headline: string | null;
   profileUrl: string | null;
+  /** ICP fit score carried from the source list onto the target, or null. */
+  score: number | null;
+  /** Advisory below-threshold flag, for badging off-ICP targets in the funnel. */
+  offIcp: boolean;
   stage: string;
   progressState: string | null;
   currentStep: number | null;
@@ -337,6 +358,8 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
       company: ctx.company,
       headline: ctx.headline,
       profileUrl: ctx.profileUrl,
+      score: ctx.score,
+      offIcp: ctx.offIcp,
       stage: r.stage,
       progressState: r.progressState ?? null,
       currentStep: r.currentStep ?? null,
@@ -830,6 +853,12 @@ export interface ListMember {
   degree: string | null;
   location: string | null;
   currentCompany: string | null;
+  /** 0..100 ICP fit score read from external_context, or null when unscored. */
+  score: number | null;
+  scoreReasons: string[] | null;
+  icp: string | null;
+  /** Advisory below-threshold flag. */
+  offIcp: boolean;
 }
 
 export interface ListDetail {
@@ -854,7 +883,7 @@ export async function getList(id: string): Promise<ListDetail | null> {
     .where(eq(leadLists.id, id));
   if (!list) return null;
 
-  const members = await db
+  const rows = await db
     .select({
       id: leadListMembers.id,
       linkedinUrn: leadListMembers.linkedinUrn,
@@ -864,10 +893,16 @@ export async function getList(id: string): Promise<ListDetail | null> {
       degree: leadListMembers.degree,
       location: leadListMembers.location,
       currentCompany: leadListMembers.currentCompany,
+      externalContext: leadListMembers.externalContext,
     })
     .from(leadListMembers)
     .where(eq(leadListMembers.listId, id))
     .orderBy(asc(leadListMembers.addedAt));
+
+  const members: ListMember[] = rows.map(({ externalContext, ...m }) => {
+    const { score, scoreReasons, icp, offIcp } = readIcpScore(externalContext);
+    return { ...m, score, scoreReasons, icp, offIcp };
+  });
 
   return { ...list, members };
 }
@@ -878,71 +913,105 @@ export async function deleteList(id: string): Promise<boolean> {
   return deleted.length > 0;
 }
 
-export interface CreateCampaignFromListInput {
-  goal: string;
-  owner?: string;
-  messageStrategy?: string;
+// Remove specific members from a list by member id. Scoped to the listId so a
+// stray id from another list can't delete across lists. Returns how many rows
+// were removed.
+export async function deleteListMembers(listId: string, memberIds: string[]): Promise<{ removed: number }> {
+  if (memberIds.length === 0) return { removed: 0 };
+  const removed = await db
+    .delete(leadListMembers)
+    .where(and(eq(leadListMembers.listId, listId), inArray(leadListMembers.id, memberIds)))
+    .returning({ id: leadListMembers.id });
+  return { removed: removed.length };
 }
 
-export interface CreateCampaignFromListResult {
-  campaignId: string;
-  targetCount: number;
-}
-
-/**
- * Create a campaign from a lead list: make the campaign, then copy every list
- * member in as a target (stage 'sourced'). Done in one transaction so a campaign
- * is never created without its leads. The funnel (sequence) is set afterwards in
- * the flow editor, and enrollment under a sender account happens from there.
- * Throws if the list has no members (nothing to campaign).
- */
-export async function createCampaignFromList(
-  listId: string,
-  input: CreateCampaignFromListInput,
-): Promise<CreateCampaignFromListResult> {
-  const members = await db
-    .select({
-      linkedinUrn: leadListMembers.linkedinUrn,
-      externalContext: leadListMembers.externalContext,
-    })
-    .from(leadListMembers)
-    .where(eq(leadListMembers.listId, listId));
-  if (members.length === 0) {
-    throw new EmptyListError('cannot create a campaign from an empty list');
-  }
-
+// Remove targets from a campaign (operator ejecting off-ICP or mistargeted
+// people). A LOGICAL removal that mirrors the runtime's remove path: stop each
+// active enrollment cursor (terminal 'skipped', not 'replied', so reply metrics
+// stay honest) and cancel any approved-but-unsent message. The target row is
+// kept for the audit trail. Scoped to the campaign, so a stray id can't touch
+// another campaign. Returns { removed }.
+export async function removeCampaignTargets(
+  campaignId: string,
+  targetIds: string[],
+  reason = 'removed by operator',
+): Promise<{ removed: number }> {
+  if (targetIds.length === 0) return { removed: 0 };
   return db.transaction(async (tx) => {
-    const [campaign] = await tx
-      .insert(campaigns)
-      .values({
-        goal: input.goal,
-        autonomyLevel: 'supervised',
-        messageStrategy: input.messageStrategy ?? 'one specific, relevant reason; short',
-        owner: input.owner ?? 'operator',
-      })
-      .returning({ id: campaigns.id });
-    if (!campaign) throw new Error('failed to create campaign');
+    // Only targets that actually belong to this campaign are eligible. Fetch the
+    // stage too so the update below can split contacted from pre-contact targets.
+    const owned = await tx
+      .select({ id: targets.id, linkedinUrn: targets.linkedinUrn, stage: targets.stage })
+      .from(targets)
+      .where(and(eq(targets.campaignId, campaignId), inArray(targets.id, targetIds)));
+    const ownedIds = owned.map((t) => t.id);
+    if (ownedIds.length === 0) return { removed: 0 };
 
-    await tx.insert(targets).values(
-      members.map((m) => ({
-        campaignId: campaign.id,
-        prospectRef: m.linkedinUrn,
-        linkedinUrn: m.linkedinUrn,
-        externalContext: m.externalContext,
-        stage: 'sourced' as const,
+    await tx
+      .update(targetProgress)
+      .set({ state: 'skipped', nextStepAt: null, errorMessage: reason, updatedAt: new Date() })
+      .where(
+        and(
+          inArray(targetProgress.targetId, ownedIds),
+          inArray(targetProgress.state, [...ACTIVE_PROGRESS_STATES]),
+        ),
+      );
+
+    await tx
+      .update(messages)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(
+        and(
+          inArray(messages.targetId, ownedIds),
+          eq(messages.direction, 'outbound'),
+          inArray(messages.status, [...CANCELABLE_MESSAGE_STATUSES]),
+        ),
+      );
+
+    // Mark the stage 'lost' ONLY for targets that were already contacted.
+    // getMetrics counts 'lost' in the invited bucket, so using it on a pre-contact
+    // target ('sourced'/'queued') would inflate invite metrics; those targets are
+    // still fully stopped by the terminal 'skipped' cursor and cancelled messages
+    // above, so their stage is left unchanged.
+    const contactedIds = owned
+      .filter((t) => CONTACTED_TARGET_STAGES.includes(t.stage as (typeof CONTACTED_TARGET_STAGES)[number]))
+      .map((t) => t.id);
+    if (contactedIds.length > 0) {
+      await tx
+        .update(targets)
+        .set({ stage: 'lost', updatedAt: new Date() })
+        .where(inArray(targets.id, contactedIds));
+    }
+
+    // Durable removal marker (mirrors the runtime's removeTargets). A never-
+    // enrolled target has no progress row, so without this a later launch would
+    // sweep it back into the funnel; launchCampaign skips marked targets.
+    await tx
+      .update(targets)
+      .set({
+        externalContext: sql`${targets.externalContext} || '{"removed": true}'::jsonb`,
+        updatedAt: new Date(),
+      })
+      .where(inArray(targets.id, ownedIds));
+
+    // Append one audit event per removed target, the same kind the runtime writes.
+    const contacted = new Set(contactedIds);
+    await tx.insert(events).values(
+      owned.map((t) => ({
+        kind: 'target_removed',
+        accountId: null,
+        payload: {
+          campaignId,
+          targetId: t.id,
+          linkedinUrn: t.linkedinUrn,
+          reason,
+          wasContacted: contacted.has(t.id),
+        },
       })),
     );
 
-    return { campaignId: campaign.id, targetCount: members.length };
+    return { removed: ownedIds.length };
   });
-}
-
-/** Thrown when creating a campaign from a list that has no leads. Maps to 400. */
-export class EmptyListError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'EmptyListError';
-  }
 }
 
 /** Thrown when a launch is missing a precondition (no steps / no account). 400. */
@@ -982,7 +1051,17 @@ export async function launchCampaign(campaignId: string, accountId: string): Pro
     throw new LaunchError('define a funnel (at least one enabled step) before launching');
   }
 
-  const targetRows = await db.select({ id: targets.id }).from(targets).where(eq(targets.campaignId, campaignId));
+  // Targets an operator removed carry a `removed` marker in external_context;
+  // launching must not sweep them back into the funnel.
+  const targetRows = await db
+    .select({ id: targets.id })
+    .from(targets)
+    .where(
+      and(
+        eq(targets.campaignId, campaignId),
+        sql`NOT (${targets.externalContext} @> '{"removed": true}'::jsonb)`,
+      ),
+    );
   if (targetRows.length === 0) throw new LaunchError('campaign has no targets to enroll');
 
   const inserted = await db

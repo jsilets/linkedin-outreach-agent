@@ -26,6 +26,7 @@ export interface TargetRepoPort {
   create(row: NewTargetRow): Promise<TargetRow>;
   createMany(rows: NewTargetRow[]): Promise<TargetRow[]>;
   findById(id: string): Promise<TargetRow | undefined>;
+  listByCampaign(campaignId: string): Promise<TargetRow[]>;
   setExternalContext(id: string, blob: NewTargetRow['externalContext']): Promise<TargetRow>;
   setStage(id: string, stage: TargetRow['stage']): Promise<TargetRow>;
 }

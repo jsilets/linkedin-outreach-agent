@@ -11,7 +11,7 @@
 // action. Persisting rather than holding it in memory is what lets list_pending
 // and approve keep working after a runtime restart.
 
-import { extractCompany } from '@loa/shared';
+import { extractCompany, readIcpScore, CONTACTED_TARGET_STAGES } from '@loa/shared';
 import type {
   Account,
   AutonomyLevel,
@@ -28,6 +28,7 @@ import type {
   CampaignPort,
   CampaignStepView,
   EnrollResult,
+  RemoveTargetsResult,
   ExecutorPort,
   HealthReport,
   InsertMembersResult,
@@ -237,16 +238,21 @@ export class CampaignAdapter implements CampaignPort {
         if (typeof t === 'string') {
           return { prospectRef: t, linkedinUrn: `urn:li:person:${t}` };
         }
-        const { prospectRef, linkedinUrn, ...rest } = t;
-        const externalContext: Record<string, string> = {};
+        const { prospectRef, linkedinUrn, externalContext: passthrough, ...rest } = t;
+        const externalContext: Record<string, Json> = {};
         for (const [k, v] of Object.entries(rest)) {
-          if (v !== undefined) externalContext[k] = v;
+          if (v !== undefined) externalContext[k] = v as Json;
         }
         // Auto-classify company from the headline when the source didn't carry
         // one (free-tier search has no company field; it's in the headline).
-        if (!externalContext.currentCompany && externalContext.headline) {
+        if (!externalContext.currentCompany && typeof externalContext.headline === 'string') {
           const c = extractCompany(externalContext.headline);
           if (c) externalContext.currentCompany = c;
+        }
+        // A passthrough blob (e.g. an ICP score envelope) merges last, so the
+        // score carried from a list survives onto the enrolled target.
+        if (passthrough && typeof passthrough === 'object' && !Array.isArray(passthrough)) {
+          Object.assign(externalContext, passthrough);
         }
         return { prospectRef, linkedinUrn, externalContext: externalContext as Json };
       }),
@@ -345,11 +351,84 @@ export class CampaignAdapter implements CampaignPort {
     accountId: string,
   ): Promise<EnrollResult> {
     const progressIds: string[] = [];
+    let skippedRemoved = 0;
     for (const targetId of targetIds) {
+      // An operator-removed target must never re-enter the funnel; removal
+      // stamps `removed` into the target's external context (see removeTargets).
+      const target = await this.store.target.findById(targetId);
+      const ec = (target?.externalContext ?? {}) as Record<string, unknown>;
+      if (ec.removed === true) {
+        skippedRemoved += 1;
+        continue;
+      }
       const row = await this.store.sequence.enrollTarget(campaignId, targetId, accountId);
       progressIds.push(row.id);
     }
-    return { campaignId, accountId, enrolled: progressIds.length, progressIds };
+    return { campaignId, accountId, enrolled: progressIds.length, progressIds, skippedRemoved };
+  }
+
+  async removeTargets(
+    campaignId: string,
+    selector: { targetIds?: string[]; linkedinUrns?: string[] },
+    reason = 'removed by operator',
+  ): Promise<RemoveTargetsResult> {
+    // Resolve the selector to target ids scoped to this campaign. A URN or id
+    // that doesn't belong to the campaign is reported back, not silently dropped.
+    const inCampaign = await this.store.listTargetsByCampaign(campaignId);
+    const byId = new Map(inCampaign.map((t) => [t.id, t] as const));
+    // A urn can appear on more than one target row; map it to ALL of their ids so
+    // removing by urn terminates every duplicate, not just the last one seen.
+    const idsByUrn = new Map<string, string[]>();
+    for (const t of inCampaign) {
+      const ids = idsByUrn.get(t.linkedinUrn);
+      if (ids) ids.push(t.id);
+      else idsByUrn.set(t.linkedinUrn, [t.id]);
+    }
+
+    const notFound: string[] = [];
+    const toRemove = new Set<string>();
+    for (const id of selector.targetIds ?? []) {
+      if (byId.has(id)) toRemove.add(id);
+      else notFound.push(id);
+    }
+    for (const urn of selector.linkedinUrns ?? []) {
+      const ids = idsByUrn.get(urn);
+      if (ids) for (const id of ids) toRemove.add(id);
+      else notFound.push(urn);
+    }
+
+    let removed = 0;
+    for (const targetId of toRemove) {
+      const target = byId.get(targetId)!;
+      // Stop the sequence + cancel undelivered sends (terminal 'skipped', not
+      // 'replied'). Mark the target 'lost' ONLY if it was already contacted:
+      // getMetrics counts 'lost' in the invited bucket, so using it on a
+      // pre-contact target ('sourced'/'queued') would inflate invite metrics. The
+      // removal is still fully effective without the stage change: the progress
+      // cursor lands terminal 'skipped', unsent messages are cancelled, and the
+      // target_removed event records it.
+      const wasContacted = CONTACTED_TARGET_STAGES.includes(
+        target.stage as (typeof CONTACTED_TARGET_STAGES)[number],
+      );
+      await this.store.sequence.excludeTargetFromFunnel(targetId, reason);
+      if (wasContacted) await this.store.target.setStage(targetId, 'lost');
+      // Durable removal marker. A never-enrolled target has no progress row, so
+      // without this a later launch/enroll would sweep it back into the funnel;
+      // both enroll paths skip targets carrying it.
+      await this.store.target.setExternalContext(targetId, {
+        ...((target.externalContext ?? {}) as Record<string, Json>),
+        removed: true,
+      });
+      await this.services.eventLog.recordEvent('target_removed', null, {
+        campaignId,
+        targetId,
+        linkedinUrn: target.linkedinUrn,
+        reason,
+        wasContacted,
+      });
+      removed += 1;
+    }
+    return { removed, notFound };
   }
 }
 
@@ -392,6 +471,7 @@ export class LeadListAdapter implements LeadListPort {
         degree: m.degree,
         location: m.location,
         currentCompany: m.currentCompany,
+        ...readIcpScore(m.externalContext),
       })),
     };
   }
@@ -407,6 +487,10 @@ export class LeadListAdapter implements LeadListPort {
     // Everything we tried to write minus what was newly inserted is a dup (or a
     // person dropped for lacking a stable urn); report against the write count.
     return { inserted, duplicates: rows.length - inserted };
+  }
+
+  async removeMembers(listId: string, linkedinUrns: string[]): Promise<{ removed: number }> {
+    return this.store.leadList.removeMembers(listId, linkedinUrns);
   }
 }
 

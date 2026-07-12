@@ -6,9 +6,9 @@
 // against a live database in dev/smoke, which run in memory. Bringing it up
 // requires a reachable Postgres with the shared Drizzle schema migrated.
 
-import { db as shared } from '@loa/shared';
+import { db as shared, ACTIVE_PROGRESS_STATES, CANCELABLE_MESSAGE_STATUSES } from '@loa/shared';
 import type { Json } from '@loa/shared';
-import { and, asc, eq, gte, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import {
   PostgresDb,
   makeRepositories,
@@ -209,18 +209,28 @@ class PgSequenceStore implements SequenceStorePort {
   }
 
   async pullTargetFromFunnel(targetId: string, reason: string): Promise<void> {
+    await this.stopFunnel(targetId, reason, 'replied');
+  }
+
+  async excludeTargetFromFunnel(targetId: string, reason: string): Promise<void> {
+    await this.stopFunnel(targetId, reason, 'skipped');
+  }
+
+  /** Terminate an active enrollment cursor and cancel its undelivered sends.
+   * `terminal` distinguishes a reply-driven pull ('replied') from an operator
+   * removal ('skipped') so reply metrics stay honest. */
+  private async stopFunnel(
+    targetId: string,
+    reason: string,
+    terminal: 'replied' | 'skipped',
+  ): Promise<void> {
     await this.db.handle
       .update(targetProgress)
-      .set({ state: 'replied', nextStepAt: null, errorMessage: reason, updatedAt: new Date() })
+      .set({ state: terminal, nextStepAt: null, errorMessage: reason, updatedAt: new Date() })
       .where(
         and(
           eq(targetProgress.targetId, targetId),
-          or(
-            eq(targetProgress.state, 'in_progress'),
-            eq(targetProgress.state, 'pending'),
-            eq(targetProgress.state, 'awaiting_approval'),
-            eq(targetProgress.state, 'awaiting_connection'),
-          ),
+          inArray(targetProgress.state, [...ACTIVE_PROGRESS_STATES]),
         ),
       );
     // Cancel this target's undelivered outbound messages so an approved-but-unsent
@@ -232,7 +242,7 @@ class PgSequenceStore implements SequenceStorePort {
         and(
           eq(messages.targetId, targetId),
           eq(messages.direction, 'outbound'),
-          or(eq(messages.status, 'draft'), eq(messages.status, 'approved')),
+          inArray(messages.status, [...CANCELABLE_MESSAGE_STATUSES]),
         ),
       );
   }
@@ -328,6 +338,20 @@ class PgLeadListStore implements LeadListStorePort {
       .onConflictDoNothing()
       .returning({ id: leadListMembers.id });
     return { inserted: out.length };
+  }
+
+  async removeMembers(listId: string, linkedinUrns: string[]): Promise<{ removed: number }> {
+    if (linkedinUrns.length === 0) return { removed: 0 };
+    const out = await this.db.handle
+      .delete(leadListMembers)
+      .where(
+        and(
+          eq(leadListMembers.listId, listId),
+          inArray(leadListMembers.linkedinUrn, linkedinUrns),
+        ),
+      )
+      .returning({ id: leadListMembers.id });
+    return { removed: out.length };
   }
 
   async updateMemberContext(

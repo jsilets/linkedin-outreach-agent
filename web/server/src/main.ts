@@ -10,11 +10,11 @@ import { createMcpProxy } from './mcp-proxy.js';
 import { callMcpTool, McpError } from './mcp-client.js';
 import { VaultError } from '@loa/account-runner';
 import {
-  createCampaignFromList,
   createList,
   deleteCampaign,
   deleteList,
-  EmptyListError,
+  deleteListMembers,
+  removeCampaignTargets,
   getActivity,
   getCampaign,
   getCampaignLeads,
@@ -212,6 +212,25 @@ api.post('/campaigns/:id/launch', async (req, res, next) => {
   }
 });
 
+// Remove targets from a campaign (e.g. off-ICP leads that shouldn't be contacted).
+api.post('/campaigns/:id/targets/remove', async (req, res, next) => {
+  try {
+    const { targetIds, reason } = req.body ?? {};
+    if (!Array.isArray(targetIds) || targetIds.some((t) => typeof t !== 'string')) {
+      res.status(400).json({ error: 'targetIds (string[]) is required.' });
+      return;
+    }
+    const result = await removeCampaignTargets(
+      req.params.id,
+      targetIds as string[],
+      typeof reason === 'string' && reason.trim() ? reason.trim() : undefined,
+    );
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    next(err);
+  }
+});
+
 api.get('/metrics/volume', async (req, res, next) => {
   try {
     const accountId =
@@ -326,26 +345,17 @@ api.delete('/lists/:id', async (req, res, next) => {
   }
 });
 
-// Create a campaign seeded from a list's leads (added as targets).
-api.post('/lists/:id/campaign', async (req, res, next) => {
+// Remove specific members from a list (e.g. off-ICP leads swept in by a search).
+api.post('/lists/:id/members/remove', async (req, res, next) => {
   try {
-    const { goal, owner, messageStrategy } = req.body ?? {};
-    if (typeof goal !== 'string' || goal.trim().length === 0) {
-      res.status(400).json({ error: 'goal is required.' });
+    const { memberIds } = req.body ?? {};
+    if (!Array.isArray(memberIds) || memberIds.some((m) => typeof m !== 'string')) {
+      res.status(400).json({ error: 'memberIds (string[]) is required.' });
       return;
     }
-    const result = await createCampaignFromList(req.params.id, {
-      goal: goal.trim(),
-      owner: typeof owner === 'string' && owner.trim() ? owner.trim() : undefined,
-      messageStrategy:
-        typeof messageStrategy === 'string' && messageStrategy.trim() ? messageStrategy.trim() : undefined,
-    });
+    const result = await deleteListMembers(req.params.id, memberIds as string[]);
     res.json({ ok: true, ...result });
   } catch (err) {
-    if (err instanceof EmptyListError) {
-      res.status(400).json({ error: err.message });
-      return;
-    }
     next(err);
   }
 });
