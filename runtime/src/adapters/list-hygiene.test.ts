@@ -3,10 +3,10 @@
 // score, and remove_from_campaign logically removes an enrolled target. Backed by
 // a real InMemoryStore + real orchestrator services, driven through the MCP tools.
 
-import { describe, expect, it, beforeEach } from 'vitest';
-import { DefaultSafetyGate } from '@loa/safety';
-import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
 import type { Ports } from '@loa/mcp';
+import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
+import { DefaultSafetyGate } from '@loa/safety';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter, LeadListAdapter } from './mcp-ports.js';
 import { makeOrchestratorServices } from './orchestrator.js';
@@ -26,7 +26,11 @@ describe('ICP list-hygiene tools', () => {
   beforeEach(() => {
     store = new InMemoryStore();
     const services = makeOrchestratorServices(store, { enqueueFollowUp: async () => {} });
-    const campaign = new CampaignAdapter(services, store, new DefaultSafetyGate({ allowMissingCounters: true }));
+    const campaign = new CampaignAdapter(
+      services,
+      store,
+      new DefaultSafetyGate({ allowMissingCounters: true }),
+    );
     const lists = new LeadListAdapter(store);
     ports = { lists, campaign } as unknown as Ports;
   });
@@ -96,7 +100,11 @@ describe('ICP list-hygiene tools', () => {
 
   it('remove_from_list ejects a member by urn', async () => {
     const listId = await seedList('remove');
-    const res = (await run('remove_from_list', { listId, linkedinUrns: ['urn:li:unfit'] }, ports)) as {
+    const res = (await run(
+      'remove_from_list',
+      { listId, linkedinUrns: ['urn:li:unfit'] },
+      ports,
+    )) as {
       removed: number;
     };
     expect(res.removed).toBe(1);
@@ -110,7 +118,13 @@ describe('ICP list-hygiene tools', () => {
       'enroll_from_list',
       { listId, minScore: 50, goal: 'Book a call', accountId: ACCT },
       ports,
-    )) as { campaignId: string; eligible: number; skippedBelowScore: number; added: number; enrolled: number };
+    )) as {
+      campaignId: string;
+      eligible: number;
+      skippedBelowScore: number;
+      added: number;
+      enrolled: number;
+    };
 
     expect(res.eligible).toBe(1);
     expect(res.skippedBelowScore).toBe(1);

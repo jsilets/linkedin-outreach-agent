@@ -26,18 +26,18 @@
 //   --limit 25                max results across pages
 
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolveProxyIdentity, resolveVaultKey } from '@loa/account-runner';
 import type { PeopleQuery, PersonSearchResult } from '@loa/mcp';
-import { loadConfig } from '../config.js';
-import { LiveSessionProvider } from '../executor/session-provider.js';
 import {
-  LiveObserve,
-  InMemorySearchBudget,
   buildVoyagerGraphqlPath,
+  InMemorySearchBudget,
+  LiveObserve,
   normalizeSearchResponse,
 } from '../adapters/observe-live.js';
+import { loadConfig } from '../config.js';
+import { LiveSessionProvider } from '../executor/session-provider.js';
 
 const LINKEDIN_ORIGIN = 'https://www.linkedin.com/feed/';
 

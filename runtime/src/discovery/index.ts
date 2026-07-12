@@ -4,8 +4,6 @@
 //   - scoreList():  offline, runs the built-in HeuristicQualifier over a list.
 // Sourcing is a separate step (source_to_list); nothing here makes a live search.
 
-import type { Json } from '@loa/shared';
-import { ICP_FIT_THRESHOLD, readIcpScore } from '@loa/shared';
 import type {
   DiscoveryPort,
   Icp,
@@ -13,6 +11,8 @@ import type {
   ScoreLeadsResult,
   ScoreListResult,
 } from '@loa/mcp';
+import type { Json } from '@loa/shared';
+import { ICP_FIT_THRESHOLD, readIcpScore } from '@loa/shared';
 import type { RuntimeStore } from '../store/index.js';
 import { HeuristicQualifier } from './heuristic-qualifier.js';
 import type { Candidate, QualifierPort } from './types.js';

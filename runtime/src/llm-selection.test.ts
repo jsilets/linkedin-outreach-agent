@@ -4,8 +4,8 @@
 // process.env, then assert both the resolved config and the selected label.
 
 import { describe, expect, it } from 'vitest';
-import { loadConfig } from './config.js';
 import { selectLlmProvider } from './compose.js';
+import { loadConfig } from './config.js';
 
 describe('LLM provider selection precedence', () => {
   it('selects OpenRouter when OPENROUTER_API_KEY is set (even alongside Anthropic)', () => {

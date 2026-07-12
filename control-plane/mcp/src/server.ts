@@ -8,13 +8,13 @@
 // long-lived session that could be wedged.
 
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import express, { type Express, type Request, type Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { AGENT_CONTEXT, operatorContext, type RequestContext } from './context.js';
+import express, { type Express, type Request, type Response } from 'express';
 import { CapabilityError } from './capability.js';
-import { ALL_TOOLS } from './tools.js';
+import { AGENT_CONTEXT, operatorContext, type RequestContext } from './context.js';
 import type { Ports } from './ports.js';
+import { ALL_TOOLS } from './tools.js';
 
 const SERVER_INFO = { name: '@loa/mcp', version: '0.0.0' } as const;
 
@@ -137,7 +137,9 @@ export function createApp(ports: Ports): Express {
   const production = process.env.NODE_ENV === 'production';
   const tokenConfigured = (process.env.LOA_MCP_TOKEN ?? '').length > 0;
   if (production && !tokenConfigured) {
-    console.error(`[${SERVER_INFO.name}] LOA_MCP_TOKEN is required in production; /mcp will refuse all requests`);
+    console.error(
+      `[${SERVER_INFO.name}] LOA_MCP_TOKEN is required in production; /mcp will refuse all requests`,
+    );
   } else if (!tokenConfigured) {
     console.warn(
       `[${SERVER_INFO.name}] LOA_MCP_TOKEN unset: MCP auth is DISABLED (dev only). Every caller is treated as a privileged operator.`,

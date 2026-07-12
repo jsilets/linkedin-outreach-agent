@@ -7,9 +7,7 @@
 import type { Account, Action, DailyBudget } from '@loa/shared';
 
 /** Result of a local pre-flight check. Advisory only. */
-export type PreflightResult =
-  | { ok: true }
-  | { ok: false; reason: string };
+export type PreflightResult = { ok: true } | { ok: false; reason: string };
 
 /** Map an ActionType to the DailyBudget key. They are 1:1 by design. */
 function budgetKey(action: Action): keyof DailyBudget['caps'] {

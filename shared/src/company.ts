@@ -60,7 +60,10 @@ export function extractCompany(headline: string | null | undefined): string | un
   // Drop a dangling connector at the end ("Rivian and" -> "Rivian").
   while (kept.length && CONNECTORS.test(kept[kept.length - 1]!)) kept.pop();
 
-  const company = kept.join(' ').replace(/[.,&\s]+$/, '').trim();
+  const company = kept
+    .join(' ')
+    .replace(/[.,&\s]+$/, '')
+    .trim();
   // Reject too-short or non-alphabetic residue.
   if (company.length < 2 || !/[A-Za-z]/.test(company)) return undefined;
   return company;

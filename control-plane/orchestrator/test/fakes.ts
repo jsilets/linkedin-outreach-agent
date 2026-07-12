@@ -1,7 +1,8 @@
 // In-memory repository fakes satisfying the repo ports. No Postgres. Row shapes
 // mirror the Drizzle inferred types closely enough for the services under test.
 
-import { db as shared } from '@loa/shared';
+import type { db as shared } from '@loa/shared';
+import type { SchedulerLikePort } from '../src/reply-router.js';
 import type {
   ApprovalRepoPort,
   CampaignRepoPort,
@@ -9,7 +10,6 @@ import type {
   MessageRepoPort,
   TargetRepoPort,
 } from '../src/repo-ports.js';
-import type { SchedulerLikePort } from '../src/reply-router.js';
 
 type CampaignRow = shared.CampaignRow;
 type NewCampaignRow = shared.NewCampaignRow;

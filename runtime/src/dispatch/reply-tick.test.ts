@@ -7,12 +7,12 @@
 // pulling the target out of the funnel; a sender that is not an enrolled target
 // is left alone; an already-seen message is not re-routed on the next tick.
 
-import { describe, expect, it } from 'vitest';
-import type { Intent, LLMProvider, Message } from '@loa/shared';
 import type { SchedulerLikePort } from '@loa/orchestrator';
-import { InMemoryStore } from '../store/in-memory-store.js';
-import { makeOrchestratorServices } from '../adapters/orchestrator.js';
+import type { Intent, LLMProvider, Message } from '@loa/shared';
+import { describe, expect, it } from 'vitest';
 import type { InboundMessage, InboxReaderPort } from '../adapters/observe-live.js';
+import { makeOrchestratorServices } from '../adapters/orchestrator.js';
+import { InMemoryStore } from '../store/in-memory-store.js';
 import { ReplyTick } from './reply-tick.js';
 
 const CAMP = 'camp-1';

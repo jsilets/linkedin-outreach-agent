@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import type { AccountSchedule } from '@loa/shared';
+import { describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { advanceAfterStep, dueAfterDelay } from './advance.js';
 
@@ -8,8 +8,18 @@ const CAMP = 'camp-1';
 describe('advanceAfterStep', () => {
   it('moves to the next step and gates it behind that step delay', async () => {
     const store = new InMemoryStore();
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'b', delaySeconds: 120 });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'message',
+      body: 'b',
+      delaySeconds: 120,
+    });
     const steps = await store.sequence.listCampaignSteps(CAMP);
 
     const now = new Date('2026-07-06T12:00:00Z');
@@ -22,8 +32,16 @@ describe('advanceAfterStep', () => {
 
   it('leaves nextStepAt null when the next step has no delay', async () => {
     const store = new InMemoryStore();
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'view_profile' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'view_profile',
+    });
     const steps = await store.sequence.listCampaignSteps(CAMP);
 
     const patch = advanceAfterStep(steps, 0, new Date());
@@ -33,7 +51,11 @@ describe('advanceAfterStep', () => {
 
   it('completes when the handled step was the last', async () => {
     const store = new InMemoryStore();
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'view_profile',
+    });
     const steps = await store.sequence.listCampaignSteps(CAMP);
 
     const patch = advanceAfterStep(steps, 0, new Date());

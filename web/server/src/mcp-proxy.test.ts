@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
-import { AddressInfo } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import express from 'express';
+import { afterEach, describe, expect, it } from 'vitest';
 import { createMcpProxy } from './mcp-proxy.js';
 
 // Servers spun up per test; torn down in afterEach.
@@ -11,7 +11,7 @@ function listen(server: http.Server): Promise<number> {
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port));
   });
-  }
+}
 
 async function post(
   port: number,
@@ -20,14 +20,13 @@ async function post(
   body: string,
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = http.request(
-      { host: '127.0.0.1', port, method: 'POST', path, headers },
-      (res) => {
-        let data = '';
-        res.on('data', (c) => (data += c));
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: data }));
-      },
-    );
+    const req = http.request({ host: '127.0.0.1', port, method: 'POST', path, headers }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () =>
+        resolve({ status: res.statusCode ?? 0, headers: res.headers, body: data }),
+      );
+    });
     req.on('error', reject);
     req.end(body);
   });

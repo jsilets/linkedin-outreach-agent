@@ -8,12 +8,12 @@
 // underlying action dispatches through the executor exactly like an mcp-queued
 // item.
 
-import type { Draft, Intent, Message } from '@loa/shared';
 import type { ObservedMessage, PersistencePort } from '@loa/agent';
 import type { ActRequest } from '@loa/mcp';
 import { rowToMessage } from '@loa/orchestrator';
-import type { OrchestratorServices } from './orchestrator.js';
+import type { Draft, Intent, Message } from '@loa/shared';
 import type { RuntimeStore } from '../store/index.js';
+import type { OrchestratorServices } from './orchestrator.js';
 
 export class PersistenceAdapter implements PersistencePort {
   constructor(

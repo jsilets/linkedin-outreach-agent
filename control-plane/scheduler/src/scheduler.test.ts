@@ -1,17 +1,20 @@
-import { describe, it, expect } from 'vitest';
 import type { Account, Action, ActionType, DailyBudget, Decision } from '@loa/shared';
+import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_SCHEDULER_CONFIG, type SchedulerConfig } from './config.js';
-import { seededRng, type SafetyPort } from './ports.js';
-import { isWithinWorkingHours, nextWorkingInstant } from './working-hours.js';
+import { type SafetyPort, seededRng } from './ports.js';
 import { PacingScheduler } from './scheduler.js';
+import { isWithinWorkingHours, nextWorkingInstant } from './working-hours.js';
 
 // Monday 2026-07-06. 12:00 UTC is inside 09:00-18:00; 20:00 is outside.
 const MON_NOON = new Date('2026-07-06T12:00:00.000Z');
 const MON_EVENING = new Date('2026-07-06T20:00:00.000Z');
 const SAT = new Date('2026-07-04T12:00:00.000Z'); // Saturday
 
-function dailyBudget(caps: Partial<Record<ActionType, number>>, used: Partial<Record<ActionType, number>> = {}): DailyBudget {
+function dailyBudget(
+  caps: Partial<Record<ActionType, number>>,
+  used: Partial<Record<ActionType, number>> = {},
+): DailyBudget {
   const zero = { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 };
   return { date: '2026-07-06', caps: { ...zero, ...caps }, used: { ...zero, ...used } };
 }
@@ -121,7 +124,11 @@ describe('dueActions selection', () => {
 
   it('selects due, allowed actions inside working hours', () => {
     const sched = new PacingScheduler(fakeSafety(), { rng: seededRng(1) });
-    const res = sched.dueActions(account(), [action('a', 'connect'), action('b', 'view_profile')], MON_NOON);
+    const res = sched.dueActions(
+      account(),
+      [action('a', 'connect'), action('b', 'view_profile')],
+      MON_NOON,
+    );
     expect(res.due.map((a) => a.id).sort()).toEqual(['a', 'b']);
   });
 
@@ -143,7 +150,9 @@ describe('dueActions selection', () => {
   });
 
   it('respects the safety decision (deny / defer)', () => {
-    const denied = new PacingScheduler(fakeSafety({ decision: { kind: 'deny', reason: 'x' } }), { rng: seededRng(1) });
+    const denied = new PacingScheduler(fakeSafety({ decision: { kind: 'deny', reason: 'x' } }), {
+      rng: seededRng(1),
+    });
     expect(denied.dueActions(account(), [action('a', 'connect')], MON_NOON).due).toHaveLength(0);
 
     const deferred = new PacingScheduler(

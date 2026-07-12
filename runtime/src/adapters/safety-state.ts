@@ -15,13 +15,13 @@
 // and, at startup, replays the recent signal events back through gate.onSignal
 // so the in-memory streak and account state are reconstructed from the log.
 
-import type { Account, ActionType, Signal, SignalKind } from '@loa/shared';
 import type {
   DailyUsageCounter,
   PauseState,
   RecentActionClock,
   WeeklyInviteCounter,
 } from '@loa/safety';
+import type { Account, ActionType, Signal, SignalKind } from '@loa/shared';
 import type { RuntimeStore } from '../store/index.js';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;

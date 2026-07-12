@@ -13,65 +13,57 @@
 //   ReplyRouter            route a classified intent to state + follow-up.
 //   makeOrchestrator       convenience factory wiring all services over one Db.
 
+import { ApprovalService } from './approvals.js';
+import { CampaignService } from './campaigns.js';
 import type { Db } from './db.js';
 import { EventLog } from './event-log.js';
-import { makeRepositories, type Repositories } from './repositories.js';
-import { CampaignService } from './campaigns.js';
-import { ApprovalService } from './approvals.js';
-import { SuppressionService } from './suppression.js';
 import { ReplyRouter, type SchedulerLikePort } from './reply-router.js';
-
-export { PostgresDb } from './db.js';
-export type { Db, Database, Schema } from './db.js';
-
-export {
-  makeRepositories,
-  AccountRepo,
-  CampaignRepo,
-  TargetRepo,
-  ActionRepo,
-  MessageRepo,
-  ApprovalRepo,
-  EventRepo,
-} from './repositories.js';
-export type { Repositories } from './repositories.js';
+import { makeRepositories, type Repositories } from './repositories.js';
+import { SuppressionService } from './suppression.js';
 
 export type {
-  CampaignRepoPort,
-  TargetRepoPort,
-  MessageRepoPort,
-  ApprovalRepoPort,
-  EventRepoPort,
-} from './repo-ports.js';
-
-export { EventLog } from './event-log.js';
-
-export { CampaignService } from './campaigns.js';
-export type { CreateCampaignInput, AddTargetInput } from './campaigns.js';
-
-export { ApprovalService } from './approvals.js';
-export type {
+  Decision,
   EnqueuePendingInput,
   PendingItem,
-  Decision,
 } from './approvals.js';
-
-export { SuppressionService } from './suppression.js';
-
-export { ReplyRouter } from './reply-router.js';
-export type {
-  RouteInput,
-  RoutingOutcome,
-  SchedulerLikePort,
-  ProgressPulloutPort,
-} from './reply-router.js';
-
+export { ApprovalService } from './approvals.js';
+export type { AddTargetInput, CreateCampaignInput } from './campaigns.js';
+export { CampaignService } from './campaigns.js';
+export type { Database, Db, Schema } from './db.js';
+export { PostgresDb } from './db.js';
+export { EventLog } from './event-log.js';
 export {
   rowToAccount,
   rowToCampaign,
   rowToMessage,
   rowToTarget,
 } from './mappers.js';
+export type {
+  ProgressPulloutPort,
+  RouteInput,
+  RoutingOutcome,
+  SchedulerLikePort,
+} from './reply-router.js';
+export { ReplyRouter } from './reply-router.js';
+export type {
+  ApprovalRepoPort,
+  CampaignRepoPort,
+  EventRepoPort,
+  MessageRepoPort,
+  TargetRepoPort,
+} from './repo-ports.js';
+export type { Repositories } from './repositories.js';
+export {
+  AccountRepo,
+  ActionRepo,
+  ApprovalRepo,
+  CampaignRepo,
+  EventRepo,
+  MessageRepo,
+  makeRepositories,
+  TargetRepo,
+} from './repositories.js';
+export { SuppressionService } from './suppression.js';
 
 /** Everything wired together over one Db seam. */
 export interface Orchestrator {

@@ -42,6 +42,7 @@
     "db:migrate": "drizzle-kit migrate"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.3",
     "@types/node": "^24.10.0",
     "drizzle-kit": "^0.31.10",
     "knip": "^6.26.0",

@@ -14,11 +14,7 @@ import type {
   ProxyBinding,
   Target,
 } from '@loa/shared';
-import type {
-  AnthropicSeam,
-  SeamRequest,
-  SeamResult,
-} from '../src/anthropic-seam.js';
+import type { AnthropicSeam, SeamRequest, SeamResult } from '../src/anthropic-seam.js';
 import type {
   ExecIntent,
   ExecutorPort,

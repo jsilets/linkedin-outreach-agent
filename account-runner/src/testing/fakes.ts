@@ -133,7 +133,11 @@ export class FakePage implements PagePort {
     }
     const count = this.opts.counts?.[selector] ?? 1;
     const text = this.opts.texts?.[selector] ?? null;
-    return new FakeLocator(log, () => count, () => text);
+    return new FakeLocator(
+      log,
+      () => count,
+      () => text,
+    );
   }
 
   url(): string {
@@ -190,7 +194,10 @@ export class FakePage implements PagePort {
 export const noSleep = async (): Promise<void> => {};
 
 /** Deterministic RNG returning a fixed value for stable pacing. */
-export const fixedRng = (v = 0.5) => () => v;
+export const fixedRng =
+  (v = 0.5) =>
+  () =>
+    v;
 
 /** A fake persistent context + launcher for session tests. */
 export class FakeContext implements BrowserContextPort {

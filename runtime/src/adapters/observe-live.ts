@@ -24,20 +24,20 @@
 // open-source clients. buildVoyagerSearchUrl() is retained as the human-facing
 // results-page URL (e.g. to open the same search in a real browser).
 
-import { extractCompany } from '@loa/shared';
 import type { PagePort } from '@loa/account-runner';
 import type {
+  ConversationSummary,
+  EngagerSummary,
+  JobSummary,
   ObservePort,
   PeopleQuery,
   PersonSearchResult,
-  ProfileSummary,
-  ProfilePosition,
   PostSummary,
-  EngagerSummary,
-  JobSummary,
-  ConversationSummary,
+  ProfilePosition,
+  ProfileSummary,
   RecentConnection,
 } from '@loa/mcp';
+import { extractCompany } from '@loa/shared';
 
 /**
  * The persisted-query id for the people-search graphql call. LinkedIn rotates
@@ -197,11 +197,7 @@ export function buildVoyagerSearchUrl(query: PeopleQuery, start: number): string
  *   (key:network,value:List(F,S,O))     (comma-joined, as the live browser sends)
  * Title/company free text folds into keywords (no free-tier facet for those).
  */
-export function buildVoyagerGraphqlPath(
-  query: PeopleQuery,
-  start: number,
-  count: number,
-): string {
+export function buildVoyagerGraphqlPath(query: PeopleQuery, start: number, count: number): string {
   const keywordParts = [
     query.keywords,
     ...(query.titleKeywords ?? []),
@@ -293,8 +289,7 @@ export interface InboxReaderPort {
  * many threads come back (not messages). */
 function messagingPath(count: number): string {
   return (
-    `/voyager/api/messaging/conversations` +
-    `?keyVersion=LEGACY_INBOX&q=syncToken&count=${count}`
+    `/voyager/api/messaging/conversations` + `?keyVersion=LEGACY_INBOX&q=syncToken&count=${count}`
   );
 }
 
@@ -327,9 +322,7 @@ export class LiveInboxReader implements InboxReaderPort {
       accept: 'application/json',
     });
     if (status !== 200) {
-      throw new Error(
-        `voyager messaging returned HTTP ${status}; the session may be invalid`,
-      );
+      throw new Error(`voyager messaging returned HTTP ${status}; the session may be invalid`);
     }
     return normalizeInboxResponse(body).slice(0, limit);
   }
@@ -344,8 +337,7 @@ export class LiveInboxReader implements InboxReaderPort {
  */
 export function normalizeInboxResponse(body: unknown): InboundMessage[] {
   const root = body as VoyagerMessagingResponse | undefined;
-  const conversations =
-    root?.elements ?? root?.data?.elements ?? asConversations(root?.included);
+  const conversations = root?.elements ?? root?.data?.elements ?? asConversations(root?.included);
 
   const out: InboundMessage[] = [];
   for (const conv of conversations ?? []) {
@@ -408,7 +400,10 @@ function parseEvent(event: MessagingEvent | undefined): ParsedEvent | null {
   };
 }
 
-function normalizeEvent(threadUrn: string, event: MessagingEvent | undefined): InboundMessage | null {
+function normalizeEvent(
+  threadUrn: string,
+  event: MessagingEvent | undefined,
+): InboundMessage | null {
   const parsed = parseEvent(event);
   if (!parsed) return null;
   // A message the account itself sent is outbound; the inbox reader skips it.
@@ -444,8 +439,7 @@ export function normalizeConversation(
   threadRef: string,
 ): ConversationSummary | null {
   const root = body as VoyagerMessagingResponse | undefined;
-  const conversations =
-    root?.elements ?? root?.data?.elements ?? asConversations(root?.included);
+  const conversations = root?.elements ?? root?.data?.elements ?? asConversations(root?.included);
 
   for (const conv of conversations ?? []) {
     if (conv?.entityUrn !== threadRef && conv?.backendUrn !== threadRef) continue;
@@ -619,8 +613,7 @@ export function normalizeConnectionsResponse(body: unknown): AcceptedConnection[
   }
 
   // --- Legacy decorated fallback: elements[].miniProfile ------------------------
-  const elements =
-    root?.elements ?? root?.data?.elements ?? asConnectionElements(included);
+  const elements = root?.elements ?? root?.data?.elements ?? asConnectionElements(included);
   const out: AcceptedConnection[] = [];
   for (const el of elements ?? []) {
     const conn = normalizeConnectionElement(el);
@@ -679,9 +672,7 @@ function asConnectionElements(
   return included.filter((el) => !!el?.miniProfile || !!el?.connectedMemberResolutionResult);
 }
 
-function normalizeConnectionElement(
-  el: ConnectionElement | undefined,
-): AcceptedConnection | null {
+function normalizeConnectionElement(el: ConnectionElement | undefined): AcceptedConnection | null {
   if (!el) return null;
   const profile = el.miniProfile ?? el.connectedMemberResolutionResult;
   const entityUrn = profile?.entityUrn ?? el.entityUrn;
@@ -831,9 +822,7 @@ export class LiveObserve implements ObservePort {
       accept: 'application/json',
     });
     if (status !== 200) {
-      throw new Error(
-        `voyager messaging returned HTTP ${status}; the session may be invalid`,
-      );
+      throw new Error(`voyager messaging returned HTTP ${status}; the session may be invalid`);
     }
     const summary = normalizeConversation(body, threadRef);
     if (!summary) {
@@ -911,8 +900,7 @@ function profileQueryId(): string {
  */
 export function profileComponentsPath(id: string): string {
   const profileUrn = encodeURIComponent(`urn:li:fsd_profile:${id}`);
-  const variables =
-    `(tabIndex:0,sectionType:experience,profileUrn:${profileUrn},count:50)`;
+  const variables = `(tabIndex:0,sectionType:experience,profileUrn:${profileUrn},count:50)`;
   return (
     `/voyager/api/graphql?queryId=${profileQueryId()}` +
     `&queryName=ProfileComponentsBySectionType&variables=${variables}`
@@ -941,7 +929,7 @@ export function normalizeProfileResponse(body: unknown, linkedinUrn: string): Pr
   const headline =
     currentTitle && currentCompany
       ? `${currentTitle} at ${currentCompany}`
-      : currentTitle ?? currentCompany ?? '';
+      : (currentTitle ?? currentCompany ?? '');
   return {
     linkedinUrn,
     handle: profileIdFromUrn(linkedinUrn),
@@ -973,8 +961,7 @@ function extractPositions(root: VoyagerProfileComponentsResponse | undefined): P
     // Grouped multi-role: this entity's title is the company, and each role
     // lives in a nested pagedListComponent. Its subtitle is the employment type.
     const nested =
-      entity.subComponents?.components?.[0]?.components?.pagedListComponent?.components
-        ?.elements;
+      entity.subComponents?.components?.[0]?.components?.pagedListComponent?.components?.elements;
     if (Array.isArray(nested) && nested.length) {
       const company = componentText(entity.titleV2);
       for (const sub of nested) {

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
 import type { Target } from '@loa/shared';
+import { describe, expect, it } from 'vitest';
 import { profileUrlForTarget } from './session-provider.js';
 
 function target(over: Partial<Target>): Target {
@@ -34,9 +34,7 @@ describe('profileUrlForTarget', () => {
     expect(url).not.toContain('SEARCH_SRP');
     expect(url).not.toContain('%2C');
     // Falls back to the clean inner fsd_profile id.
-    expect(url).toBe(
-      'https://www.linkedin.com/in/ACoAADddP88BDzg1iKnhgLmjDHu9bOnYbpegn8s/',
-    );
+    expect(url).toBe('https://www.linkedin.com/in/ACoAADddP88BDzg1iKnhgLmjDHu9bOnYbpegn8s/');
   });
 
   it('extracts the id from a bare person urn', () => {

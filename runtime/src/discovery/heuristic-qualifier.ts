@@ -22,10 +22,51 @@ const DEGREE_BONUS: Record<string, number> = { '1st': 0.3, '2nd': 0.1, '3rd': -0
 
 /** Words too common to carry ICP signal; dropped from description matching. */
 const STOPWORDS = new Set([
-  'the', 'and', 'for', 'with', 'that', 'this', 'who', 'are', 'our', 'their', 'from',
-  'into', 'have', 'has', 'not', 'you', 'your', 'they', 'them', 'a', 'an', 'to', 'of',
-  'in', 'on', 'at', 'or', 'is', 'as', 'by', 'be', 'we', 'us', 'it', 'ideal', 'customer',
-  'profile', 'company', 'companies', 'people', 'person', 'lead', 'leads', 'role', 'roles',
+  'the',
+  'and',
+  'for',
+  'with',
+  'that',
+  'this',
+  'who',
+  'are',
+  'our',
+  'their',
+  'from',
+  'into',
+  'have',
+  'has',
+  'not',
+  'you',
+  'your',
+  'they',
+  'them',
+  'a',
+  'an',
+  'to',
+  'of',
+  'in',
+  'on',
+  'at',
+  'or',
+  'is',
+  'as',
+  'by',
+  'be',
+  'we',
+  'us',
+  'it',
+  'ideal',
+  'customer',
+  'profile',
+  'company',
+  'companies',
+  'people',
+  'person',
+  'lead',
+  'leads',
+  'role',
+  'roles',
 ]);
 
 /** The candidate text an ICP field is matched against. */
@@ -94,7 +135,8 @@ export class HeuristicQualifier implements QualifierPort {
     }
 
     if (hasDescription) {
-      const hay = `${candidate.headline ?? ''} ${candidate.currentCompany ?? ''} ${candidate.location ?? ''}`.toLowerCase();
+      const hay =
+        `${candidate.headline ?? ''} ${candidate.currentCompany ?? ''} ${candidate.location ?? ''}`.toLowerCase();
       const terms = [
         ...new Set(
           icp

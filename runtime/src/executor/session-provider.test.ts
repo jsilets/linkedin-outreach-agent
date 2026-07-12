@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtemp, writeFile, symlink, access } from 'node:fs/promises';
+import { access, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Target } from '@loa/shared';
-import { LiveSessionProvider, clearSingletonLocks } from './session-provider.js';
+import { describe, expect, it } from 'vitest';
+import { clearSingletonLocks, LiveSessionProvider } from './session-provider.js';
 
 function target(linkedinUrn: string): Target {
   const now = new Date();
@@ -39,9 +39,7 @@ describe('LiveSessionProvider.profileUrlFor', () => {
   });
 
   it('treats a bare handle as a public identifier', () => {
-    expect(provider.profileUrlFor(target('janedoe'))).toBe(
-      'https://www.linkedin.com/in/janedoe/',
-    );
+    expect(provider.profileUrlFor(target('janedoe'))).toBe('https://www.linkedin.com/in/janedoe/');
   });
 });
 
@@ -57,7 +55,11 @@ describe('LiveSessionProvider proxy guard', () => {
 });
 
 describe('clearSingletonLocks', () => {
-  const missing = (p: string) => access(p).then(() => false, () => true);
+  const missing = (p: string) =>
+    access(p).then(
+      () => false,
+      () => true,
+    );
 
   it('removes a stale SingletonLock symlink and sibling guards', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'loa-profile-'));

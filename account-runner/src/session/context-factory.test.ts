@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { buildLaunchConfig, BrowserContextFactory } from './context-factory.js';
+import { describe, expect, it } from 'vitest';
+import { FakeContext, FakeLauncher, FakePage } from '../testing/fakes.js';
 import type { LaunchConfigInput } from './context-factory.js';
-import { FakePage, FakeContext, FakeLauncher } from '../testing/fakes.js';
+import { BrowserContextFactory, buildLaunchConfig } from './context-factory.js';
 
 const input: LaunchConfigInput = {
   userDataDir: '/profiles/acct-1',

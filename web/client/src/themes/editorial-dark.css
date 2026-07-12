@@ -4,7 +4,7 @@
    for AA contrast on dark. The accent sits in the narrow band that reads as a
    link on dark (>=4.5:1) yet, darkened 80% for the button fill, still clears
    4.5:1 against white --accent-ink. */
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   --surface-0: #16191d;
   --surface-1: #1d2126;
   --surface-2: #262b31;
@@ -28,8 +28,8 @@
   --st-failed: #d0726b;
   --st-idle: #838b94;
 
-  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
-  --font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: ui-serif, Georgia, "Times New Roman", serif;
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, Menlo, monospace;
 
   --text-h1: 2.125rem;

@@ -1,7 +1,7 @@
 // Read queries and the steps write, all against the shared schema via Drizzle.
 import { join } from 'node:path';
-import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
 import { buildStorageStateFromPastedCookies, saveStorageState } from '@loa/account-runner';
+import type { AccountLimits, AccountSchedule, ActionType } from '@loa/shared';
 import {
   ACTION_TYPES,
   ACTIVE_PROGRESS_STATES,
@@ -13,9 +13,9 @@ import {
   planCampaignTargetRemoval,
   readIcpScore,
 } from '@loa/shared';
-import type { AccountLimits, AccountSchedule, ActionType } from '@loa/shared';
-import { db, schema, type Db } from './db.js';
-import { normalizeSteps, type NormalizedStep } from './steps.js';
+import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
+import { type Db, db, schema } from './db.js';
+import { type NormalizedStep, normalizeSteps } from './steps.js';
 
 const {
   campaigns,
@@ -37,7 +37,11 @@ export type CampaignStatus = 'draft' | 'active' | 'done';
 // narrower set than the shared ACTIVE_PROGRESS_STATES (removal-eligibility): a
 // pending cursor is enrolled-but-not-started, which does not by itself make the
 // campaign lifecycle active.
-const ACTIVE_LIFECYCLE_STATES = ['in_progress', 'awaiting_approval', 'awaiting_connection'] as const;
+const ACTIVE_LIFECYCLE_STATES = [
+  'in_progress',
+  'awaiting_approval',
+  'awaiting_connection',
+] as const;
 
 /**
  * Derive campaign lifecycle from its progress-state histogram: no enrollment
@@ -337,7 +341,8 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
     .where(and(eq(targets.campaignId, campaignId), pendingDraftFilter()))
     .orderBy(desc(messages.createdAt));
   const pendingByTarget = new Map<string, string>();
-  for (const p of pendingRows) if (!pendingByTarget.has(p.targetId)) pendingByTarget.set(p.targetId, p.id);
+  for (const p of pendingRows)
+    if (!pendingByTarget.has(p.targetId)) pendingByTarget.set(p.targetId, p.id);
 
   // The campaign's enabled steps in order; the cursor's currentStep indexes into
   // this list, so steps[currentStep] is the step about to run.
@@ -352,7 +357,9 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
     const ctx = readLeadContext(r.externalContext);
     const action = lastActionByTarget.get(r.targetId);
     const nextStepType =
-      r.currentStep !== null && r.currentStep >= 0 ? enabledStepTypes[r.currentStep] ?? null : null;
+      r.currentStep !== null && r.currentStep >= 0
+        ? (enabledStepTypes[r.currentStep] ?? null)
+        : null;
     return {
       targetId: r.targetId,
       name: ctx.name,
@@ -369,7 +376,11 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
       lastStepAt: r.lastStepAt ? r.lastStepAt.toISOString() : null,
       errorMessage: r.errorMessage ?? null,
       lastAction: action
-        ? { type: action.type, result: action.result, executedAt: action.executedAt ? action.executedAt.toISOString() : null }
+        ? {
+            type: action.type,
+            result: action.result,
+            executedAt: action.executedAt ? action.executedAt.toISOString() : null,
+          }
         : null,
       pendingMessageId: pendingByTarget.get(r.targetId) ?? null,
     };
@@ -475,7 +486,10 @@ export interface ActivityItem {
  * unioned in from the event log. Optional campaignId narrows both. limit is
  * clamped by the caller (default 50, max 200).
  */
-export async function getActivity(opts: { campaignId?: string; limit: number }): Promise<ActivityItem[]> {
+export async function getActivity(opts: {
+  campaignId?: string;
+  limit: number;
+}): Promise<ActivityItem[]> {
   const ordering = sql`coalesce(${actions.executedAt}, ${actions.scheduledAt})`;
   const actionRows = await db
     .select({
@@ -581,7 +595,10 @@ export async function replaceSteps(campaignId: string, input: unknown): Promise<
 // transaction against tx. Order: rows referencing targets (progress, actions,
 // messages) first, then targets, then the campaign's steps, then the campaign.
 export function campaignDeleteStatements(exec: Db, id: string) {
-  const campaignTargets = db.select({ id: targets.id }).from(targets).where(eq(targets.campaignId, id));
+  const campaignTargets = db
+    .select({ id: targets.id })
+    .from(targets)
+    .where(eq(targets.campaignId, id));
   return [
     exec.delete(targetProgress).where(eq(targetProgress.campaignId, id)),
     exec.delete(actions).where(eq(actions.campaignId, id)),
@@ -596,7 +613,10 @@ export function campaignDeleteStatements(exec: Db, id: string) {
 // when no campaign with that id exists (so the route can answer 404).
 export async function deleteCampaign(id: string): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const [campaign] = await tx.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.id, id));
+    const [campaign] = await tx
+      .select({ id: campaigns.id })
+      .from(campaigns)
+      .where(eq(campaigns.id, id));
     if (!campaign) return false;
     for (const stmt of campaignDeleteStatements(tx, id)) {
       await stmt;
@@ -910,14 +930,20 @@ export async function getList(id: string): Promise<ListDetail | null> {
 
 // Delete a list (cascade removes its members). True when a row was removed.
 export async function deleteList(id: string): Promise<boolean> {
-  const deleted = await db.delete(leadLists).where(eq(leadLists.id, id)).returning({ id: leadLists.id });
+  const deleted = await db
+    .delete(leadLists)
+    .where(eq(leadLists.id, id))
+    .returning({ id: leadLists.id });
   return deleted.length > 0;
 }
 
 // Remove specific members from a list by member id. Scoped to the listId so a
 // stray id from another list can't delete across lists. Returns how many rows
 // were removed.
-export async function deleteListMembers(listId: string, memberIds: string[]): Promise<{ removed: number }> {
+export async function deleteListMembers(
+  listId: string,
+  memberIds: string[],
+): Promise<{ removed: number }> {
   if (memberIds.length === 0) return { removed: 0 };
   const removed = await db
     .delete(leadListMembers)
@@ -1033,10 +1059,16 @@ export interface LaunchResult {
  * steps or an unknown account.
  */
 export async function launchCampaign(campaignId: string, accountId: string): Promise<LaunchResult> {
-  const [campaign] = await db.select({ id: campaigns.id }).from(campaigns).where(eq(campaigns.id, campaignId));
+  const [campaign] = await db
+    .select({ id: campaigns.id })
+    .from(campaigns)
+    .where(eq(campaigns.id, campaignId));
   if (!campaign) throw new LaunchError('campaign not found');
 
-  const [account] = await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.id, accountId));
+  const [account] = await db
+    .select({ id: accounts.id })
+    .from(accounts)
+    .where(eq(accounts.id, accountId));
   if (!account) throw new LaunchError('unknown sender account; link an account first');
 
   const [stepCount] = await db

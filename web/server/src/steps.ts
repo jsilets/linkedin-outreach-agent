@@ -45,9 +45,7 @@ function normalizeStep(raw: unknown, index: number): NormalizedStep {
     );
   }
   const delaySeconds =
-    step.delaySeconds === undefined || step.delaySeconds === null
-      ? 0
-      : Number(step.delaySeconds);
+    step.delaySeconds === undefined || step.delaySeconds === null ? 0 : Number(step.delaySeconds);
   if (!Number.isFinite(delaySeconds) || delaySeconds < 0) {
     throw new StepValidationError(`Step ${index + 1} has an invalid delaySeconds.`);
   }

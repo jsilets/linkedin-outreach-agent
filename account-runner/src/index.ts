@@ -10,20 +10,19 @@
 // (the maintained stealth Playwright drop-in); the runner talks to it through
 // the local PORT interfaces in ports.ts so it stays testable without a browser.
 
-export * from './ports.js';
-export { SELECTORS } from './selectors.js';
-export type { SelectorKey } from './selectors.js';
-export {
-  randInt,
-  actionGapMs,
-  typingDelayMs,
-  clickDelayMs,
-  realSleep,
-} from './human.js';
-export type { Sleeper } from './human.js';
-
-export * from './session/index.js';
-export * from './executor/index.js';
 export * from './detector/index.js';
-export { preflight } from './safety/index.js';
+export * from './executor/index.js';
+export type { Sleeper } from './human.js';
+export {
+  actionGapMs,
+  clickDelayMs,
+  randInt,
+  realSleep,
+  typingDelayMs,
+} from './human.js';
+export * from './ports.js';
 export type { PreflightResult } from './safety/index.js';
+export { preflight } from './safety/index.js';
+export type { SelectorKey } from './selectors.js';
+export { SELECTORS } from './selectors.js';
+export * from './session/index.js';

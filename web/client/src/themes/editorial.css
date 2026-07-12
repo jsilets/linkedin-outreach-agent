@@ -2,7 +2,7 @@
    (not cream), deep calm teal-green accent. Elevation via one soft shadow OR a
    hairline border, never both on the same element. The dark mode in
    editorial-dark.css is the same language on a dark surface. */
-:root[data-theme='light'] {
+:root[data-theme="light"] {
   --surface-0: #f6f7f8;
   --surface-1: #ffffff;
   --surface-2: #eef0f2;
@@ -26,8 +26,8 @@
   --st-failed: #b4483f;
   --st-idle: #7c8590;
 
-  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
-  --font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: ui-serif, Georgia, "Times New Roman", serif;
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, Menlo, monospace;
 
   --text-h1: 2.125rem;

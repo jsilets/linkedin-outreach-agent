@@ -109,8 +109,7 @@ function adaptContext(ctx: PwContext): BrowserContextPort {
     // The vault only round-trips these, so the cast is safe.
     addCookies: (cookies) => ctx.addCookies(cookies as Parameters<PwContext['addCookies']>[0]),
     cookies: () => ctx.cookies(),
-    storageState: (options) =>
-      ctx.storageState(options) as Promise<StorageStateShape>,
+    storageState: (options) => ctx.storageState(options) as Promise<StorageStateShape>,
     close: () => ctx.close(),
   };
 }
@@ -125,10 +124,7 @@ export function createPatchrightLauncher(): BrowserLauncherPort {
       userDataDir: string,
       options: Record<string, unknown>,
     ): Promise<BrowserContextPort> {
-      const ctx = await chromium.launchPersistentContext(
-        userDataDir,
-        options as LaunchOptions,
-      );
+      const ctx = await chromium.launchPersistentContext(userDataDir, options as LaunchOptions);
       return adaptContext(ctx);
     },
   };

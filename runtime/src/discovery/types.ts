@@ -3,8 +3,8 @@
 // candidate shape a data source yields, the score a qualifier returns, and the
 // two ports the feeder depends on.
 
-import type { Json } from '@loa/shared';
 import type { Icp } from '@loa/mcp';
+import type { Json } from '@loa/shared';
 
 export type { Icp, IcpField } from '@loa/mcp';
 

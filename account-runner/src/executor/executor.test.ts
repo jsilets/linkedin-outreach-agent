@@ -1,19 +1,19 @@
-import { describe, it, expect } from 'vitest';
 import type { Action } from '@loa/shared';
+import { describe, expect, it } from 'vitest';
 import type { AllowToken } from '../ports.js';
 import { SELECTORS } from '../selectors.js';
-import { FakePage, noSleep, fixedRng } from '../testing/fakes.js';
+import { FakePage, fixedRng, noSleep } from '../testing/fakes.js';
+import type { ActionContext } from './actions.js';
 import {
+  checkToken,
   connect,
-  message,
   follow,
+  message,
+  NotAllowedError,
   react,
   readInbox,
   withdrawInvite,
-  NotAllowedError,
-  checkToken,
 } from './index.js';
-import type { ActionContext } from './actions.js';
 
 const ACCOUNT_ID = 'acct-1';
 const NOW = 1_000_000;
@@ -382,9 +382,9 @@ describe('withdrawInvite targets a specific pending invite', () => {
   it('refuses without an allow token and never navigates', async () => {
     const page = new FakePage();
     const action = makeAction({ type: 'withdraw_invite' });
-    await expect(
-      withdrawInvite(ctx(page, action, null), { profileUrl }),
-    ).rejects.toBeInstanceOf(NotAllowedError);
+    await expect(withdrawInvite(ctx(page, action, null), { profileUrl })).rejects.toBeInstanceOf(
+      NotAllowedError,
+    );
     expect(page.gotos).toHaveLength(0);
   });
 

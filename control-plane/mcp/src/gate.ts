@@ -88,7 +88,11 @@ export interface GateDeps {
  * which itself is expected to re-check safety before executing. The gate does
  * not execute on the approval path.
  */
-export async function gateAct(deps: GateDeps, req: ActRequest, draftBody?: string): Promise<GateOutcome> {
+export async function gateAct(
+  deps: GateDeps,
+  req: ActRequest,
+  draftBody?: string,
+): Promise<GateOutcome> {
   const account = await deps.safety.getAccount(req.accountId);
   const campaign = await deps.safety.getCampaign(req.campaignId);
   const level = campaign.autonomyLevel;

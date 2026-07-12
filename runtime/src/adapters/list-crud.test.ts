@@ -3,9 +3,9 @@
 // members. Backed by a real InMemoryStore, driven through the MCP tools the same
 // way list-hygiene.test.ts drives the hygiene surface.
 
-import { describe, expect, it, beforeEach } from 'vitest';
-import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
 import type { Ports } from '@loa/mcp';
+import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { LeadListAdapter } from './mcp-ports.js';
 
@@ -25,9 +25,7 @@ describe('lead-list edit/delete tools', () => {
   });
 
   async function seedList(name: string, description?: string) {
-    const list = await store.leadList.createList(
-      description ? { name, description } : { name },
-    );
+    const list = await store.leadList.createList(description ? { name, description } : { name });
     await store.leadList.insertMembers([
       {
         listId: list.id,

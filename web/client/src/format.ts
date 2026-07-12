@@ -1,4 +1,4 @@
-import type { Step, CampaignStepType } from './api';
+import type { CampaignStepType, Step } from './api';
 
 export const STEP_LABELS: Record<CampaignStepType, string> = {
   view_profile: 'View profile',

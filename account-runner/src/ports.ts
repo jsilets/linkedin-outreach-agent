@@ -126,12 +126,7 @@ export interface SafetyPort {
 }
 
 /** Reason an allow-token was rejected by the executor's pre-flight check. */
-export type TokenRejection =
-  | 'missing'
-  | 'wrong_action'
-  | 'wrong_account'
-  | 'expired'
-  | 'not_allow';
+export type TokenRejection = 'missing' | 'wrong_action' | 'wrong_account' | 'expired' | 'not_allow';
 
 /** Launcher port: the subset of patchright.chromium the factory calls. */
 export interface BrowserLauncherPort {

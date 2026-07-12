@@ -66,7 +66,10 @@ export async function runSmoke(): Promise<SmokeTrace> {
 
   // 4. run the loop: expect a pending send in the approval queue, nothing sent.
   const loop1 = await runtime.runLoopOnce(account.id, target.id);
-  check(loop1.phase === 'awaiting_approval', `loop1 phase should be awaiting_approval, was ${loop1.phase}`);
+  check(
+    loop1.phase === 'awaiting_approval',
+    `loop1 phase should be awaiting_approval, was ${loop1.phase}`,
+  );
   const sendRef = loop1.pendingRefs[loop1.pendingRefs.length - 1] ?? '';
   check(Boolean(sendRef), 'loop1 should produce a pending send ref');
 
@@ -97,7 +100,10 @@ export async function runSmoke(): Promise<SmokeTrace> {
     targetId: target.id,
   });
   const loop2 = await runtime.runLoopOnce(account.id, target.id);
-  check(loop2.phase === 'awaiting_approval', `loop2 phase should be awaiting_approval, was ${loop2.phase}`);
+  check(
+    loop2.phase === 'awaiting_approval',
+    `loop2 phase should be awaiting_approval, was ${loop2.phase}`,
+  );
   const replyRef = loop2.pendingRefs[loop2.pendingRefs.length - 1] ?? '';
   check(Boolean(replyRef), 'loop2 should produce a pending reply ref');
   const replyIntent = loop2.intent ?? null;

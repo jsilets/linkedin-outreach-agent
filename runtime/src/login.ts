@@ -14,16 +14,16 @@
 //
 // LOA_ALLOW_NO_PROXY=true drops the proxy requirement for local checks only.
 
-import { createInterface } from 'node:readline/promises';
-import { stdin, stdout } from 'node:process';
 import { join } from 'node:path';
+import { stdin, stdout } from 'node:process';
+import { createInterface } from 'node:readline/promises';
 import {
   BrowserContextFactory,
   bootstrap,
   createPatchrightLauncher,
+  type LaunchConfigInput,
   resolveProxyIdentity,
   resolveVaultKey,
-  type LaunchConfigInput,
   type SessionDeps,
 } from '@loa/account-runner';
 import { loadConfig } from './config.js';

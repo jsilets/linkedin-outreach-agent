@@ -1,15 +1,21 @@
 // Unit tests for the autonomy chokepoint and privileged tool guard.
 // All ports are mocked; no HTTP server and no network to LinkedIn.
 
-import { describe, expect, it, vi } from 'vitest';
 import type { Account, Action, Campaign, Decision } from '@loa/shared';
 import { SafetyDeferredError } from '@loa/shared';
-import { gateAct, mayExecuteDirectly, type GateDeps } from './gate.js';
-import type { ActRequest, ExecutorPort, ApprovalPort, SafetyPort, PendingItem } from './ports.js';
-import { requirePrivileged, CapabilityError } from './capability.js';
+import { describe, expect, it, vi } from 'vitest';
+import { CapabilityError, requirePrivileged } from './capability.js';
 import { AGENT_CONTEXT, operatorContext } from './context.js';
+import { type GateDeps, gateAct, mayExecuteDirectly } from './gate.js';
+import type {
+  ActRequest,
+  ApprovalPort,
+  ExecutorPort,
+  PendingItem,
+  Ports,
+  SafetyPort,
+} from './ports.js';
 import { TOOLS_BY_NAME } from './tools.js';
-import type { Ports } from './ports.js';
 
 // --- fixtures --------------------------------------------------------------
 
@@ -22,7 +28,14 @@ function makeAccount(): Account {
     health: { acceptanceRate: 0.4, replyRate: 0.2, challengesLast7d: 0, lastCheckedAt: new Date() },
     budget: {
       date: '2026-07-05',
-      caps: { connect: 20, message: 20, view_profile: 20, follow: 20, withdraw_invite: 20, react: 20 },
+      caps: {
+        connect: 20,
+        message: 20,
+        view_profile: 20,
+        follow: 20,
+        withdraw_invite: 20,
+        react: 20,
+      },
       used: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },
     },
     createdAt: new Date(),
@@ -62,7 +75,13 @@ function connectReq(): ActRequest {
   return { type: 'connect', accountId: 'acct-1', targetId: 'tgt-1', campaignId: 'camp-1' };
 }
 function messageReq(): ActRequest {
-  return { type: 'message', accountId: 'acct-1', targetId: 'tgt-1', campaignId: 'camp-1', payload: 'hi' };
+  return {
+    type: 'message',
+    accountId: 'acct-1',
+    targetId: 'tgt-1',
+    campaignId: 'camp-1',
+    payload: 'hi',
+  };
 }
 
 // Build gate deps with a given autonomy level and canAct decision.
@@ -229,7 +248,11 @@ function stubPorts(overrides: Partial<Ports> = {}): Ports {
       searchPeople: notImpl,
     } as unknown as Ports['observe'],
     executor: { execute: notImpl } as unknown as Ports['executor'],
-    safety: { getAccount: notImpl, getCampaign: notImpl, canAct: notImpl } as unknown as Ports['safety'],
+    safety: {
+      getAccount: notImpl,
+      getCampaign: notImpl,
+      canAct: notImpl,
+    } as unknown as Ports['safety'],
     approval: {
       enqueue: notImpl,
       listPending: notImpl,
@@ -331,7 +354,11 @@ describe('privileged tool handlers', () => {
       safety: { getAccount: vi.fn(), getCampaign: vi.fn(), canAct } as unknown as Ports['safety'],
     });
     const tool = TOOLS_BY_NAME.get('pause_account')!;
-    await tool.handler({ accountId: 'acct-1', reason: 'stop' } as never, ports, operatorContext('operator'));
+    await tool.handler(
+      { accountId: 'acct-1', reason: 'stop' } as never,
+      ports,
+      operatorContext('operator'),
+    );
     expect(pauseAccount).toHaveBeenCalledWith('acct-1', 'stop');
     expect(canAct).not.toHaveBeenCalled();
   });
@@ -342,12 +369,14 @@ describe('privileged tool handlers', () => {
 describe('Act tool handlers route through the gate', () => {
   it('send_message under supervised queues and never executes', async () => {
     const execute = vi.fn();
-    const enqueue = vi.fn(async (req: ActRequest, level: Campaign['autonomyLevel']): Promise<PendingItem> => ({
-      id: 'pending-x',
-      req,
-      autonomyLevel: level,
-      createdAt: new Date(),
-    }));
+    const enqueue = vi.fn(
+      async (req: ActRequest, level: Campaign['autonomyLevel']): Promise<PendingItem> => ({
+        id: 'pending-x',
+        req,
+        autonomyLevel: level,
+        createdAt: new Date(),
+      }),
+    );
     const ports = stubPorts({
       executor: { execute } as unknown as Ports['executor'],
       approval: {

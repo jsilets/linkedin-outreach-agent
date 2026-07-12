@@ -11,12 +11,12 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   BrowserContextFactory,
-  createPatchrightLauncher,
-  resume,
   type BrowserContextPort,
+  createPatchrightLauncher,
   type LaunchConfigInput,
   type PagePort,
   type ProxyIdentity,
+  resume,
   type SessionDeps,
 } from '@loa/account-runner';
 import type { Target } from '@loa/shared';

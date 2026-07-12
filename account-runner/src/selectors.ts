@@ -71,8 +71,7 @@ export const SELECTORS = {
   // page-wide like connectInMenu). The menu-path twin of pendingIndicator;
   // mirrors Linki's pending check before it clicks Connect.
   pendingInMenu:
-    '[role="menuitem"]:has-text("Pending"), ' +
-    'div[role="button"][aria-label*="Pending"]',
+    '[role="menuitem"]:has-text("Pending"), ' + 'div[role="button"][aria-label*="Pending"]',
   // "Add a note" button in the invite modal.
   addNoteButton: 'button[aria-label*="Add a note"]',
   // Note field in the invite modal. Live-observed (2026-07): modern LinkedIn

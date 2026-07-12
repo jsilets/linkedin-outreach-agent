@@ -25,5 +25,4 @@ export function clickDelayMs(rng: () => number = Math.random): number {
 /** Sleep helper. Injectable so tests can stub it and not actually wait. */
 export type Sleeper = (ms: number) => Promise<void>;
 
-export const realSleep: Sleeper = (ms) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+export const realSleep: Sleeper = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

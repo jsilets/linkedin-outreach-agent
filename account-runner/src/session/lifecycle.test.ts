@@ -1,21 +1,16 @@
-import { describe, it, expect } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BrowserContextFactory } from './context-factory.js';
-import type { LaunchConfigInput } from './context-factory.js';
-import { bootstrap, resume, validate } from './lifecycle.js';
-import type { HumanTask, SessionDeps } from './lifecycle.js';
-import { saveStorageState } from './vault.js';
-import { SELECTORS } from '../selectors.js';
-import {
-  FakePage,
-  FakeContext,
-  FakeLauncher,
-  makeCookies,
-} from '../testing/fakes.js';
+import { describe, expect, it } from 'vitest';
 import type { StorageStateShape } from '../ports.js';
+import { SELECTORS } from '../selectors.js';
+import { FakeContext, FakeLauncher, FakePage, makeCookies } from '../testing/fakes.js';
+import type { LaunchConfigInput } from './context-factory.js';
+import { BrowserContextFactory } from './context-factory.js';
+import type { HumanTask, SessionDeps } from './lifecycle.js';
+import { bootstrap, resume, validate } from './lifecycle.js';
+import { saveStorageState } from './vault.js';
 
 const key = randomBytes(32);
 

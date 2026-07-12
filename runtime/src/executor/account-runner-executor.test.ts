@@ -6,15 +6,15 @@
 // persisted an executed Action + audit event. The runner SafetyPort is the real
 // gate-backed one, so the minted allow token really authorizes the action.
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import type { LocatorPort, PagePort } from '@loa/account-runner';
+import type { ActRequest } from '@loa/mcp';
+import { DefaultSafetyGate, NO_ACTIVE_HOURS_CONFIG } from '@loa/safety';
 import type { Account, Action, ActionType, Decision, Target } from '@loa/shared';
 import { SafetyDeferredError } from '@loa/shared';
-import type { ActRequest } from '@loa/mcp';
-import type { LocatorPort, PagePort } from '@loa/account-runner';
-import { DefaultSafetyGate, NO_ACTIVE_HOURS_CONFIG } from '@loa/safety';
-import { InMemoryStore } from '../store/in-memory-store.js';
-import { StoreBackedWeeklyInviteCounter } from '../adapters/safety-state.js';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { makeRunnerSafetyPort } from '../adapters/safety.js';
+import { StoreBackedWeeklyInviteCounter } from '../adapters/safety-state.js';
+import { InMemoryStore } from '../store/in-memory-store.js';
 import { AccountRunnerExecutor } from './account-runner-executor.js';
 import type { SessionProvider } from './session-provider.js';
 
@@ -100,7 +100,14 @@ class StubSessionProvider implements SessionProvider {
 
 async function seedAccount(store: InMemoryStore): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
-  const caps = { connect: 10, message: 10, view_profile: 10, follow: 10, withdraw_invite: 10, react: 10 };
+  const caps = {
+    connect: 10,
+    message: 10,
+    view_profile: 10,
+    follow: 10,
+    withdraw_invite: 10,
+    react: 10,
+  };
   const used = { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 };
   await store.account.create({
     id: ACCT,
@@ -124,7 +131,13 @@ async function seedTarget(store: InMemoryStore): Promise<void> {
 }
 
 function actRequest(type: ActionType, payload?: string): ActRequest {
-  return { type, accountId: ACCT, targetId: TGT, campaignId: CAMP, ...(payload ? { payload } : {}) };
+  return {
+    type,
+    accountId: ACCT,
+    targetId: TGT,
+    campaignId: CAMP,
+    ...(payload ? { payload } : {}),
+  };
 }
 
 describe('AccountRunnerExecutor real path', () => {
@@ -285,7 +298,14 @@ describe('makeRunnerSafetyPort.mintToken', () => {
     health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: now },
     budget: {
       date: now.toISOString().slice(0, 10),
-      caps: { connect: 10, message: 10, view_profile: 10, follow: 10, withdraw_invite: 10, react: 10 },
+      caps: {
+        connect: 10,
+        message: 10,
+        view_profile: 10,
+        follow: 10,
+        withdraw_invite: 10,
+        react: 10,
+      },
       used: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },
     },
     createdAt: now,

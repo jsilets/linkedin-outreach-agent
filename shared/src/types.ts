@@ -15,13 +15,7 @@ import type {
 } from './enums.js';
 
 /** Opaque JSON blob. Callers should narrow before use. */
-export type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | { [key: string]: Json }
-  | Json[];
+export type Json = string | number | boolean | null | { [key: string]: Json } | Json[];
 
 /** Binding of an account to an egress proxy. */
 export interface ProxyBinding {
@@ -138,7 +132,7 @@ export interface Event {
 // Supporting types for the locked interfaces (SafetyGate, LLMProvider).
 // ---------------------------------------------------------------------------
 
-export type { AccountState, AutonomyLevel, ActionType, ReplyIntent, Intent } from './enums.js';
+export type { AccountState, ActionType, AutonomyLevel, Intent, ReplyIntent } from './enums.js';
 
 /** Per-action-type daily caps and remaining counts. */
 export interface DailyBudget {

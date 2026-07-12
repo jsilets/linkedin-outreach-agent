@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
   ACTION_TYPES,
-  api,
-  DEFAULT_SCHEDULE,
   type Account,
   type AccountSchedule,
   type ActionType,
+  api,
+  DEFAULT_SCHEDULE,
 } from './api';
 
 // Human-readable labels for the per-action daily caps.
@@ -48,7 +48,10 @@ export function AccountsView() {
   const [success, setSuccess] = useState<string | null>(null);
 
   function loadAccounts() {
-    api.accounts().then(setAccounts).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    api
+      .accounts()
+      .then(setAccounts)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }
 
   useEffect(() => {
@@ -123,9 +126,9 @@ export function AccountsView() {
           </span>
           {showHelp && (
             <p className="muted" style={{ marginTop: 8 }}>
-              Open linkedin.com logged in &rarr; DevTools (F12) &rarr; Application tab &rarr; Cookies
-              &rarr; https://www.linkedin.com &rarr; copy the Value of <code>li_at</code> and of{' '}
-              <code>JSESSIONID</code>.
+              Open linkedin.com logged in &rarr; DevTools (F12) &rarr; Application tab &rarr;
+              Cookies &rarr; https://www.linkedin.com &rarr; copy the Value of <code>li_at</code>{' '}
+              and of <code>JSESSIONID</code>.
             </p>
           )}
         </div>

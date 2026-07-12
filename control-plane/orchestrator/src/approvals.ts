@@ -6,8 +6,8 @@
 
 import type { ApprovalDecision, Draft, Intent, Message, MessageDirection } from '@loa/shared';
 import type { EventLog } from './event-log.js';
-import type { ApprovalRepoPort, MessageRepoPort } from './repo-ports.js';
 import { rowToMessage } from './mappers.js';
+import type { ApprovalRepoPort, MessageRepoPort } from './repo-ports.js';
 
 export interface EnqueuePendingInput {
   accountId: string;
@@ -66,7 +66,11 @@ export class ApprovalService {
       campaignId: input.campaignId,
       intent: input.intent ?? null,
     });
-    return { pendingItemRef: row.id, message: rowToMessage(row), pendingReq: row.pendingReq ?? undefined };
+    return {
+      pendingItemRef: row.id,
+      message: rowToMessage(row),
+      pendingReq: row.pendingReq ?? undefined,
+    };
   }
 
   /** List draft (pending) messages in a thread. */
@@ -74,7 +78,11 @@ export class ApprovalService {
     const rows = await this.messages.listByThread(threadRef);
     return rows
       .filter((r) => r.status === 'draft')
-      .map((r) => ({ pendingItemRef: r.id, message: rowToMessage(r), pendingReq: r.pendingReq ?? undefined }));
+      .map((r) => ({
+        pendingItemRef: r.id,
+        message: rowToMessage(r),
+        pendingReq: r.pendingReq ?? undefined,
+      }));
   }
 
   /** Every pending (draft) item across all threads, sourced from the store. The
@@ -102,11 +110,7 @@ export class ApprovalService {
   }
 
   /** Edit the body, then approve. Records an 'edited' decision + event. */
-  async editAndApprove(
-    pendingItemRef: string,
-    editor: string,
-    newBody: string,
-  ): Promise<Decision> {
+  async editAndApprove(pendingItemRef: string, editor: string, newBody: string): Promise<Decision> {
     return this.decide(pendingItemRef, editor, 'edited', newBody);
   }
 

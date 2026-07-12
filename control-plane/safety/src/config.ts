@@ -1,8 +1,8 @@
 // Safety configuration. All tunable numbers live here so the caps and
 // thresholds can be adjusted in one place without touching gate logic.
 
-import { DEFAULT_CAPS } from '@loa/shared';
 import type { ActionType } from '@loa/shared';
+import { DEFAULT_CAPS } from '@loa/shared';
 
 /** Per-action-type daily caps for a given account state. */
 export type CapTable = Record<ActionType, number>;

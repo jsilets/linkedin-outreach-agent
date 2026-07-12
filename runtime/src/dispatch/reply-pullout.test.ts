@@ -4,10 +4,10 @@
 // target pulls it out of the funnel mid-sequence, and the dispatch tick then
 // skips it.
 
-import { describe, expect, it } from 'vitest';
 import type { SchedulerLikePort } from '@loa/orchestrator';
-import { InMemoryStore } from '../store/in-memory-store.js';
+import { describe, expect, it } from 'vitest';
 import { makeOrchestratorServices } from '../adapters/orchestrator.js';
+import { InMemoryStore } from '../store/in-memory-store.js';
 
 const CAMP = 'camp-1';
 const ACCT = 'acct-1';

@@ -176,12 +176,8 @@
           "name": "actions_account_id_accounts_id_fk",
           "tableFrom": "actions",
           "tableTo": "accounts",
-          "columnsFrom": [
-            "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["account_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -189,12 +185,8 @@
           "name": "actions_target_id_targets_id_fk",
           "tableFrom": "actions",
           "tableTo": "targets",
-          "columnsFrom": [
-            "target_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["target_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -202,12 +194,8 @@
           "name": "actions_campaign_id_campaigns_id_fk",
           "tableFrom": "actions",
           "tableTo": "campaigns",
-          "columnsFrom": [
-            "campaign_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["campaign_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -369,12 +357,8 @@
           "name": "campaign_steps_campaign_id_campaigns_id_fk",
           "tableFrom": "campaign_steps",
           "tableTo": "campaigns",
-          "columnsFrom": [
-            "campaign_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["campaign_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -489,12 +473,8 @@
           "name": "events_account_id_accounts_id_fk",
           "tableFrom": "events",
           "tableTo": "accounts",
-          "columnsFrom": [
-            "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["account_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -607,12 +587,8 @@
           "name": "lead_list_members_list_id_lead_lists_id_fk",
           "tableFrom": "lead_list_members",
           "tableTo": "lead_lists",
-          "columnsFrom": [
-            "list_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["list_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -753,12 +729,8 @@
           "name": "messages_account_id_accounts_id_fk",
           "tableFrom": "messages",
           "tableTo": "accounts",
-          "columnsFrom": [
-            "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["account_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -766,12 +738,8 @@
           "name": "messages_target_id_targets_id_fk",
           "tableFrom": "messages",
           "tableTo": "targets",
-          "columnsFrom": [
-            "target_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["target_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -902,12 +870,8 @@
           "name": "target_progress_campaign_id_campaigns_id_fk",
           "tableFrom": "target_progress",
           "tableTo": "campaigns",
-          "columnsFrom": [
-            "campaign_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["campaign_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -915,12 +879,8 @@
           "name": "target_progress_target_id_targets_id_fk",
           "tableFrom": "target_progress",
           "tableTo": "targets",
-          "columnsFrom": [
-            "target_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["target_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -928,12 +888,8 @@
           "name": "target_progress_account_id_accounts_id_fk",
           "tableFrom": "target_progress",
           "tableTo": "accounts",
-          "columnsFrom": [
-            "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["account_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1046,12 +1002,8 @@
           "name": "targets_campaign_id_campaigns_id_fk",
           "tableFrom": "targets",
           "tableTo": "campaigns",
-          "columnsFrom": [
-            "campaign_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["campaign_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1067,86 +1019,42 @@
     "public.account_state": {
       "name": "account_state",
       "schema": "public",
-      "values": [
-        "Cold",
-        "Warming",
-        "Active",
-        "Throttled",
-        "Cooldown",
-        "Restricted"
-      ]
+      "values": ["Cold", "Warming", "Active", "Throttled", "Cooldown", "Restricted"]
     },
     "public.action_result": {
       "name": "action_result",
       "schema": "public",
-      "values": [
-        "pending",
-        "success",
-        "failed",
-        "skipped",
-        "deferred"
-      ]
+      "values": ["pending", "success", "failed", "skipped", "deferred"]
     },
     "public.action_type": {
       "name": "action_type",
       "schema": "public",
-      "values": [
-        "connect",
-        "message",
-        "view_profile",
-        "follow",
-        "withdraw_invite",
-        "react"
-      ]
+      "values": ["connect", "message", "view_profile", "follow", "withdraw_invite", "react"]
     },
     "public.approval_decision": {
       "name": "approval_decision",
       "schema": "public",
-      "values": [
-        "approved",
-        "rejected",
-        "edited"
-      ]
+      "values": ["approved", "rejected", "edited"]
     },
     "public.autonomy_level": {
       "name": "autonomy_level",
       "schema": "public",
-      "values": [
-        "supervised",
-        "semi_auto",
-        "autonomous"
-      ]
+      "values": ["supervised", "semi_auto", "autonomous"]
     },
     "public.campaign_step_type": {
       "name": "campaign_step_type",
       "schema": "public",
-      "values": [
-        "view_profile",
-        "connect",
-        "message",
-        "follow",
-        "react",
-        "delay"
-      ]
+      "values": ["view_profile", "connect", "message", "follow", "react", "delay"]
     },
     "public.message_direction": {
       "name": "message_direction",
       "schema": "public",
-      "values": [
-        "inbound",
-        "outbound"
-      ]
+      "values": ["inbound", "outbound"]
     },
     "public.message_status": {
       "name": "message_status",
       "schema": "public",
-      "values": [
-        "draft",
-        "approved",
-        "rejected",
-        "cancelled",
-        "sent"
-      ]
+      "values": ["draft", "approved", "rejected", "cancelled", "sent"]
     },
     "public.progress_state": {
       "name": "progress_state",

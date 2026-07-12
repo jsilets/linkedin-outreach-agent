@@ -15,14 +15,17 @@
 import { resolveProxyIdentity, resolveVaultKey } from '@loa/account-runner';
 import type { PeopleQuery } from '@loa/mcp';
 import { sourceToList } from '@loa/mcp';
-import { loadConfig } from '../config.js';
-import { makePostgresStore } from '../store/index.js';
 import { LeadListAdapter } from '../adapters/mcp-ports.js';
+import { InMemorySearchBudget, LiveObserve } from '../adapters/observe-live.js';
+import { loadConfig } from '../config.js';
 import { LiveSessionProvider } from '../executor/session-provider.js';
-import { LiveObserve, InMemorySearchBudget } from '../adapters/observe-live.js';
+import { makePostgresStore } from '../store/index.js';
 
 function csv(v: string | undefined): string[] {
-  return (v ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  return (v ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 export function parseArgs(argv: string[]): {
@@ -85,7 +88,9 @@ async function main(): Promise<void> {
   }
   const identity = resolveProxyIdentity();
   if (!identity && !config.allowNoProxy) {
-    console.error('refusing to open the account without a proxy; set LOA_ALLOW_NO_PROXY=true for a local check.');
+    console.error(
+      'refusing to open the account without a proxy; set LOA_ALLOW_NO_PROXY=true for a local check.',
+    );
     process.exit(2);
   }
 

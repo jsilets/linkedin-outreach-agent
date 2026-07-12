@@ -14,39 +14,20 @@
 // Executor: FakeExecutor for dev/smoke (no browser); AccountRunnerExecutor is
 // available for P0 once a live session exists.
 
-import type { Account, AccountSchedule, Campaign, LLMProvider, Target } from '@loa/shared';
-import { DEFAULT_SCHEDULE } from '@loa/shared';
-import { DefaultSafetyGate, type SafetyConfig } from '@loa/safety';
-import { ClaudeLLMProvider, OpenRouterLLMProvider } from '@loa/agent';
+import { resolveProxyIdentity } from '@loa/account-runner';
+import type { ExecutorPort as AgentExecutorPort } from '@loa/agent';
 import {
+  ClaudeLLMProvider,
   initialState,
-  runToStop,
   type LoopPorts,
   type LoopState,
+  OpenRouterLLMProvider,
+  runToStop,
 } from '@loa/agent';
-import type { Ports, ObservePort } from '@loa/mcp';
-import { rowToAccount, rowToCampaign, rowToTarget } from './mappers.js';
-import { loadConfig, type RuntimeConfig } from './config.js';
-import {
-  InMemoryStore,
-  makeInMemoryStore,
-  makePostgresStore,
-  type RuntimeStore,
-} from './store/index.js';
-import {
-  PauseRegistry,
-  StoreBackedActionPacer,
-  StoreBackedDailyUsage,
-  StoreBackedWeeklyInviteCounter,
-  replaySignals,
-} from './adapters/safety-state.js';
-import {
-  asAgentSafetyPort,
-  makeMcpSafetyPort,
-  makeRunnerSafetyPort,
-} from './adapters/safety.js';
-import { makeOrchestratorServices, type OrchestratorServices } from './adapters/orchestrator.js';
-import { SchedulerService } from './adapters/scheduler.js';
+import type { ExecutorPort as McpExecutorPort, ObservePort, Ports } from '@loa/mcp';
+import { DefaultSafetyGate, type SafetyConfig } from '@loa/safety';
+import type { Account, AccountSchedule, Campaign, LLMProvider, Target } from '@loa/shared';
+import { DEFAULT_SCHEDULE } from '@loa/shared';
 import {
   AccountAdminAdapter,
   ApprovalAdapter,
@@ -55,23 +36,38 @@ import {
   LeadListAdapter,
 } from './adapters/mcp-ports.js';
 import {
-  LiveObserve,
-  LiveInboxReader,
-  LiveConnectionsReader,
   InMemorySearchBudget,
+  LiveConnectionsReader,
+  LiveInboxReader,
+  LiveObserve,
 } from './adapters/observe-live.js';
-import { makeDispatchTick, type DispatchTick, type SendTimeReplyCheck } from './dispatch/index.js';
-import { ReplyTick } from './dispatch/reply-tick.js';
-import { AcceptanceTick } from './dispatch/acceptance-tick.js';
+import { makeOrchestratorServices, type OrchestratorServices } from './adapters/orchestrator.js';
 import { PersistenceAdapter } from './adapters/persistence.js';
-import { FakeExecutor } from './executor/fake-executor.js';
-import { resolveProxyIdentity } from '@loa/account-runner';
+import { asAgentSafetyPort, makeMcpSafetyPort, makeRunnerSafetyPort } from './adapters/safety.js';
+import {
+  PauseRegistry,
+  replaySignals,
+  StoreBackedActionPacer,
+  StoreBackedDailyUsage,
+  StoreBackedWeeklyInviteCounter,
+} from './adapters/safety-state.js';
+import { SchedulerService } from './adapters/scheduler.js';
+import { loadConfig, type RuntimeConfig } from './config.js';
+import { DiscoveryAdapter } from './discovery/index.js';
+import { AcceptanceTick } from './dispatch/acceptance-tick.js';
+import { type DispatchTick, makeDispatchTick, type SendTimeReplyCheck } from './dispatch/index.js';
+import { ReplyTick } from './dispatch/reply-tick.js';
 import { AccountRunnerExecutor } from './executor/account-runner-executor.js';
+import { FakeExecutor } from './executor/fake-executor.js';
 import { LiveSessionProvider } from './executor/session-provider.js';
 import { FakeLLMProvider } from './llm/fake-llm-provider.js';
-import { DiscoveryAdapter } from './discovery/index.js';
-import type { ExecutorPort as McpExecutorPort } from '@loa/mcp';
-import type { ExecutorPort as AgentExecutorPort } from '@loa/agent';
+import { rowToAccount, rowToCampaign, rowToTarget } from './mappers.js';
+import {
+  InMemoryStore,
+  makeInMemoryStore,
+  makePostgresStore,
+  type RuntimeStore,
+} from './store/index.js';
 
 /** Everything compose() hands back. */
 export interface Runtime {
@@ -276,9 +272,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   let replyTickRef: ReplyTick | undefined;
   const replyProbe: SendTimeReplyCheck = {
     check: (accountId, target, since) =>
-      replyTickRef
-        ? replyTickRef.probeTarget(accountId, target, since)
-        : Promise.resolve(false),
+      replyTickRef ? replyTickRef.probeTarget(accountId, target, since) : Promise.resolve(false),
   };
 
   const dispatch = makeDispatchTick({
@@ -385,11 +379,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
     ...(replyTick ? { replyTick } : {}),
     ...(acceptanceTick ? { acceptanceTick } : {}),
     async runLoopOnce(accountId: string, targetId: string): Promise<LoopState> {
-      const { account, campaign: camp, target } = await loadLoopContext(
-        store,
-        accountId,
-        targetId,
-      );
+      const { account, campaign: camp, target } = await loadLoopContext(store, accountId, targetId);
       const state = initialState({ account, campaign: camp, target });
       return runToStop(state, loopPorts);
     },
@@ -439,6 +429,5 @@ async function loadLoopContext(
   };
 }
 
-export { InMemoryStore };
-export { loadConfig };
 export type { RuntimeConfig };
+export { InMemoryStore, loadConfig };

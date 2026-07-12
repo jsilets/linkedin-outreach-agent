@@ -48,9 +48,13 @@ async function main(): Promise<void> {
       `[@loa/runtime] acceptance tick started: every ${config.acceptancePollIntervalMs}ms`,
     );
   } else if (config.acceptancePollIntervalMs) {
-    console.log('[@loa/runtime] acceptance tick idle (needs LOA_EXECUTOR=real for a live connections list)');
+    console.log(
+      '[@loa/runtime] acceptance tick idle (needs LOA_EXECUTOR=real for a live connections list)',
+    );
   } else {
-    console.log('[@loa/runtime] acceptance tick idle (set LOA_ACCEPTANCE_POLL_INTERVAL_MS to run it)');
+    console.log(
+      '[@loa/runtime] acceptance tick idle (set LOA_ACCEPTANCE_POLL_INTERVAL_MS to run it)',
+    );
   }
 
   const server = startServer(runtime.ports);

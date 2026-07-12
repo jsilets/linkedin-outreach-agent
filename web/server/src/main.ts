@@ -2,32 +2,32 @@
 // directly through the shared Drizzle schema. Host-agnostic: binds 0.0.0.0 on
 // PORT (default 4000) so it runs the same locally and on any host.
 import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { VaultError } from '@loa/account-runner';
 import express from 'express';
 import { AUTH_COOKIE, authCookieOk, basicAuthOk, issueAuthToken, safeEqual } from './auth.js';
-import { createMcpProxy } from './mcp-proxy.js';
 import { callMcpTool, McpError } from './mcp-client.js';
-import { VaultError } from '@loa/account-runner';
+import { createMcpProxy } from './mcp-proxy.js';
 import {
   createList,
   deleteCampaign,
   deleteList,
   deleteListMembers,
-  removeCampaignTargets,
   getActivity,
   getCampaign,
   getCampaignLeads,
   getList,
   getPending,
   getVolume,
-  launchCampaign,
   LaunchError,
   LimitsError,
+  launchCampaign,
   linkAccount,
   listAccounts,
   listCampaigns,
   listLists,
+  removeCampaignTargets,
   replaceSteps,
   updateAccountLimits,
 } from './queries.js';
@@ -40,10 +40,13 @@ const app = express();
 // JSON body parser and the Basic-auth gate below, so the raw JSON-RPC stream and
 // the MCP server's own Authorization: Bearer auth pass through untouched. The
 // MCP server binds MCP_PORT internally and is never exposed directly.
-app.all('/mcp', createMcpProxy({
-  host: process.env.MCP_HOST ?? '127.0.0.1',
-  port: Number(process.env.MCP_PORT ?? 8080),
-}));
+app.all(
+  '/mcp',
+  createMcpProxy({
+    host: process.env.MCP_HOST ?? '127.0.0.1',
+    port: Number(process.env.MCP_PORT ?? 8080),
+  }),
+);
 
 app.use(express.json());
 
@@ -65,9 +68,13 @@ const authPassword = process.env.LOA_WEB_PASSWORD ?? '';
 const authConfigured = authUser.length > 0 && authPassword.length > 0;
 const production = process.env.NODE_ENV === 'production';
 if (production && !authConfigured) {
-  console.error('web api: LOA_WEB_USER/LOA_WEB_PASSWORD are required in production; all routes will refuse requests');
+  console.error(
+    'web api: LOA_WEB_USER/LOA_WEB_PASSWORD are required in production; all routes will refuse requests',
+  );
 } else if (!authConfigured) {
-  console.warn('web api: LOA_WEB_USER/LOA_WEB_PASSWORD unset: auth is DISABLED (dev only). All routes are open.');
+  console.warn(
+    'web api: LOA_WEB_USER/LOA_WEB_PASSWORD unset: auth is DISABLED (dev only). All routes are open.',
+  );
 }
 
 // Login page + handler, served without auth so a browser can sign in.
@@ -116,7 +123,10 @@ app.use((req, res, next) => {
 
   // API callers get a clean 401; browsers get sent to the login page.
   if (req.path.startsWith('/api')) {
-    res.set('WWW-Authenticate', 'Basic realm="loa"').status(401).json({ error: 'authentication required.' });
+    res
+      .set('WWW-Authenticate', 'Basic realm="loa"')
+      .status(401)
+      .json({ error: 'authentication required.' });
     return;
   }
   res.redirect('/login');
@@ -402,7 +412,11 @@ api.post('/pending/approve', async (req, res, next) => {
         await callMcpTool('approve', { pendingId: messageId });
         results.push({ messageId, ok: true });
       } catch (err) {
-        results.push({ messageId, ok: false, error: err instanceof Error ? err.message : 'approve failed' });
+        results.push({
+          messageId,
+          ok: false,
+          error: err instanceof Error ? err.message : 'approve failed',
+        });
       }
     }
     res.json({ results });
@@ -466,10 +480,12 @@ if (existsSync(clientDist)) {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error(err);
-  res.status(500).json({ error: 'Internal server error.' });
-});
+app.use(
+  (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error(err);
+    res.status(500).json({ error: 'Internal server error.' });
+  },
+);
 
 // Self-contained login page (no external assets) so it renders in any browser,
 // including embedded preview panes that cannot show a native Basic-auth dialog.

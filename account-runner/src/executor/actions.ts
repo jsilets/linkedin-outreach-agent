@@ -3,14 +3,9 @@
 // selectors with human typing/click delays and randomized between-step gaps.
 
 import type { Action } from '@loa/shared';
+import { actionGapMs, clickDelayMs, realSleep, type Sleeper } from '../human.js';
 import type { AllowToken, LocatorPort, PagePort } from '../ports.js';
 import { SELECTORS } from '../selectors.js';
-import {
-  actionGapMs,
-  clickDelayMs,
-  realSleep,
-  type Sleeper,
-} from '../human.js';
 import { assertAllowed } from './gate.js';
 
 /** Shared context every action needs: the page, the authorizing token, ids. */
@@ -207,7 +202,9 @@ async function waitForConnectSignal(
       `[connect-debug] signal=none url=${ctx.page.url()} connectButton=${cBtn} more=${more} pending=${pend} main=${mainCount}`,
     );
   } catch (err) {
-    console.error(`[connect-debug] diag failed: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(
+      `[connect-debug] diag failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
   return 'none';
 }
@@ -289,7 +286,8 @@ export async function connect(
     if (menu === 'none') {
       return {
         ok: false,
-        detail: 'no inline Connect and none in the More menu (Follow-by-default/Follow-only); no invite sent',
+        detail:
+          'no inline Connect and none in the More menu (Follow-by-default/Follow-only); no invite sent',
       };
     }
     await humanClick(ctx, SELECTORS.connectInMenu);
@@ -401,10 +399,7 @@ export async function getConversation(
 }
 
 /** Follow a profile without connecting. */
-export async function follow(
-  ctx: ActionContext,
-  profileUrl: string,
-): Promise<ActionResultOut> {
+export async function follow(ctx: ActionContext, profileUrl: string): Promise<ActionResultOut> {
   guard(ctx);
   await ctx.page.goto(profileUrl, { waitUntil: 'domcontentloaded' });
   await gap(ctx);
@@ -412,8 +407,7 @@ export async function follow(
   return { ok: true, detail: 'followed' };
 }
 
-const SENT_INVITATIONS_URL =
-  'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
+const SENT_INVITATIONS_URL = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
 
 /** Lowercased /in/<vanity> slug — the identity key on the sent-invites list. */
 function vanityFromUrl(profileUrl: string): string | null {

@@ -22,16 +22,15 @@
 // setInterval so any host process can run it. No local/cloud
 // assumptions and no shared mutable tick state, so it is restartable.
 
-import type { AccountSchedule, CampaignStepType, Json } from '@loa/shared';
+import { type ActRequest, type GateDeps, type GateOutcome, gateAct } from '@loa/mcp';
+import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
+import type { AccountSchedule, CampaignStepType, Json, db as shared } from '@loa/shared';
 import {
+  CONTACTED_TARGET_STAGES,
+  canonicalProfileKey,
   DEFAULT_SCHEDULE,
   SafetyDeferredError,
-  canonicalProfileKey,
-  CONTACTED_TARGET_STAGES,
 } from '@loa/shared';
-import type { db as shared } from '@loa/shared';
-import { gateAct, type ActRequest, type GateDeps, type GateOutcome } from '@loa/mcp';
-import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
 import type { SequenceStorePort } from '../store/index.js';
 import { advanceAfterStep, dueAfterDelay } from './advance.js';
 
@@ -258,9 +257,7 @@ export class DispatchTick {
     // Pre-send guards. An approval given earlier can be invalidated before the
     // window opens: the person replied, was hard-suppressed, or the target went
     // terminal. Never send in those cases — cancel (terminal 'cancelled').
-    const suppressed = this.suppression
-      ? await this.suppression.isSuppressed(msg.targetId)
-      : false;
+    const suppressed = this.suppression ? await this.suppression.isSuppressed(msg.targetId) : false;
     if (req.type === 'message') {
       const target = await this.targets.findById(msg.targetId);
       const progress = await this.sequence.getTargetProgressByTarget(msg.targetId);
@@ -381,7 +378,10 @@ export class DispatchTick {
     const idx = progress.currentStep;
     if (idx >= steps.length) {
       // Cursor already past the end; normalize to completed.
-      await this.sequence.advanceTargetProgress(progress.id, { state: 'completed', nextStepAt: null });
+      await this.sequence.advanceTargetProgress(progress.id, {
+        state: 'completed',
+        nextStepAt: null,
+      });
       return { kind: 'exhausted', progressId: progress.id };
     }
 

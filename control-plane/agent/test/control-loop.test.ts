@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  initialState,
-  runToStop,
-  type LoopPorts,
-} from '../src/index.js';
+import { initialState, type LoopPorts, runToStop } from '../src/index.js';
 import {
   FakeExecutor,
   FakeLLM,

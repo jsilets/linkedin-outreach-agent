@@ -5,8 +5,6 @@
 // The account/action/event-read surfaces are async so the same adapter code
 // works over both the synchronous in-memory maps and the async Postgres driver.
 
-import { db as shared } from '@loa/shared';
-import type { Json } from '@loa/shared';
 import type {
   ApprovalRepoPort,
   CampaignRepoPort,
@@ -14,6 +12,7 @@ import type {
   MessageRepoPort,
   TargetRepoPort,
 } from '@loa/orchestrator';
+import type { Json, db as shared } from '@loa/shared';
 
 /** Read/write surface the runtime needs for accounts, beyond the repo ports. */
 export interface AccountStorePort {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { Lead } from './api';
-import { DataTable, type Column } from './DataTable';
+import { type Column, DataTable } from './DataTable';
 import { formatRelative, formatStamp } from './format';
 import { actionLabel, deriveLeadStatus, statusLabel, statusVar } from './status';
 
@@ -76,7 +76,11 @@ export function LeadsTable({
 
   async function remove(l: Lead) {
     if (!onRemove) return;
-    if (!window.confirm(`Remove ${l.name ?? 'this lead'} from the campaign? Their sequence stops and any unsent message is cancelled.`)) {
+    if (
+      !window.confirm(
+        `Remove ${l.name ?? 'this lead'} from the campaign? Their sequence stops and any unsent message is cancelled.`,
+      )
+    ) {
       return;
     }
     setRemoving(l.targetId);
@@ -102,7 +106,11 @@ export function LeadsTable({
             ) : (
               (l.name ?? 'Unknown')
             )}
-            {l.offIcp && <span className="icp-badge" style={{ marginLeft: 6 }}>off-ICP</span>}
+            {l.offIcp && (
+              <span className="icp-badge" style={{ marginLeft: 6 }}>
+                off-ICP
+              </span>
+            )}
           </div>
           {l.company && <div className="co">{l.company}</div>}
         </>

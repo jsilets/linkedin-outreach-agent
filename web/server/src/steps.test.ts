@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { StepValidationError, normalizeSteps } from './steps.js';
+import { normalizeSteps, StepValidationError } from './steps.js';
 
 describe('normalizeSteps', () => {
   it('assigns contiguous stepOrder from array position (reorder)', () => {
@@ -35,7 +35,9 @@ describe('normalizeSteps', () => {
 
   it('rejects a delay step with no delaySeconds', () => {
     expect(() => normalizeSteps([{ stepType: 'delay' }])).toThrow(/delay/);
-    expect(() => normalizeSteps([{ stepType: 'delay', delaySeconds: 0 }])).toThrow(StepValidationError);
+    expect(() => normalizeSteps([{ stepType: 'delay', delaySeconds: 0 }])).toThrow(
+      StepValidationError,
+    );
   });
 
   it('allows non-delay steps to carry a delay before them', () => {

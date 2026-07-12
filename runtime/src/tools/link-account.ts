@@ -12,14 +12,14 @@
 //
 // Secrets are read from a prompt (not argv) so they do not land in shell history.
 
-import { createInterface } from 'node:readline/promises';
-import { stdin, stdout } from 'node:process';
 import { join } from 'node:path';
+import { stdin, stdout } from 'node:process';
+import { createInterface } from 'node:readline/promises';
 import {
   buildStorageStateFromPastedCookies,
-  saveStorageState,
-  resolveVaultKey,
   extractSessionCookies,
+  resolveVaultKey,
+  saveStorageState,
 } from '@loa/account-runner';
 import { loadConfig } from '../config.js';
 
@@ -43,9 +43,13 @@ async function main(): Promise<void> {
 
   const { liAt: gotLiAt, jsessionId: gotJsession } = extractSessionCookies(state);
   console.log(`\n[link] sealed vault for ${accountId} -> ${vaultPath}`);
-  console.log(`[link] li_at present: ${gotLiAt ? 'yes' : 'no'}, JSESSIONID present: ${gotJsession ? 'yes' : 'no'}`);
+  console.log(
+    `[link] li_at present: ${gotLiAt ? 'yes' : 'no'}, JSESSIONID present: ${gotJsession ? 'yes' : 'no'}`,
+  );
   console.log(`[link] verify it drives the browser:`);
-  console.log(`[link]   LOA_ALLOW_NO_PROXY=true npm run search-shakeout -- ${accountId} --keywords "field service operations"`);
+  console.log(
+    `[link]   LOA_ALLOW_NO_PROXY=true npm run search-shakeout -- ${accountId} --keywords "field service operations"`,
+  );
 }
 
 main().catch((err) => {

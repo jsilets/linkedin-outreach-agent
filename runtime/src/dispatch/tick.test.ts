@@ -8,10 +8,10 @@
 // and returns it. The safety port returns a configurable Decision so we can flip
 // allow -> deny per test.
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import type { ActRequest, ExecutorPort, GateDeps } from '@loa/mcp';
 import type { Account, Action, Campaign, Decision } from '@loa/shared';
 import { SafetyDeferredError } from '@loa/shared';
-import type { ActRequest, ExecutorPort, GateDeps } from '@loa/mcp';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { DispatchTick } from './tick.js';
 
@@ -62,7 +62,14 @@ function fakeAccount(id: string): Account {
     health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: new Date() },
     budget: {
       date: new Date().toISOString().slice(0, 10),
-      caps: { connect: 10, message: 10, view_profile: 10, follow: 10, withdraw_invite: 10, react: 10 },
+      caps: {
+        connect: 10,
+        message: 10,
+        view_profile: 10,
+        follow: 10,
+        withdraw_invite: 10,
+        react: 10,
+      },
       used: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },
     },
     createdAt: new Date(),
@@ -189,12 +196,28 @@ describe('DispatchTick', () => {
   it('delay step advances the cursor without acting, gating the next step', async () => {
     // steps: [delay, message(delay 120s)]. The delay step advances to the
     // message and gates it behind the message step's own delaySeconds.
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'delay', delaySeconds: 60 });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'hi', delaySeconds: 120 });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'delay',
+      delaySeconds: 60,
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'message',
+      body: 'hi',
+      delaySeconds: 120,
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
 
     const now = new Date('2026-07-06T12:00:00Z');
     const res = await tick.runTick(now);
@@ -211,19 +234,43 @@ describe('DispatchTick', () => {
   it('a non-connect action routes through the gate and advances with the next delay', async () => {
     // steps: [view_profile, delay(120s), message]. A view_profile is a plain
     // timer-advancing action (connect is special-cased to park; see below).
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 120 });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 2, stepType: 'message', body: 'body' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'view_profile',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'delay',
+      delaySeconds: 120,
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 2,
+      stepType: 'message',
+      body: 'body',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
 
     const now = new Date('2026-07-06T12:00:00Z');
     const res = await tick.runTick(now);
 
     expect(executor.calls).toHaveLength(1);
-    expect(executor.calls[0]).toMatchObject({ type: 'view_profile', accountId: ACCT, targetId: TGT, campaignId: CAMP });
+    expect(executor.calls[0]).toMatchObject({
+      type: 'view_profile',
+      accountId: ACCT,
+      targetId: TGT,
+      campaignId: CAMP,
+    });
     const [progress] = await store.sequence.listTargetProgress(CAMP);
     expect(progress.currentStep).toBe(1);
     expect(progress.state).toBe('in_progress');
@@ -236,12 +283,27 @@ describe('DispatchTick', () => {
     // steps: [connect, message]. A connect is not a timer advance: it sends the
     // invite, sets the target stage to 'invited', and parks the cursor ON the
     // connect step (no due time) for the acceptance tick to release.
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hello' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'body' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+      note: 'hello',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'message',
+      body: 'body',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
 
     const now = new Date('2026-07-06T12:00:00Z');
     const res = await tick.runTick(now);
@@ -264,13 +326,23 @@ describe('DispatchTick', () => {
   });
 
   it('holds a message step whose target is not yet connected, and fires once it is', async () => {
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
     // Target is still 'invited' (connect sent, not accepted): the message is held.
     await store.target.setStage(TGT, 'invited');
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
 
     const res = await tick.runTick(new Date());
 
@@ -297,7 +369,12 @@ describe('DispatchTick', () => {
       externalContext: {},
       stage: 'invited',
     });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hi' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+      note: 'hi',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
@@ -336,11 +413,21 @@ describe('DispatchTick', () => {
       externalContext: {},
       stage: 'sourced',
     });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hi' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+      note: 'hi',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
 
     const res = await tick.runTick(new Date());
 
@@ -358,7 +445,12 @@ describe('DispatchTick', () => {
       externalContext: {},
       stage: 'connected',
     });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
     await store.target.setStage(TGT, 'connected');
 
@@ -399,11 +491,21 @@ describe('DispatchTick', () => {
       externalContext: {},
       stage: 'won',
     });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hi' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+      note: 'hi',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
 
     const res = await tick.runTick(new Date());
 
@@ -414,8 +516,17 @@ describe('DispatchTick', () => {
   });
 
   it('gate deny leaves the cursor in place for a later retry', async () => {
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 0 });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'view_profile',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'delay',
+      delaySeconds: 0,
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
@@ -434,7 +545,12 @@ describe('DispatchTick', () => {
     expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'denied' });
 
     // A later tick with allow now advances it.
-    const tick2 = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick2 = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
     await tick2.runTick(new Date());
     const [after] = await store.sequence.listTargetProgress(CAMP);
     expect(after.currentStep).toBe(1);
@@ -444,13 +560,23 @@ describe('DispatchTick', () => {
   it('parks a queued step in awaiting_approval so it is not re-enqueued each tick', async () => {
     // Supervised: a message step queues for approval. The cursor must move to
     // awaiting_approval (not stay due), or the next tick enqueues a duplicate.
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
     // Connected, so the message gate lets it through to the approval queue.
     await store.target.setStage(TGT, 'connected');
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeSupervisedGate(executor) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeSupervisedGate(executor),
+    });
 
     const res = await tick.runTick(new Date());
 
@@ -472,8 +598,17 @@ describe('DispatchTick', () => {
     // SafetyPort signals this with a typed SafetyDeferredError. This must behave
     // like any other deferral: the cursor stays in_progress on the same step and
     // is NOT marked failed (the bug this fix addresses).
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 0 });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'view_profile',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'delay',
+      delaySeconds: 0,
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const until = new Date('2026-07-06T12:05:00Z');
@@ -511,7 +646,11 @@ describe('DispatchTick', () => {
   it('a genuine executor error still marks the cursor failed', async () => {
     // A non-SafetyDeferredError throw is a real failure and must NOT be swallowed:
     // the cursor is marked failed with the error message, exactly as before.
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'view_profile',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new ThrowingExecutor(new Error('page crashed'));
@@ -533,11 +672,20 @@ describe('DispatchTick', () => {
   });
 
   it('completes when the last step executes', async () => {
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'view_profile',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
 
     await tick.runTick(new Date());
 
@@ -553,15 +701,34 @@ describe('DispatchTick', () => {
 
   it('walks a full sequence across ticks: view_profile -> delay -> message -> completed', async () => {
     // The linear timer walk (connect is covered separately since it parks).
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 60 });
-    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 2, stepType: 'message', body: 'b' });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'view_profile',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'delay',
+      delaySeconds: 60,
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 2,
+      stepType: 'message',
+      body: 'b',
+    });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
     // Connected, so the message step at the end fires.
     await store.target.setStage(TGT, 'connected');
 
     const executor = new RecordingExecutor();
-    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
 
     const t0 = new Date('2026-07-06T12:00:00Z');
     await tick.runTick(t0); // view_profile -> cursor at delay, due at +60s (delay's own delaySeconds)

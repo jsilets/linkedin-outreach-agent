@@ -30,14 +30,10 @@
 // which is expected to fail check 1's "is this really the proxy?" intent — that
 // mode exists to prove the mechanism works locally.
 
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildLaunchConfig, type LaunchConfigInput, type ProxyIdentity } from '@loa/account-runner';
 import { chromium } from 'patchright';
-import {
-  buildLaunchConfig,
-  type LaunchConfigInput,
-  type ProxyIdentity,
-} from '@loa/account-runner';
 
 // The runtime tsconfig deliberately omits the DOM lib (this is a Node package).
 // The callbacks passed to page.evaluate run in the browser, not in Node, so the
@@ -168,8 +164,7 @@ async function checkPublicIp(page: any, hasProxy: boolean): Promise<CheckResult>
     }
     return {
       status: 'PASS',
-      detail:
-        'reported a public IP; OPERATOR: confirm this equals your proxy exit IP',
+      detail: 'reported a public IP; OPERATOR: confirm this equals your proxy exit IP',
       ip,
     };
   } catch (err) {
@@ -271,8 +266,7 @@ async function checkGeo(page: any): Promise<CheckResult> {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       const body: string = await page.evaluate(() => document.body.innerText);
       const data = JSON.parse(body) as Record<string, unknown>;
-      const country =
-        data.country_name ?? data.country ?? data.countryCode ?? null;
+      const country = data.country_name ?? data.country ?? data.countryCode ?? null;
       const region = data.region ?? data.region_name ?? null;
       const city = data.city ?? null;
       const timezone =
@@ -304,9 +298,7 @@ async function checkGeo(page: any): Promise<CheckResult> {
 async function main(): Promise<void> {
   const identity = identityFromEnv(process.env);
   const hasProxy = identity !== undefined;
-  const modeLabel = hasProxy
-    ? `PROXY (${identity.server})`
-    : 'NO PROXY (baseline: expect host IP)';
+  const modeLabel = hasProxy ? `PROXY (${identity.server})` : 'NO PROXY (baseline: expect host IP)';
 
   console.log(`[leak-test] mode: ${modeLabel}`);
 
@@ -327,7 +319,9 @@ async function main(): Promise<void> {
   try {
     const page = await context.newPage();
     publicIp = await checkPublicIp(page, hasProxy);
-    console.log(`[leak-test] check 1 public-ip: ${publicIp.status} — ${publicIp.detail} (${publicIp.ip ?? 'n/a'})`);
+    console.log(
+      `[leak-test] check 1 public-ip: ${publicIp.status} — ${publicIp.detail} (${publicIp.ip ?? 'n/a'})`,
+    );
 
     webrtc = await checkWebRtc(page, hasProxy);
     console.log(
@@ -351,9 +345,7 @@ async function main(): Promise<void> {
   // fails (the whole point is to observe the host IP).
   const hardFail =
     hasProxy &&
-    (publicIp.status === 'FAIL' ||
-      publicIp.status === 'ERROR' ||
-      webrtc.status === 'FAIL');
+    (publicIp.status === 'FAIL' || publicIp.status === 'ERROR' || webrtc.status === 'FAIL');
 
   const summary = {
     mode: hasProxy ? 'proxy' : 'baseline',

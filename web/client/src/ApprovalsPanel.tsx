@@ -44,9 +44,7 @@ export function ApprovalsPanel({
     <div>
       {pending.length > 1 && (
         <div className="toolbar" style={{ margin: '0 0 10px' }}>
-          <span className="muted">
-            {pending.length} messages waiting for approval
-          </span>
+          <span className="muted">{pending.length} messages waiting for approval</span>
           <span className="spacer" />
           <button className="btn approve tiny" onClick={approveAll} disabled={bulkBusy}>
             {bulkBusy ? 'Sending…' : `Approve all ${pending.length}`}
@@ -56,7 +54,12 @@ export function ApprovalsPanel({
       {error && <div className="error">{error}</div>}
       <div className="approvals-wrap">
         {pending.map((p) => (
-          <ApprovalCard key={p.messageId} item={p} onChange={onChange} showCampaign={showCampaign} />
+          <ApprovalCard
+            key={p.messageId}
+            item={p}
+            onChange={onChange}
+            showCampaign={showCampaign}
+          />
         ))}
       </div>
     </div>
@@ -97,14 +100,19 @@ function ApprovalCard({
       <div className="approval-head">
         <span className="to">{recipient}</span>
         {item.company && <span className="muted">· {item.company}</span>}
-        {showCampaign && item.campaignGoal && (
-          <span className="muted">· {item.campaignGoal}</span>
-        )}
-        <span className="age">waiting {formatRelative(item.createdAt).replace('ago', '').trim()}</span>
+        {showCampaign && item.campaignGoal && <span className="muted">· {item.campaignGoal}</span>}
+        <span className="age">
+          waiting {formatRelative(item.createdAt).replace('ago', '').trim()}
+        </span>
       </div>
 
       {mode === 'edit' ? (
-        <textarea className="draft" value={draft} onChange={(e) => setDraft(e.target.value)} rows={5} />
+        <textarea
+          className="draft"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={5}
+        />
       ) : (
         <div className="draft">{item.body}</div>
       )}

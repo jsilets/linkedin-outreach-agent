@@ -12,14 +12,6 @@
 // marked with a TODO below. Everything up to and including token mint + gate
 // enforcement is real.
 
-import type { Account, Action, ActionType, Target } from '@loa/shared';
-import { SafetyDeferredError } from '@loa/shared';
-import type { ActRequest, ExecutorPort as McpExecutorPort } from '@loa/mcp';
-import type {
-  ExecIntent,
-  ExecutorPort as AgentExecutorPort,
-  Observation,
-} from '@loa/agent';
 import type {
   ActionContext,
   AllowToken,
@@ -27,21 +19,25 @@ import type {
   Sleeper,
 } from '@loa/account-runner';
 import {
+  type ActionResultOut,
   connect as runnerConnect,
   follow as runnerFollow,
   message as runnerMessage,
   react as runnerReact,
   visitProfile as runnerVisitProfile,
   withdrawInvite as runnerWithdrawInvite,
-  type ActionResultOut,
 } from '@loa/account-runner';
-import type { RuntimeStore } from '../store/index.js';
+import type { ExecutorPort as AgentExecutorPort, ExecIntent, Observation } from '@loa/agent';
+import type { ActRequest, ExecutorPort as McpExecutorPort } from '@loa/mcp';
+import type { Account, Action, ActionType, Target } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import type {
   StoreBackedActionPacer,
   StoreBackedDailyUsage,
   StoreBackedWeeklyInviteCounter,
 } from '../adapters/safety-state.js';
 import { rowToAccount, rowToTarget } from '../mappers.js';
+import type { RuntimeStore } from '../store/index.js';
 import { personalizeBody, type SessionProvider } from './session-provider.js';
 
 export interface AccountRunnerExecutorDeps {
@@ -234,7 +230,12 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
         kind: 'action_failed',
         payload: { actionId: action.id, type, targetId, campaignId, detail: outcome.detail },
       });
-      return { ...action, executedAt: failedRow.executedAt, result: failedRow.result, updatedAt: failedRow.updatedAt };
+      return {
+        ...action,
+        executedAt: failedRow.executedAt,
+        result: failedRow.result,
+        updatedAt: failedRow.updatedAt,
+      };
     }
 
     // Persist the success onto the row (result + executedAt) so getQueue stops
@@ -250,7 +251,12 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       kind: 'action_executed',
       payload: { actionId: action.id, type, targetId, campaignId, via: 'account_runner' },
     });
-    return { ...action, executedAt: successRow.executedAt, result: successRow.result, updatedAt: successRow.updatedAt };
+    return {
+      ...action,
+      executedAt: successRow.executedAt,
+      result: successRow.result,
+      updatedAt: successRow.updatedAt,
+    };
   }
 
   /** Dispatch to the matching runner action function, returning its outcome. */

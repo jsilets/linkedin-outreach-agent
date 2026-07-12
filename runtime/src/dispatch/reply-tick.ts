@@ -27,10 +27,8 @@
 // paced follow-up. Persisting a processed-marker (e.g. a messages-row insert
 // keyed by the LinkedIn message urn) is the durable fix; deferred here.
 
-import type { Intent, LLMProvider, Message } from '@loa/shared';
-import type { db as shared } from '@loa/shared';
-import type { ReplyRouter } from '@loa/orchestrator';
-import type { TargetRepoPort } from '@loa/orchestrator';
+import type { ReplyRouter, TargetRepoPort } from '@loa/orchestrator';
+import type { Intent, LLMProvider, Message, db as shared } from '@loa/shared';
 import type { InboundMessage, InboxReaderPort } from '../adapters/observe-live.js';
 import { matchesIdentity } from './match-target.js';
 
@@ -188,8 +186,7 @@ export class ReplyTick {
     const inbound = await this.readInboxCached(accountId);
     const matches = inbound.filter(
       (m) =>
-        matchesTarget(m, target) &&
-        (since == null || m.receivedAt.getTime() > since.getTime()),
+        matchesTarget(m, target) && (since == null || m.receivedAt.getTime() > since.getTime()),
     );
     if (matches.length === 0) return false;
     for (const msg of matches) {

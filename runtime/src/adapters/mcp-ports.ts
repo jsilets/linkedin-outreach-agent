@@ -11,19 +11,6 @@
 // action. Persisting rather than holding it in memory is what lets list_pending
 // and approve keep working after a runtime restart.
 
-import {
-  extractCompany,
-  readIcpScore,
-  canonicalProfileKey,
-  planCampaignTargetRemoval,
-} from '@loa/shared';
-import type {
-  Account,
-  AutonomyLevel,
-  Campaign,
-  Json,
-  Target,
-} from '@loa/shared';
 import type {
   AccountAdminPort,
   ActRequest,
@@ -32,35 +19,48 @@ import type {
   AuditRecord,
   CampaignPort,
   CampaignStepView,
+  ConversationSummary,
+  EngagerSummary,
   EnrollResult,
-  RemoveTargetsResult,
   ExecutorPort,
   HealthReport,
   InsertMembersResult,
+  JobSummary,
   LeadListPort,
   ListDetail,
   ListSummary,
   Metrics,
   ObservePort,
   PendingItem,
-  ProfileSummary,
-  PostSummary,
-  EngagerSummary,
-  JobSummary,
-  ConversationSummary,
   PersonSearchResult,
+  PostSummary,
+  ProfileSummary,
   QueueEntry,
+  RemoveTargetsResult,
   SequenceStepInput,
   TargetInput,
 } from '@loa/mcp';
-import type { ApprovalDecision } from '@loa/shared';
-import type { db as shared } from '@loa/shared';
-import { DefaultSafetyGate } from '@loa/safety';
-import type { PauseRegistry } from './safety-state.js';
-import type { OrchestratorServices } from './orchestrator.js';
-import type { RuntimeStore } from '../store/index.js';
+import type { DefaultSafetyGate } from '@loa/safety';
+import type {
+  Account,
+  ApprovalDecision,
+  AutonomyLevel,
+  Campaign,
+  Json,
+  db as shared,
+  Target,
+} from '@loa/shared';
+import {
+  canonicalProfileKey,
+  extractCompany,
+  planCampaignTargetRemoval,
+  readIcpScore,
+} from '@loa/shared';
 import { advanceAfterStep } from '../dispatch/advance.js';
 import { rowToAccount } from '../mappers.js';
+import type { RuntimeStore } from '../store/index.js';
+import type { OrchestratorServices } from './orchestrator.js';
+import type { PauseRegistry } from './safety-state.js';
 
 /** Map a stored campaign-step row onto the port view shape. */
 function toStepView(row: shared.CampaignStepRow): CampaignStepView {
@@ -229,10 +229,7 @@ export class CampaignAdapter implements CampaignPort {
     return this.services.campaigns.createCampaign(input);
   }
 
-  async addTargets(
-    campaignId: string,
-    targets: Array<string | TargetInput>,
-  ): Promise<Target[]> {
+  async addTargets(campaignId: string, targets: Array<string | TargetInput>): Promise<Target[]> {
     // A bare string is a manual/dev ref: mint a deterministic urn. A structured
     // TargetInput (e.g. a search_people result) carries the real urn; its extra
     // fields (profileUrl, name, headline, company, location, degree) are stored
@@ -299,7 +296,8 @@ export class CampaignAdapter implements CampaignPort {
     let replied = 0;
     let won = 0;
     for (const t of targets) {
-      if (['invited', 'connected', 'in_conversation', 'replied', 'won', 'lost'].includes(t.stage)) invited += 1;
+      if (['invited', 'connected', 'in_conversation', 'replied', 'won', 'lost'].includes(t.stage))
+        invited += 1;
       if (['connected', 'in_conversation', 'replied', 'won'].includes(t.stage)) connected += 1;
       if (['replied', 'won'].includes(t.stage)) replied += 1;
       if (t.stage === 'won') won += 1;
@@ -439,7 +437,10 @@ export class CampaignAdapter implements CampaignPort {
 export class LeadListAdapter implements LeadListPort {
   constructor(private readonly store: RuntimeStore) {}
 
-  async createList(input: { name: string; description?: string }): Promise<{ id: string; name: string }> {
+  async createList(input: {
+    name: string;
+    description?: string;
+  }): Promise<{ id: string; name: string }> {
     const row = await this.store.leadList.createList(input);
     return { id: row.id, name: row.name };
   }
@@ -451,7 +452,12 @@ export class LeadListAdapter implements LeadListPort {
     const row = await this.store.leadList.updateList(listId, patch);
     if (!row) return null;
     const members = await this.store.leadList.listMembers(listId);
-    return { id: row.id, name: row.name, description: row.description, memberCount: members.length };
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      memberCount: members.length,
+    };
   }
 
   async deleteList(listId: string): Promise<{ deleted: boolean; removedMembers: number }> {
@@ -490,10 +496,7 @@ export class LeadListAdapter implements LeadListPort {
     };
   }
 
-  async insertMembers(
-    listId: string,
-    people: PersonSearchResult[],
-  ): Promise<InsertMembersResult> {
+  async insertMembers(listId: string, people: PersonSearchResult[]): Promise<InsertMembersResult> {
     const rows = people
       .map((p) => memberRowFromPerson(listId, p))
       .filter((r): r is shared.NewLeadListMemberRow => !!r.linkedinUrn);
@@ -510,10 +513,7 @@ export class LeadListAdapter implements LeadListPort {
 
 /** Map a search result onto a lead_list_members insert row. Mirrors the
  * source-to-list CLI's toMemberRow; linkedinUrn is the stable dedup identity. */
-function memberRowFromPerson(
-  listId: string,
-  p: PersonSearchResult,
-): shared.NewLeadListMemberRow {
+function memberRowFromPerson(listId: string, p: PersonSearchResult): shared.NewLeadListMemberRow {
   return {
     listId,
     // Persist the canonical bare person key, never the volatile search wrapper,

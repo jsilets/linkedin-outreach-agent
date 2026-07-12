@@ -3,8 +3,7 @@
 // in-memory implementations and skip Postgres entirely. The concrete repos in
 // repositories.ts satisfy these structurally.
 
-import { db as shared } from '@loa/shared';
-import type { Json } from '@loa/shared';
+import type { Json, db as shared } from '@loa/shared';
 
 type CampaignRow = shared.CampaignRow;
 type NewCampaignRow = shared.NewCampaignRow;

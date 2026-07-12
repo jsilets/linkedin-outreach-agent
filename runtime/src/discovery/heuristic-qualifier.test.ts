@@ -45,10 +45,7 @@ describe('HeuristicQualifier', () => {
         { field: 'company', match: ['staffing agency'], negative: true },
       ],
     };
-    const res = await qualifier.score(
-      candidate({ currentCompany: 'Globex Staffing Agency' }),
-      icp,
-    );
+    const res = await qualifier.score(candidate({ currentCompany: 'Globex Staffing Agency' }), icp);
     expect(res.score).toBeLessThan(30);
     expect(res.reasons.some((r) => r.startsWith('disqualifier'))).toBe(true);
   });
@@ -75,12 +72,13 @@ describe('HeuristicQualifier', () => {
       query: {},
       description: 'senior field service operations leader at an equipment operator',
     };
-    const hit = await qualifier.score(
-      candidate({ headline: 'VP Field Service Operations' }),
-      icp,
-    );
+    const hit = await qualifier.score(candidate({ headline: 'VP Field Service Operations' }), icp);
     const miss = await qualifier.score(
-      candidate({ headline: 'Elementary School Teacher', currentCompany: 'PS 118', location: 'United States' }),
+      candidate({
+        headline: 'Elementary School Teacher',
+        currentCompany: 'PS 118',
+        location: 'United States',
+      }),
       icp,
     );
     expect(hit.score).toBeGreaterThan(miss.score);
@@ -88,7 +86,11 @@ describe('HeuristicQualifier', () => {
   });
 
   it('is deterministic: same input, same score', async () => {
-    const icp: Icp = { name: 'x', query: {}, attributes: [{ field: 'title', match: ['director'] }] };
+    const icp: Icp = {
+      name: 'x',
+      query: {},
+      attributes: [{ field: 'title', match: ['director'] }],
+    };
     const a = await qualifier.score(candidate(), icp);
     const b = await qualifier.score(candidate(), icp);
     expect(a.score).toBe(b.score);

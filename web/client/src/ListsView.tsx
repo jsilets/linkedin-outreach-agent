@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type ListDetail, type ListMember, type ListSummary } from './api';
-import { DataTable, type Column } from './DataTable';
+import { type Column, DataTable } from './DataTable';
 
 export function ListsView() {
   const [lists, setLists] = useState<ListSummary[] | null>(null);
@@ -12,7 +12,10 @@ export function ListsView() {
   const [success, setSuccess] = useState<string | null>(null);
 
   function loadLists() {
-    api.lists().then(setLists).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    api
+      .lists()
+      .then(setLists)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }
 
   useEffect(() => {
@@ -105,7 +108,10 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   const [removing, setRemoving] = useState<string | null>(null);
 
   function load() {
-    api.getList(id).then(setDetail).catch((e) => setError(String(e)));
+    api
+      .getList(id)
+      .then(setDetail)
+      .catch((e) => setError(String(e)));
   }
 
   useEffect(() => {
@@ -145,7 +151,11 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
         ) : (
           <span title={(m.scoreReasons ?? []).join('\n') || undefined}>
             {m.score}
-            {m.offIcp && <span className="icp-badge" style={{ marginLeft: 6 }}>off-ICP</span>}
+            {m.offIcp && (
+              <span className="icp-badge" style={{ marginLeft: 6 }}>
+                off-ICP
+              </span>
+            )}
           </span>
         ),
     },
@@ -197,11 +207,7 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
       header: '',
       sortable: false,
       cell: (m) => (
-        <button
-          className="btn tiny danger"
-          disabled={removing === m.id}
-          onClick={() => remove(m)}
-        >
+        <button className="btn tiny danger" disabled={removing === m.id} onClick={() => remove(m)}>
           {removing === m.id ? 'Removing…' : 'Remove'}
         </button>
       ),

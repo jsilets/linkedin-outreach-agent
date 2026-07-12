@@ -9,11 +9,11 @@
 // pulls due actions out of the queue and hands them to the executor; the runtime
 // exposes the scheduler instance so that loop can be added without a rewire.
 
-import type { Account, Action } from '@loa/shared';
-import { PacingScheduler } from '@loa/scheduler';
-import type { SafetyPort as SchedulerSafetyPort } from '@loa/scheduler';
 import type { SchedulerPort as AgentSchedulerPort } from '@loa/agent';
 import type { SchedulerLikePort } from '@loa/orchestrator';
+import type { SafetyPort as SchedulerSafetyPort } from '@loa/scheduler';
+import { PacingScheduler } from '@loa/scheduler';
+import type { Account, Action } from '@loa/shared';
 
 /** One queued follow-up the scheduler is holding. */
 export interface QueuedFollowUp {

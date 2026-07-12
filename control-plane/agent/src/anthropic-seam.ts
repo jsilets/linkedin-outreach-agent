@@ -63,8 +63,7 @@ export class AnthropicClientSeam implements AnthropicSeam {
   constructor(opts: { apiKey?: string; model?: string; client?: Anthropic } = {}) {
     this.model = opts.model ?? process.env.LOA_LLM_MODEL ?? 'claude-fable-5';
     this.client =
-      opts.client ??
-      new Anthropic({ apiKey: opts.apiKey ?? process.env.ANTHROPIC_API_KEY });
+      opts.client ?? new Anthropic({ apiKey: opts.apiKey ?? process.env.ANTHROPIC_API_KEY });
   }
 
   async send(req: SeamRequest): Promise<SeamResult> {

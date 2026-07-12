@@ -23,9 +23,9 @@
 // wraps it in a self-skipping setInterval so a host runs it unattended.
 // Host-agnostic and restartable — no shared mutable tick state.
 
+import type { TargetRepoPort } from '@loa/orchestrator';
 import type { AccountSchedule, db as shared } from '@loa/shared';
 import { DEFAULT_SCHEDULE } from '@loa/shared';
-import type { TargetRepoPort } from '@loa/orchestrator';
 import type { AcceptedConnection, ConnectionsReaderPort } from '../adapters/observe-live.js';
 import type { SequenceStorePort } from '../store/index.js';
 import { advanceAfterStep } from './advance.js';

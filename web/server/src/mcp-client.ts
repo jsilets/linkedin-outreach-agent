@@ -32,7 +32,9 @@ interface JsonRpcEnvelope {
 function parseEnvelope(contentType: string, body: string): JsonRpcEnvelope {
   const trimmed = body.trim();
   const looksLikeSse =
-    contentType.includes('text/event-stream') || trimmed.startsWith('event:') || trimmed.startsWith('data:');
+    contentType.includes('text/event-stream') ||
+    trimmed.startsWith('event:') ||
+    trimmed.startsWith('data:');
   const payload = looksLikeSse
     ? trimmed
         .split(/\r?\n/)
@@ -70,7 +72,12 @@ export async function callMcpTool(name: string, args: Record<string, unknown>): 
     res = await fetch(`http://${host}:${port}/mcp`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method: 'tools/call', params: { name, arguments: args } }),
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
     });
     body = await res.text();
   } catch {
@@ -86,7 +93,8 @@ export async function callMcpTool(name: string, args: Record<string, unknown>): 
     throw err;
   }
 
-  if (envelope.error) throw new McpError(envelope.error.message ?? `mcp error (${envelope.error.code ?? 'unknown'})`);
+  if (envelope.error)
+    throw new McpError(envelope.error.message ?? `mcp error (${envelope.error.code ?? 'unknown'})`);
   const content = envelope.result?.content;
   const text = Array.isArray(content) ? content.map((c) => c?.text ?? '').join('') : '';
   if (envelope.result?.isError) throw new McpError(text || 'mcp tool reported an error');

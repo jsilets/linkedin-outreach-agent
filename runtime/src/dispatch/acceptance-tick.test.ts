@@ -5,9 +5,9 @@
 // is set 'connected' and released to the next step with nextStepAt clocked from
 // acceptance; an unmatched parked enrollment stays parked.
 
-import { describe, expect, it, beforeEach } from 'vitest';
-import { InMemoryStore } from '../store/in-memory-store.js';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { StaticConnectionsReader } from '../adapters/observe-live.js';
+import { InMemoryStore } from '../store/in-memory-store.js';
 import { AcceptanceTick } from './acceptance-tick.js';
 
 const CAMP = 'camp-1';
@@ -26,8 +26,18 @@ async function seedParked(store: InMemoryStore): Promise<string> {
     stage: 'invited',
   });
   await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect' });
-  await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 60 });
-  await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 2, stepType: 'message', body: 'hi' });
+  await store.sequence.upsertCampaignStep({
+    campaignId: CAMP,
+    stepOrder: 1,
+    stepType: 'delay',
+    delaySeconds: 60,
+  });
+  await store.sequence.upsertCampaignStep({
+    campaignId: CAMP,
+    stepOrder: 2,
+    stepType: 'message',
+    body: 'hi',
+  });
   const prog = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
   await store.sequence.advanceTargetProgress(prog.id, {
     state: 'awaiting_connection',
@@ -105,9 +115,16 @@ describe('AcceptanceTick', () => {
       externalContext: {},
       stage: 'invited',
     });
-    await store2.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect' });
+    await store2.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+    });
     const prog = await store2.sequence.enrollTarget(CAMP, TGT, ACCT);
-    await store2.sequence.advanceTargetProgress(prog.id, { state: 'awaiting_connection', nextStepAt: null });
+    await store2.sequence.advanceTargetProgress(prog.id, {
+      state: 'awaiting_connection',
+      nextStepAt: null,
+    });
 
     const tick = new AcceptanceTick({
       connections: new StaticConnectionsReader([{ entityUrn: 'urn:li:person:p1' }]),

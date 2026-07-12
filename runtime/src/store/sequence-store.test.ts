@@ -2,7 +2,7 @@
 // step-template CRUD + reorder, idempotent enrollment, the due query, cursor
 // advance, the reply pullout, and the count/volume aggregates.
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryStore } from './in-memory-store.js';
 
 const CAMP = 'camp-1';
@@ -16,8 +16,18 @@ describe('InMemoryStore sequence surface', () => {
   });
 
   it('upserts, lists (ordered), updates, and deletes campaign steps', async () => {
-    const a = await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'message', body: 'hi' });
-    const b = await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'n' });
+    const a = await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'message',
+      body: 'hi',
+    });
+    const b = await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+      note: 'n',
+    });
 
     let steps = await store.sequence.listCampaignSteps(CAMP);
     expect(steps.map((s) => s.stepType)).toEqual(['connect', 'message']); // ordered by stepOrder
@@ -34,9 +44,22 @@ describe('InMemoryStore sequence surface', () => {
   });
 
   it('reorders steps by id', async () => {
-    const s0 = await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect' });
-    const s1 = await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'view_profile' });
-    const s2 = await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 2, stepType: 'message', body: 'b' });
+    const s0 = await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+    });
+    const s1 = await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'view_profile',
+    });
+    const s2 = await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 2,
+      stepType: 'message',
+      body: 'b',
+    });
 
     await store.sequence.reorderCampaignSteps(CAMP, [s2.id, s0.id, s1.id]);
     const steps = await store.sequence.listCampaignSteps(CAMP);
@@ -60,14 +83,20 @@ describe('InMemoryStore sequence surface', () => {
     expect(await store.sequence.dueTargetProgress(now)).toHaveLength(1);
 
     // Push it into the future -> not due.
-    await store.sequence.advanceTargetProgress(p.id, { nextStepAt: new Date(now.getTime() + 60_000) });
+    await store.sequence.advanceTargetProgress(p.id, {
+      nextStepAt: new Date(now.getTime() + 60_000),
+    });
     expect(await store.sequence.dueTargetProgress(now)).toHaveLength(0);
     // At/after the time -> due again.
-    expect(await store.sequence.dueTargetProgress(new Date(now.getTime() + 60_000))).toHaveLength(1);
+    expect(await store.sequence.dueTargetProgress(new Date(now.getTime() + 60_000))).toHaveLength(
+      1,
+    );
 
     // Completed rows are never due.
     await store.sequence.advanceTargetProgress(p.id, { state: 'completed', nextStepAt: null });
-    expect(await store.sequence.dueTargetProgress(new Date(now.getTime() + 120_000))).toHaveLength(0);
+    expect(await store.sequence.dueTargetProgress(new Date(now.getTime() + 120_000))).toHaveLength(
+      0,
+    );
   });
 
   it('pullTargetFromFunnel moves an active cursor to terminal replied', async () => {
@@ -88,13 +117,48 @@ describe('InMemoryStore sequence surface', () => {
     expect(await store.sequence.listTargetProgress(CAMP)).toHaveLength(0);
   });
 
-  it('pullTargetFromFunnel cancels the target\'s undelivered outbound messages', async () => {
+  it("pullTargetFromFunnel cancels the target's undelivered outbound messages", async () => {
     await store.sequence.enrollTarget(CAMP, 'tgt-1', ACCT);
-    const draft = await store.message.create({ accountId: ACCT, targetId: 'tgt-1', direction: 'outbound', body: 'd', threadRef: 't', status: 'draft' });
-    const approved = await store.message.create({ accountId: ACCT, targetId: 'tgt-1', direction: 'outbound', body: 'a', threadRef: 't', status: 'approved' });
-    const sent = await store.message.create({ accountId: ACCT, targetId: 'tgt-1', direction: 'outbound', body: 's', threadRef: 't', status: 'sent' });
-    const inbound = await store.message.create({ accountId: ACCT, targetId: 'tgt-1', direction: 'inbound', body: 'i', threadRef: 't', status: 'draft' });
-    const other = await store.message.create({ accountId: ACCT, targetId: 'tgt-2', direction: 'outbound', body: 'o', threadRef: 't2', status: 'draft' });
+    const draft = await store.message.create({
+      accountId: ACCT,
+      targetId: 'tgt-1',
+      direction: 'outbound',
+      body: 'd',
+      threadRef: 't',
+      status: 'draft',
+    });
+    const approved = await store.message.create({
+      accountId: ACCT,
+      targetId: 'tgt-1',
+      direction: 'outbound',
+      body: 'a',
+      threadRef: 't',
+      status: 'approved',
+    });
+    const sent = await store.message.create({
+      accountId: ACCT,
+      targetId: 'tgt-1',
+      direction: 'outbound',
+      body: 's',
+      threadRef: 't',
+      status: 'sent',
+    });
+    const inbound = await store.message.create({
+      accountId: ACCT,
+      targetId: 'tgt-1',
+      direction: 'inbound',
+      body: 'i',
+      threadRef: 't',
+      status: 'draft',
+    });
+    const other = await store.message.create({
+      accountId: ACCT,
+      targetId: 'tgt-2',
+      direction: 'outbound',
+      body: 'o',
+      threadRef: 't2',
+      status: 'draft',
+    });
 
     await store.sequence.pullTargetFromFunnel('tgt-1', 'reply');
 
@@ -121,8 +185,20 @@ describe('InMemoryStore sequence surface', () => {
   });
 
   it('campaignCounts aggregates target stages and progress states', async () => {
-    await store.target.create({ campaignId: CAMP, prospectRef: 'a', linkedinUrn: 'u:a', externalContext: {}, stage: 'sourced' });
-    await store.target.create({ campaignId: CAMP, prospectRef: 'b', linkedinUrn: 'u:b', externalContext: {}, stage: 'invited' });
+    await store.target.create({
+      campaignId: CAMP,
+      prospectRef: 'a',
+      linkedinUrn: 'u:a',
+      externalContext: {},
+      stage: 'sourced',
+    });
+    await store.target.create({
+      campaignId: CAMP,
+      prospectRef: 'b',
+      linkedinUrn: 'u:b',
+      externalContext: {},
+      stage: 'invited',
+    });
     await store.sequence.enrollTarget(CAMP, 'tgt-x', ACCT);
 
     const counts = await store.sequence.campaignCounts(CAMP);
@@ -134,18 +210,36 @@ describe('InMemoryStore sequence surface', () => {
   it('actionVolume buckets recent actions by date and type', async () => {
     const today = new Date();
     await store.action.create({
-      accountId: ACCT, targetId: 't', campaignId: CAMP, type: 'connect',
-      scheduledAt: today, executedAt: today, result: 'success', dedupKey: 'd1',
+      accountId: ACCT,
+      targetId: 't',
+      campaignId: CAMP,
+      type: 'connect',
+      scheduledAt: today,
+      executedAt: today,
+      result: 'success',
+      dedupKey: 'd1',
     });
     await store.action.create({
-      accountId: ACCT, targetId: 't', campaignId: CAMP, type: 'connect',
-      scheduledAt: today, executedAt: today, result: 'success', dedupKey: 'd2',
+      accountId: ACCT,
+      targetId: 't',
+      campaignId: CAMP,
+      type: 'connect',
+      scheduledAt: today,
+      executedAt: today,
+      result: 'success',
+      dedupKey: 'd2',
     });
     // An old action outside the window is excluded.
     const old = new Date(today.getTime() - 40 * 24 * 60 * 60 * 1000);
     await store.action.create({
-      accountId: ACCT, targetId: 't', campaignId: CAMP, type: 'message',
-      scheduledAt: old, executedAt: old, result: 'success', dedupKey: 'd3',
+      accountId: ACCT,
+      targetId: 't',
+      campaignId: CAMP,
+      type: 'message',
+      scheduledAt: old,
+      executedAt: old,
+      result: 'success',
+      dedupKey: 'd3',
     });
 
     const vol = await store.sequence.actionVolume(ACCT, 7);
