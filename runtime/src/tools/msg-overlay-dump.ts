@@ -170,7 +170,7 @@ async function main(): Promise<void> {
         `[scoped] ${label}: count=${await page
           .locator(sel)
           .count()
-          .catch((e) => 'ERR ' + e)}`,
+          .catch((e) => `ERR ${e}`)}`,
       );
     }
 

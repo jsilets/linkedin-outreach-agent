@@ -65,8 +65,9 @@ async function main(): Promise<void> {
   };
 
   console.log(
-    `[login] opening headful Chromium for ${accountId} ` +
-      `(${identity ? 'via proxy ' + identity.server : 'NO PROXY — local check'})`,
+    `[login] opening headful Chromium for ${accountId} (${
+      identity ? `via proxy ${identity.server}` : 'NO PROXY — local check'
+    })`,
   );
 
   const rl = createInterface({ input: stdin, output: stdout });

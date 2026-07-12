@@ -338,7 +338,7 @@ export class DispatchTick {
     // Advance the sequence cursor for this target, if it is sequence-driven and
     // still parked awaiting this approval.
     const prog = await this.sequence.getTargetProgressByTarget(msg.targetId);
-    if (!prog || prog.state !== 'awaiting_approval') {
+    if (prog?.state !== 'awaiting_approval') {
       return { kind: 'executed', progressId: prog?.id ?? msg.targetId, actionId, nextStep: -1 };
     }
     const steps = (await this.sequence.listCampaignSteps(prog.campaignId)).filter((s) => s.enabled);
@@ -425,7 +425,7 @@ export class DispatchTick {
       }
       // Before 'connected' (or target gone): not yet a 1st-degree connection, so
       // hold WITHOUT firing and leave the cursor for a later tick.
-      if (!target || target.stage !== 'connected') {
+      if (target?.stage !== 'connected') {
         return { kind: 'held', progressId: progress.id, reason: 'not_connected' };
       }
       // A hard-suppressed person must never receive a message: pull the funnel.

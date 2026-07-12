@@ -168,6 +168,7 @@ export function LeadsTable({
             sortable: false,
             cell: (l: Lead) => (
               <button
+                type="button"
                 className="btn tiny danger"
                 disabled={removing === l.targetId}
                 onClick={() => remove(l)}

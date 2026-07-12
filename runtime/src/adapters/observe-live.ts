@@ -288,9 +288,7 @@ export interface InboxReaderPort {
  * with their last events inlined; free on a normal session. The count caps how
  * many threads come back (not messages). */
 function messagingPath(count: number): string {
-  return (
-    `/voyager/api/messaging/conversations` + `?keyVersion=LEGACY_INBOX&q=syncToken&count=${count}`
-  );
+  return `/voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&q=syncToken&count=${count}`;
 }
 
 /**

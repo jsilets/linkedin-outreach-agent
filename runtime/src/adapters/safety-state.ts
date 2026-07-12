@@ -107,7 +107,12 @@ export class StoreBackedDailyUsage implements DailyUsageCounter {
         if (r.result !== 'success') continue;
         const t = (r.executedAt ?? r.scheduledAt).getTime();
         if (t <= cutoff) continue;
-        (byType[r.type] ??= []).push(t);
+        let stamps = byType[r.type];
+        if (!stamps) {
+          stamps = [];
+          byType[r.type] = stamps;
+        }
+        stamps.push(t);
       }
       this.stamps.set(accountId, byType);
     }
@@ -116,7 +121,12 @@ export class StoreBackedDailyUsage implements DailyUsageCounter {
   /** Note that an action of `type` ran now (or at `at`) for this account. */
   record(accountId: string, type: ActionType, at: Date = this.now()): void {
     const byType = this.stamps.get(accountId) ?? {};
-    (byType[type] ??= []).push(at.getTime());
+    let stamps = byType[type];
+    if (!stamps) {
+      stamps = [];
+      byType[type] = stamps;
+    }
+    stamps.push(at.getTime());
     this.stamps.set(accountId, byType);
   }
 
@@ -238,10 +248,10 @@ function isSignalKind(v: unknown): v is SignalKind {
 function signalFromPayload(payload: unknown): Signal | null {
   if (payload == null || typeof payload !== 'object') return null;
   const p = payload as Record<string, unknown>;
-  if (!isSignalKind(p['kind'])) return null;
-  const observedAt = typeof p['observedAt'] === 'string' ? new Date(p['observedAt']) : new Date();
-  const sig: Signal = { kind: p['kind'], observedAt };
-  if (typeof p['magnitude'] === 'number') sig.magnitude = p['magnitude'];
+  if (!isSignalKind(p.kind)) return null;
+  const observedAt = typeof p.observedAt === 'string' ? new Date(p.observedAt) : new Date();
+  const sig: Signal = { kind: p.kind, observedAt };
+  if (typeof p.magnitude === 'number') sig.magnitude = p.magnitude;
   return sig;
 }
 

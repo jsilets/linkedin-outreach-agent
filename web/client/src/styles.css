@@ -621,6 +621,7 @@ table {
 }
 
 th,
+/* biome-ignore lint/style/noDescendingSpecificity: base cell layout; the earlier higher-specificity `tr.row-warn td` only sets a background wash, so source order is intentional. */
 td {
   text-align: left;
   padding: var(--space-2) var(--space-3);
@@ -729,6 +730,7 @@ th {
   flex: 1;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: standalone `.dt-range` typography; the earlier higher-specificity rule targets a different property set, so source order is intentional. */
 .dt-range {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -1076,7 +1078,9 @@ td.when {
 /* Reduced motion: collapse every transition. */
 @media (prefers-reduced-motion: reduce) {
   * {
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must beat every element's own transition/animation specificity. */
     transition: none !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must beat every element's own transition/animation specificity. */
     animation: none !important;
   }
 }

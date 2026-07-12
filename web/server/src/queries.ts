@@ -716,8 +716,8 @@ function validateSchedule(input: unknown): AccountSchedule {
     throw new LimitsError('schedule must be an object.');
   }
   const raw = input as Record<string, unknown>;
-  const start = raw['hoursStart'];
-  const end = raw['hoursEnd'];
+  const start = raw.hoursStart;
+  const end = raw.hoursEnd;
   if (typeof start !== 'number' || !Number.isInteger(start) || start < 0 || start > 23) {
     throw new LimitsError('hoursStart must be an integer 0-23.');
   }
@@ -727,10 +727,10 @@ function validateSchedule(input: unknown): AccountSchedule {
   if (end <= start) {
     throw new LimitsError('hoursEnd must be after hoursStart.');
   }
-  if (!Array.isArray(raw['days'])) {
+  if (!Array.isArray(raw.days)) {
     throw new LimitsError('days must be an array of weekday numbers (0-6).');
   }
-  const days = [...new Set(raw['days'])].filter(
+  const days = [...new Set(raw.days)].filter(
     (d): d is number => typeof d === 'number' && Number.isInteger(d) && d >= 0 && d <= 6,
   );
   if (days.length === 0) {

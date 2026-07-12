@@ -200,7 +200,7 @@ export class ReplyTick {
 
   /** Map, dedupe, classify, and route one inbound message. */
   private async handle(
-    accountId: string,
+    _accountId: string,
     enrolled: TargetProgressRow[],
     msg: InboundMessage,
   ): Promise<ReplyOutcome> {

@@ -77,9 +77,8 @@ describe('BrowserContextFactory', () => {
     const { config } = await factory.launch(input);
     expect(launcher.lastDir).toBe('/profiles/acct-1');
     expect(launcher.lastOptions?.timezoneId).toBe('America/New_York');
-    expect((launcher.lastOptions?.proxy as { server: string }).server).toBe(
-      'http://gw.proxy.example:7000',
-    );
+    const proxy = launcher.lastOptions?.proxy as { server: string } | undefined;
+    expect(proxy?.server).toBe('http://gw.proxy.example:7000');
     expect(config.options.args.length).toBeGreaterThan(0);
   });
 });

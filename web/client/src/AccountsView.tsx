@@ -111,7 +111,7 @@ export function AccountsView() {
             />
           </div>
           <div className="toolbar" style={{ margin: 0 }}>
-            <button className="btn" onClick={connect} disabled={!canSubmit}>
+            <button type="button" className="btn" onClick={connect} disabled={!canSubmit}>
               {saving ? 'Connecting...' : 'Connect account'}
             </button>
             <span className="spacer" />
@@ -257,6 +257,7 @@ function AccountCard({ account }: { account: Account }) {
             const on = schedule.days.includes(day);
             return (
               <button
+                // biome-ignore lint/suspicious/noArrayIndexKey: DAY_LABELS is a static, fixed-order list; `day` is the stable day-of-week number.
                 key={day}
                 type="button"
                 className={`day-toggle${on ? ' on' : ''}`}
@@ -296,7 +297,12 @@ function AccountCard({ account }: { account: Account }) {
       </div>
 
       <div className="toolbar" style={{ marginTop: 'var(--space-3)' }}>
-        <button className="btn" onClick={save} disabled={!dirty || !hoursValid || saving}>
+        <button
+          type="button"
+          className="btn"
+          onClick={save}
+          disabled={!dirty || !hoursValid || saving}
+        >
           {saving ? 'Saving...' : 'Save limits'}
         </button>
         <span className="spacer" />

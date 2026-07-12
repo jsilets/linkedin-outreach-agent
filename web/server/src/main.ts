@@ -401,7 +401,7 @@ api.get('/activity', async (req, res, next) => {
 // approval is enqueued sequentially; the runtime paces the actual sends.
 api.post('/pending/approve', async (req, res, next) => {
   try {
-    const ids = (req.body ?? {}).messageIds;
+    const ids = req.body?.messageIds;
     if (!Array.isArray(ids) || ids.some((x) => typeof x !== 'string')) {
       res.status(400).json({ error: 'messageIds must be an array of strings.' });
       return;
@@ -430,7 +430,7 @@ api.post('/pending/approve', async (req, res, next) => {
 // dispatch a real send through the runtime executor.
 api.post('/pending/:messageId/approve', async (req, res, next) => {
   try {
-    const edited = (req.body ?? {}).body;
+    const edited = req.body?.body;
     const hasEdit = typeof edited === 'string' && edited.trim().length > 0;
     const action = hasEdit ? 'edit_and_approve' : 'approve';
     const args = hasEdit
@@ -451,7 +451,7 @@ api.post('/pending/:messageId/approve', async (req, res, next) => {
 // never sent.
 api.post('/pending/:messageId/reject', async (req, res, next) => {
   try {
-    const reason = (req.body ?? {}).reason;
+    const reason = req.body?.reason;
     if (typeof reason !== 'string' || reason.trim().length === 0) {
       res.status(400).json({ error: 'reason is required.' });
       return;

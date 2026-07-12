@@ -101,9 +101,9 @@ export class OpenRouterClientSeam implements OpenRouterSeam {
       ],
     };
     if (req.tools && req.tools.length > 0) {
-      body['tools'] = req.tools.map(toOpenAiTool);
+      body.tools = req.tools.map(toOpenAiTool);
       if (req.forceTool) {
-        body['tool_choice'] = {
+        body.tool_choice = {
           type: 'function',
           function: { name: req.forceTool },
         };

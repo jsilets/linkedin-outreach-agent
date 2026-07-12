@@ -284,12 +284,6 @@ export class DefaultSafetyGate implements SafetyGate {
   }
 
   onSignal(acct: Account, sig: Signal): Transition {
-    const noop: Transition = {
-      fromState: acct.state,
-      toState: acct.state,
-      reason: `signal ${sig.kind} noted; no state change`,
-    };
-
     // Hard stop. A ban banner ends the account.
     if (sig.kind === 'ban_banner') {
       this.softStreak.delete(acct.id);

@@ -80,6 +80,7 @@ export function FlowEditor({ campaignId, initial }: Props) {
           const act = s.stepType === 'delay' ? 'Wait' : STEP_LABELS[s.stepType];
           const when = funnelWhen(s, days[i] ?? null);
           return (
+            // biome-ignore lint/suspicious/noArrayIndexKey: steps lack a stable id until saved; index key matches existing reorder/save identity behavior.
             <span key={i} style={{ display: 'contents' }}>
               {i > 0 && (
                 <span className="arrow" aria-hidden="true">
@@ -105,6 +106,7 @@ export function FlowEditor({ campaignId, initial }: Props) {
 
       <div className="steps">
         {steps.map((step, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: steps lack a stable id until saved; index key matches existing reorder/save identity behavior.
           <div className={`step${step.enabled ? '' : ' disabled'}`} key={i}>
             <div className="step-head">
               <span className="order">{i + 1}</span>
@@ -129,17 +131,23 @@ export function FlowEditor({ campaignId, initial }: Props) {
                 enabled
               </label>
               <div className="row-actions">
-                <button className="btn icon" onClick={() => move(i, -1)} disabled={i === 0}>
+                <button
+                  type="button"
+                  className="btn icon"
+                  onClick={() => move(i, -1)}
+                  disabled={i === 0}
+                >
                   ↑
                 </button>
                 <button
+                  type="button"
                   className="btn icon"
                   onClick={() => move(i, 1)}
                   disabled={i === steps.length - 1}
                 >
                   ↓
                 </button>
-                <button className="btn icon" onClick={() => remove(i)}>
+                <button type="button" className="btn icon" onClick={() => remove(i)}>
                   ✕
                 </button>
               </div>
@@ -158,12 +166,12 @@ export function FlowEditor({ campaignId, initial }: Props) {
       </div>
 
       <div className="toolbar">
-        <button className="btn ghost" onClick={add}>
+        <button type="button" className="btn ghost" onClick={add}>
           + Add step
         </button>
         <span className="spacer" />
         {saved && <span className="saved">Saved</span>}
-        <button className="btn" onClick={save} disabled={saving}>
+        <button type="button" className="btn" onClick={save} disabled={saving}>
           {saving ? 'Saving...' : 'Save flow'}
         </button>
       </div>

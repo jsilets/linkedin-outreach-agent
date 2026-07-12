@@ -68,7 +68,7 @@ export function ListsView() {
             />
           </div>
           <div className="toolbar" style={{ margin: 0 }}>
-            <button className="btn" onClick={create} disabled={!canSubmit}>
+            <button type="button" className="btn" onClick={create} disabled={!canSubmit}>
               {saving ? 'Creating...' : 'Create list'}
             </button>
             <span className="spacer" />
@@ -207,7 +207,12 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
       header: '',
       sortable: false,
       cell: (m) => (
-        <button className="btn tiny danger" disabled={removing === m.id} onClick={() => remove(m)}>
+        <button
+          type="button"
+          className="btn tiny danger"
+          disabled={removing === m.id}
+          onClick={() => remove(m)}
+        >
           {removing === m.id ? 'Removing…' : 'Remove'}
         </button>
       ),

@@ -273,7 +273,7 @@ function LaunchControls({
           </option>
         ))}
       </select>
-      <button className="btn" onClick={onLaunch} disabled={!accountId || launching}>
+      <button type="button" className="btn" onClick={onLaunch} disabled={!accountId || launching}>
         {launching ? 'Working…' : label}
       </button>
     </div>

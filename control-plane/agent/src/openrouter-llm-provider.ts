@@ -64,7 +64,7 @@ function intentFromText(text: string): ReplyIntent | undefined {
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     if (parsed && typeof parsed === 'object') {
-      const candidate = (parsed as Record<string, unknown>)['intent'];
+      const candidate = (parsed as Record<string, unknown>).intent;
       if (isReplyIntent(candidate)) return candidate;
     }
   } catch {
@@ -191,7 +191,7 @@ export class OpenRouterLLMProvider implements LLMProvider {
       return 'NotInterested';
     }
     // Prefer a valid tool call.
-    const candidate = res.toolUse?.input?.['intent'];
+    const candidate = res.toolUse?.input?.intent;
     if (isReplyIntent(candidate)) {
       return candidate;
     }

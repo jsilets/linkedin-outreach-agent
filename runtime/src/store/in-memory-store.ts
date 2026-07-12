@@ -10,7 +10,6 @@
 import type {
   ApprovalRepoPort,
   CampaignRepoPort,
-  EventRepoPort,
   MessageRepoPort,
   TargetRepoPort,
 } from '@loa/orchestrator';

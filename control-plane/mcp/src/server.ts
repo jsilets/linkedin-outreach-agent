@@ -31,7 +31,7 @@ function safeEqual(a: string, b: string): boolean {
 
 /** Pull the raw token out of an `Authorization: Bearer <token>` header. */
 function bearerToken(headers: Record<string, unknown>): string | undefined {
-  const raw = headers['authorization'];
+  const raw = headers.authorization;
   if (typeof raw !== 'string') return undefined;
   const match = /^Bearer\s+(.+)$/i.exec(raw.trim());
   return match ? match[1] : undefined;

@@ -137,7 +137,7 @@ async function main(): Promise<void> {
   console.log(`[shakeout] queryId=${process.env.LOA_SEARCH_QUERY_ID || '(default)'}`);
   console.log(`[shakeout] page-1 request=${path}`);
   console.log(
-    `[shakeout] mode=${identity ? 'proxy ' + identity.server : 'NO PROXY (local check)'}`,
+    `[shakeout] mode=${identity ? `proxy ${identity.server}` : 'NO PROXY (local check)'}`,
   );
 
   const provider = new LiveSessionProvider({

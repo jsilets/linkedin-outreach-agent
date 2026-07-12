@@ -149,7 +149,7 @@ export class ClaudeLLMProvider implements LLMProvider {
     if (res.refused) {
       return 'NotInterested';
     }
-    const candidate = res.toolUse?.input?.['intent'];
+    const candidate = res.toolUse?.input?.intent;
     if (isReplyIntent(candidate)) {
       return candidate;
     }

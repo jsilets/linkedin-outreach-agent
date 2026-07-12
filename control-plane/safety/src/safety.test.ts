@@ -27,7 +27,7 @@ import { isTerminal, transition } from './state-machine.js';
 const FIXED_NOW = new Date(2026, 6, 6, 12, 0, 0); // a Monday, local noon
 const fixedClock: Clock = { now: () => FIXED_NOW };
 
-function budget(state: AccountState, used: Partial<Record<ActionType, number>> = {}): DailyBudget {
+function budget(_state: AccountState, used: Partial<Record<ActionType, number>> = {}): DailyBudget {
   return {
     date: isoDate(FIXED_NOW),
     caps: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },

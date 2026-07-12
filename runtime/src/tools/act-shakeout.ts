@@ -36,7 +36,6 @@ import type { Action, ActionType } from '@loa/shared';
 import { loadConfig } from '../config.js';
 import { LiveSessionProvider } from '../executor/session-provider.js';
 
-const LINKEDIN_ORIGIN = 'https://www.linkedin.com/feed/';
 const SUPPORTED = new Set(['connect', 'message', 'view_profile']);
 
 /** Parse `<accountId> <action> <profileArg> --flag value ...` argv. */

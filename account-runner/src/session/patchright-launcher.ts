@@ -87,7 +87,7 @@ function adaptPage(page: PwPage): PagePort {
             'csrf-token': csrf,
             'x-restli-protocol-version': '2.0.0',
           };
-          if (accept) headers['accept'] = accept;
+          if (accept) headers.accept = accept;
           const resp = await fetch(path, { credentials: 'include', headers });
           let body: unknown = null;
           try {

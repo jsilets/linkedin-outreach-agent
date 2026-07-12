@@ -15,18 +15,31 @@ export function App() {
         <h1>Outreach campaigns</h1>
         <nav>
           <button
+            type="button"
             className={tab === 'campaigns' ? 'active' : ''}
             onClick={() => setTab('campaigns')}
           >
             Campaigns
           </button>
-          <button className={tab === 'metrics' ? 'active' : ''} onClick={() => setTab('metrics')}>
+          <button
+            type="button"
+            className={tab === 'metrics' ? 'active' : ''}
+            onClick={() => setTab('metrics')}
+          >
             Activity
           </button>
-          <button className={tab === 'lists' ? 'active' : ''} onClick={() => setTab('lists')}>
+          <button
+            type="button"
+            className={tab === 'lists' ? 'active' : ''}
+            onClick={() => setTab('lists')}
+          >
             Lists
           </button>
-          <button className={tab === 'accounts' ? 'active' : ''} onClick={() => setTab('accounts')}>
+          <button
+            type="button"
+            className={tab === 'accounts' ? 'active' : ''}
+            onClick={() => setTab('accounts')}
+          >
             Accounts
           </button>
         </nav>

@@ -90,7 +90,7 @@ function sendThreadRef(req: ActRequest): string {
 export class ApprovalAdapter implements ApprovalPort {
   constructor(
     private readonly services: OrchestratorServices,
-    private readonly executor: ExecutorPort,
+    _executor: ExecutorPort,
     private readonly store: RuntimeStore,
   ) {}
 
@@ -170,7 +170,7 @@ export class ApprovalAdapter implements ApprovalPort {
     outcome: 'approved' | 'rejected',
   ): Promise<void> {
     const prog = await this.store.sequence.getTargetProgressByTarget(targetId);
-    if (!prog || prog.state !== 'awaiting_approval') return;
+    if (prog?.state !== 'awaiting_approval') return;
     if (outcome === 'rejected') {
       await this.store.sequence.advanceTargetProgress(prog.id, {
         state: 'skipped',
@@ -323,7 +323,7 @@ export class CampaignAdapter implements CampaignPort {
       if (s.stepType === 'delay' && !(s.delaySeconds && s.delaySeconds > 0)) {
         throw new Error(`step ${i}: a delay step needs delaySeconds > 0`);
       }
-      if (s.stepType === 'message' && !(s.body && s.body.trim())) {
+      if (s.stepType === 'message' && !s.body?.trim()) {
         throw new Error(`step ${i}: a message step needs a non-empty body`);
       }
     });

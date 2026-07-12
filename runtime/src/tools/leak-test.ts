@@ -191,7 +191,7 @@ async function checkWebRtc(page: any, hasProxy: boolean): Promise<CheckResult> {
           return;
         }
         pc.onicecandidate = (e: any) => {
-          if (e.candidate && e.candidate.candidate) {
+          if (e.candidate?.candidate) {
             seen.push(e.candidate.candidate);
           }
         };

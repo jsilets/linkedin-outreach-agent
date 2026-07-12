@@ -79,7 +79,7 @@ describe('OpenRouterLLMProvider.personalize', () => {
     expect(draft.model).toBe('anthropic/claude-fable-5');
     // It POSTed to OpenRouter with a bearer token and a system+user message pair.
     expect(calls[0]!.url).toBe('https://openrouter.ai/api/v1/chat/completions');
-    expect(calls[0]!.headers['Authorization']).toBe('Bearer test-key');
+    expect(calls[0]!.headers.Authorization).toBe('Bearer test-key');
     const body = calls[0]!.body as { messages: { role: string }[] };
     expect(body.messages.map((m) => m.role)).toEqual(['system', 'user']);
   });
