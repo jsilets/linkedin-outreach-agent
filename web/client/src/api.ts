@@ -62,6 +62,9 @@ export interface Lead {
   // The operator already approved this lead's message; it's only waiting on the
   // dispatch pacer / send window. Distinct from "still needs approval".
   approvedQueued: boolean;
+  // The action the queued send will fire ("message" / "connect"), so the row can
+  // name it ("Message soon" vs "Invite soon"). Null when approvedQueued is false.
+  queuedActionType: string | null;
 }
 
 export interface Pending {
