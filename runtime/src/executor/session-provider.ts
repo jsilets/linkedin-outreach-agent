@@ -20,7 +20,15 @@ import {
   type SessionDeps,
 } from '@loa/account-runner';
 import type { Target } from '@loa/shared';
-import type { SessionProvider } from './account-runner-executor.js';
+
+/** Resolves the live browser session for an account. In P0 this comes from
+ * @loa/account-runner session.resume(); dev/smoke never construct one. */
+export interface SessionProvider {
+  /** Return the live Page for this account, or throw if none is available. */
+  pageFor(accountId: string): Promise<PagePort>;
+  /** Profile URL for a target (built from its LinkedIn URN). */
+  profileUrlFor(target: Target): string;
+}
 
 export interface LiveSessionProviderConfig {
   /** Persistent browser-profile root; one subdir per account. */

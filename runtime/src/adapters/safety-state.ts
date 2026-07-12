@@ -32,7 +32,7 @@ function emptyDailyUsed(): Record<ActionType, number> {
 }
 
 /** Event kind under which the runtime records a raised safety signal. */
-export const SIGNAL_EVENT_KIND = 'safety_signal';
+const SIGNAL_EVENT_KIND = 'safety_signal';
 
 /**
  * Synchronous weekly-invite counter backed by a live in-memory window of connect

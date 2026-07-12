@@ -10,7 +10,7 @@ export const STEP_LABELS: Record<CampaignStepType, string> = {
 };
 
 // Render a delay in seconds as a short, readable duration.
-export function formatDelay(seconds: number): string {
+function formatDelay(seconds: number): string {
   if (seconds <= 0) return 'no wait';
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);

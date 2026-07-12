@@ -23,7 +23,6 @@ import type {
 import type {
   ActionContext,
   AllowToken,
-  PagePort,
   SafetyPort as RunnerSafetyPort,
   Sleeper,
 } from '@loa/account-runner';
@@ -43,16 +42,7 @@ import type {
   StoreBackedWeeklyInviteCounter,
 } from '../adapters/safety-state.js';
 import { rowToAccount, rowToTarget } from '../mappers.js';
-import { personalizeBody } from './session-provider.js';
-
-/** Resolves the live browser session for an account. In P0 this comes from
- * @loa/account-runner session.resume(); dev/smoke never construct one. */
-export interface SessionProvider {
-  /** Return the live Page for this account, or throw if none is available. */
-  pageFor(accountId: string): Promise<PagePort>;
-  /** Profile URL for a target (built from its LinkedIn URN). */
-  profileUrlFor(target: Target): string;
-}
+import { personalizeBody, type SessionProvider } from './session-provider.js';
 
 export interface AccountRunnerExecutorDeps {
   store: RuntimeStore;

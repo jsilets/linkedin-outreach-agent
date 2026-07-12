@@ -23,7 +23,7 @@ import type {
   RuntimeStore,
   SequenceStorePort,
   TargetProgressPatch,
-} from './index.js';
+} from './types.js';
 
 const { campaignSteps, targetProgress, targets, actions, messages, leadLists, leadListMembers } =
   shared.schema;

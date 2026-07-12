@@ -5,6 +5,5 @@
 export {
   rowToAccount,
   rowToCampaign,
-  rowToMessage,
   rowToTarget,
 } from '@loa/orchestrator';

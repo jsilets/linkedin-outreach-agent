@@ -25,6 +25,7 @@
     "typecheck": "tsc -b",
     "clean": "tsc -b --clean",
     "test": "vitest run --passWithNoTests",
+    "knip": "knip",
     "dev": "node --env-file-if-exists=.env --import tsx runtime/src/main.ts",
     "start": "node --env-file-if-exists=.env --import tsx runtime/src/main.ts",
     "smoke": "node --import tsx runtime/src/smoke.ts",
@@ -43,6 +44,7 @@
   "devDependencies": {
     "@types/node": "^24.10.0",
     "drizzle-kit": "^0.31.10",
+    "knip": "^6.26.0",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"

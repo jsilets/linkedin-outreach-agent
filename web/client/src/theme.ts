@@ -4,15 +4,10 @@
 // light, which is also the bare-:root first-paint mirror, so an unset or corrupt
 // stored value degrades cleanly.
 
-export const THEMES = ['light', 'dark'] as const;
+const THEMES = ['light', 'dark'] as const;
 export type Theme = (typeof THEMES)[number];
 
-export const THEME_LABELS: Record<Theme, string> = {
-  light: 'Light',
-  dark: 'Dark',
-};
-
-export const DEFAULT_THEME: Theme = 'light';
+const DEFAULT_THEME: Theme = 'light';
 const STORAGE_KEY = 'loa-theme';
 
 function isTheme(value: unknown): value is Theme {
@@ -29,7 +24,7 @@ export function getStoredTheme(): Theme {
   return DEFAULT_THEME;
 }
 
-export function applyTheme(theme: Theme): void {
+function applyTheme(theme: Theme): void {
   document.documentElement.setAttribute('data-theme', theme);
 }
 

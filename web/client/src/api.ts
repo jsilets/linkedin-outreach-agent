@@ -22,7 +22,7 @@ export interface Step {
   enabled: boolean;
 }
 
-export type CampaignStatus = 'draft' | 'active' | 'done';
+type CampaignStatus = 'draft' | 'active' | 'done';
 
 export interface CampaignSummary {
   id: string;

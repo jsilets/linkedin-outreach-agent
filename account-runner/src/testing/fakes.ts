@@ -24,7 +24,7 @@ export interface LocatorLog {
   waits: number;
 }
 
-export class FakeLocator implements LocatorPort {
+class FakeLocator implements LocatorPort {
   constructor(
     private readonly log: LocatorLog,
     private readonly countValue: () => number,

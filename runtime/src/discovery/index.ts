@@ -18,7 +18,6 @@ import { HeuristicQualifier } from './heuristic-qualifier.js';
 import type { Candidate, QualifierPort } from './types.js';
 
 export * from './types.js';
-export { HeuristicQualifier } from './heuristic-qualifier.js';
 
 /** Adapter implementing the MCP DiscoveryPort over the store. Offline: it reads
  *  stored member fields and writes scores; it never touches LinkedIn. */

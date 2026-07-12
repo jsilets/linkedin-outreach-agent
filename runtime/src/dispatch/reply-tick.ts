@@ -88,7 +88,7 @@ export interface ReplyTickDeps {
  * identity matcher (the acceptance tick uses the same one against accepted
  * connections) so reply-mapping and accept-mapping stay identical.
  */
-export function matchesTarget(msg: InboundMessage, target: TargetRow): boolean {
+function matchesTarget(msg: InboundMessage, target: TargetRow): boolean {
   return matchesIdentity(msg.senderUrn, msg.profileUrl, target);
 }
 

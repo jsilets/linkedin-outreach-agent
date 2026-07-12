@@ -19,7 +19,7 @@ export type ToolFamily = 'observe' | 'act' | 'campaign' | 'approval' | 'safety';
 
 /** A JSON-serializable tool result. Handlers return plain data; the server
  *  wraps it in the MCP content envelope. */
-export type ToolOutput = unknown;
+type ToolOutput = unknown;
 
 export interface ToolDef<Shape extends z.ZodRawShape = z.ZodRawShape> {
   name: string;

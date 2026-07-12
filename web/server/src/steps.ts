@@ -2,7 +2,7 @@
 // Kept free of DB imports so it can be unit-tested on its own.
 import { CAMPAIGN_STEP_TYPES, type CampaignStepType } from '@loa/shared';
 
-export interface StepInput {
+interface StepInput {
   stepType: string;
   delaySeconds?: number | null;
   note?: string | null;

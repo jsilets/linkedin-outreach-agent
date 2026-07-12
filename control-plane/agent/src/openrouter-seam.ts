@@ -5,7 +5,7 @@
 
 import type { SeamRequest, SeamResult, SeamTool, SeamToolUse } from './anthropic-seam.js';
 
-export type { SeamRequest, SeamResult, SeamTool, SeamToolUse };
+export type { SeamRequest, SeamResult, SeamTool };
 
 /** The seam the OpenRouter provider depends on. */
 export interface OpenRouterSeam {

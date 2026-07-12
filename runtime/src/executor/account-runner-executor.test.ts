@@ -15,7 +15,8 @@ import { DefaultSafetyGate, NO_ACTIVE_HOURS_CONFIG } from '@loa/safety';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { StoreBackedWeeklyInviteCounter } from '../adapters/safety-state.js';
 import { makeRunnerSafetyPort } from '../adapters/safety.js';
-import { AccountRunnerExecutor, type SessionProvider } from './account-runner-executor.js';
+import { AccountRunnerExecutor } from './account-runner-executor.js';
+import type { SessionProvider } from './session-provider.js';
 
 const ACCT = 'acct-1';
 const CAMP = 'camp-1';

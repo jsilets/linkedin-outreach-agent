@@ -10,14 +10,12 @@ import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
 import type { SequenceStorePort } from '../store/index.js';
 import {
   DispatchTick,
-  type DispatchTickDeps,
   type SendTimeReplyCheck,
   type StepOutcome,
-  type TickResult,
 } from './tick.js';
 
 export { DispatchTick };
-export type { DispatchTickDeps, SendTimeReplyCheck, StepOutcome, TickResult };
+export type { SendTimeReplyCheck };
 
 export interface MakeDispatchTickDeps {
   sequence: SequenceStorePort;

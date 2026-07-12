@@ -29,7 +29,7 @@ import type {
   RuntimeStore,
   SequenceStorePort,
   TargetProgressPatch,
-} from './index.js';
+} from './types.js';
 
 type AccountRow = shared.AccountRow;
 type NewAccountRow = shared.NewAccountRow;
