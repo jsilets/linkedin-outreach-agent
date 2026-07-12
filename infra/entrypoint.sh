@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-# Platforms (Railway included) mount the /data volume owned by root, which masks
+# Platforms commonly mount the /data volume owned by root, which masks
 # the image's build-time chown. Fix ownership at runtime as root, then drop to
 # the unprivileged app user for everything else. dumb-init (PID 1) forwards
 # signals to gosu, which execs without forking, so signal handling is preserved.

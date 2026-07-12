@@ -63,7 +63,7 @@ Connect Claude Code to the remote MCP server. In `.mcp.json` (or via
   "mcpServers": {
     "loa": {
       "type": "http",
-      "url": "https://YOUR-APP.up.railway.app/mcp",
+      "url": "http://localhost:8090/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_LOA_MCP_TOKEN"
       }
@@ -80,7 +80,7 @@ add a second entry that carries the operator token:
   "mcpServers": {
     "loa-operator": {
       "type": "http",
-      "url": "https://YOUR-APP.up.railway.app/mcp",
+      "url": "http://localhost:8090/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_LOA_OPERATOR_TOKEN",
         "x-loa-operator": "YOUR_NAME"

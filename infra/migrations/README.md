@@ -24,11 +24,11 @@ Two root scripts drive it:
 
 ## Where migrations run
 
-The app image ships this directory and `drizzle.config.ts`. The migrate step
-runs `drizzle-kit migrate` before the app takes traffic: docker-compose runs it
-as the one-shot `migrate` service, and Railway runs it as the `preDeployCommand`
-in `infra/railway.json`, so the schema is current before the app starts.
-`DATABASE_URL` comes from an environment secret, never from a committed file.
+The app image ships this directory and `drizzle.config.ts`. Run migrations with
+`npm run db:migrate` before the app takes traffic; docker-compose runs the same
+`drizzle-kit migrate` as the one-shot `migrate` service, so the schema is current
+before the app starts. `DATABASE_URL` comes from an environment secret, never
+from a committed file.
 
 Locally, apply against your dev database with:
 

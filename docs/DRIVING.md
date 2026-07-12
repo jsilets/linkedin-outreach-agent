@@ -152,4 +152,4 @@ real account.
 - `docs/SCHEDULING.md`: running driven mode on a recurring schedule.
 - `docs/P0-RUNBOOK.md`: first-run, one-account setup end to end.
 - `examples/driver/`: a copy-paste driver prompt for Claude Code or Codex.
-- `infra/RAILWAY.md`, `infra/PROXY.md`: deployment and proxy leak guard.
+- `infra/README.md`, `infra/PROXY.md`: deployment and proxy leak guard.

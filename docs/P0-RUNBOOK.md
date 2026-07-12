@@ -15,7 +15,8 @@ Do each step in order. Do not skip the proxy leak test or the selector check.
   pool, not a datacenter IP. See `infra/PROXY.md`.
 - A cookie vault key: `openssl rand -base64 32`. This encrypts the account's
   session cookies at rest (`COOKIE_VAULT_KEY`).
-- A Railway account and the CLI (`npm i -g @railway/cli`, then `railway login`).
+- A host that runs Docker (your own machine or any server) with Docker Compose,
+  or Node plus a local Postgres if you run the runtime directly.
 
 No LLM key is required if you drive with your own agent (Claude Code or Codex).
 `ANTHROPIC_API_KEY` is only for autonomous mode; leave it unset for a driven run.
@@ -27,29 +28,30 @@ Collect, do not commit, these secrets. They arrive at runtime only:
 - `COOKIE_VAULT_KEY`: `openssl rand -base64 32`.
 - `PROXY_URL`, `PROXY_USERNAME`, `PROXY_PASSWORD`: from your proxy provider, for
   the one sticky exit IP bound to this account.
-- `DATABASE_URL`: provided by the Railway Postgres plugin (step 2).
+- `DATABASE_URL`: points at your Postgres. Docker Compose sets it for you to
+  reach the compose Postgres (step 2).
 
 Resolve the proxy exit city once and keep it, so the browser geo can match it
 later (see `infra/PROXY.md`, "Geo coherence").
 
-## 2. Deploy one app container plus Postgres to Railway
+## 2. Bring up one app container plus Postgres locally
 
-Follow `infra/RAILWAY.md` in full. In short:
+Use the root `docker-compose.yml` (see `infra/README.md`). In short:
 
-1. `railway init` then `railway link`.
-2. `railway add --database postgres` (the plugin provides `DATABASE_URL`).
-3. Add the app service from this repo; Railway builds `infra/Dockerfile` per
-   `infra/railway.json`.
-4. Set variables. Reference the Postgres `DATABASE_URL`, and set
-   `COOKIE_VAULT_KEY`. Leave the ports at the image defaults (web on `PORT=8080`,
-   MCP internal on `MCP_PORT=8090`). Leave `ANTHROPIC_API_KEY` unset for a
-   driven run. Add the `PROXY_*` vars for the one account.
-5. Attach a volume at `/data/profile` so the browser profile survives restarts.
-6. Migrations run automatically before each release (`preDeployCommand`).
-7. `railway up`, then check `GET /healthz` on the service domain returns
-   `{"ok":true,...}`.
+1. `cp .env.example .env`, then fill in `COOKIE_VAULT_KEY`. Leave the ports at the
+   image defaults (web on `PORT=8080`, MCP internal on `MCP_PORT=8090`). Leave
+   `ANTHROPIC_API_KEY` unset for a driven run. Add the `PROXY_*` vars for the one
+   account. Compose sets `DATABASE_URL` for you to reach the compose Postgres.
+2. `docker compose run --rm migrate` to apply the schema once (or `npm run
+   db:migrate` if you run against your own Postgres). This creates the tables.
+3. `docker compose up app` to start the app. The named volume `browser_profile`
+   at `/data/profile` keeps the browser profile across restarts.
+4. `curl localhost:8080/healthz` returns `{"ok":true,...}`.
 
-At this point you have a live MCP endpoint at `https://YOUR-APP.../mcp` and a
+Prefer no container? `npm run db:migrate` then `npm run dev` runs the runtime
+directly against a local Postgres.
+
+At this point you have a live MCP endpoint at `http://localhost:8090/mcp` and a
 green health check. The tables `accounts`, `campaigns`, and `actions` exist.
 
 ## 3. Assisted first login to seed the cookie vault
@@ -145,4 +147,4 @@ autonomy, adding targets in bulk, or standing up a second account.
   the loop on one supervised account before you raise autonomy or add a second.
 - The brain/body split across services is future work. Today the whole runtime is
   one process in one container, one account. See the scaling note in
-  `infra/RAILWAY.md`.
+  `infra/README.md`.

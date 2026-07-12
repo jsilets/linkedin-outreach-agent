@@ -4,7 +4,7 @@
 
 A self-hosted, agent-driven framework for running LinkedIn outreach across multiple accounts. A control plane plans campaigns and enforces safety; per-account runners drive a real browser to carry out actions. An LLM personalizes messages and classifies replies. Everything an account does is written to an append-only audit log.
 
-The default executor is `LOA_EXECUTOR=fake`, which exercises the whole surface without touching LinkedIn. See [`infra/RAILWAY.md`](./infra/RAILWAY.md) to switch a single supervised account to real sending.
+The default executor is `LOA_EXECUTOR=fake`, which exercises the whole surface without touching LinkedIn. See [`infra/README.md`](./infra/README.md) to switch a single supervised account to real sending.
 
 ## How it's driven (bring your own agent)
 
@@ -23,7 +23,7 @@ See [`docs/DRIVING.md`](./docs/DRIVING.md) for the topology and the driver playb
 - [`docs/SCHEDULING.md`](./docs/SCHEDULING.md): running driven mode on a cron cadence with Claude Code and Codex.
 - [`docs/P0-RUNBOOK.md`](./docs/P0-RUNBOOK.md): first supervised run, one account, end to end.
 - [`examples/driver/`](./examples/driver/): a copy-paste driver prompt for Claude Code or Codex.
-- [`infra/RAILWAY.md`](./infra/RAILWAY.md), [`infra/PROXY.md`](./infra/PROXY.md): deployment and proxy leak guard.
+- [`infra/README.md`](./infra/README.md), [`infra/PROXY.md`](./infra/PROXY.md): deployment and proxy leak guard.
 
 ## Repo shape
 

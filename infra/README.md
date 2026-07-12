@@ -1,8 +1,8 @@
 # @loa/infra — deployment
 
 Deployment artifacts for the LinkedIn outreach framework: one portable Docker
-image, a local docker-compose stack, a Railway config, and the database
-migrations. No application logic lives here.
+image, a local docker-compose stack, and the database migrations. No application
+logic lives here.
 
 ## The deployable unit
 
@@ -33,9 +33,6 @@ does locally. With no `ANTHROPIC_API_KEY` the runtime uses a fake LLM; with no
   stage installs Xvfb + a headful Chromium and runs `node runtime/dist/main.js`).
 - `entrypoint.sh` — starts Xvfb, exports `DISPLAY`, starts the runtime and the
   web server, exits when either does.
-- `railway.json` — Railway config-as-code (Dockerfile build, `/healthz` check,
-  pre-deploy migrate, restart policy).
-- `RAILWAY.md` — the Railway deploy runbook.
 - `migrations/` — drizzle-kit SQL output + its README (generate/migrate flow).
 - `PROXY.md` — sticky-IP binding + WebRTC/DNS/IPv6 leak-guard contract.
 - `examples/fly/` — an unmaintained Fly example (see its `NOTE.md`).
@@ -62,20 +59,15 @@ the browser profile (`browser_profile` at `/data/profile`), and the app. The
 `migrate` service is one-shot: it runs `drizzle-kit migrate` against the compose
 database and exits.
 
-## Deploy to Railway
+## Self-host / local
 
-Railway is the documented hosting target: flat-rate, no idle suspend, one-click
-Postgres, per-service volumes. Full runbook in `RAILWAY.md`. In short:
-
-1. `railway init` + `railway link`.
-2. Add the Postgres plugin (provides `DATABASE_URL`).
-3. Add the app service from this repo; Railway builds `infra/Dockerfile` per
-   `railway.json`.
-4. Set secrets (`ANTHROPIC_API_KEY`, `COOKIE_VAULT_KEY`, `LOA_LLM_MODEL`, and
-   later `PROXY_*`).
-5. Attach a volume at `/data/profile`.
-6. Migrations run automatically before each release (`preDeployCommand`).
-7. `railway up`, then check `/healthz`.
+The project is self-hosted: run the container stack locally (or on any host that
+runs Docker) with the root `docker-compose.yml`, or run the runtime directly with
+`npm run dev`. The docker-compose flow above ("Try it end to end") is the whole
+deploy: bring up Postgres, run the one-shot `migrate` service, start `app`, and
+check `GET /healthz`. Supply secrets at runtime (`ANTHROPIC_API_KEY`,
+`COOKIE_VAULT_KEY`, and later `PROXY_*`); never bake them into the image. Attach a
+persistent volume at `/data/profile` for the browser profile.
 
 ## Environment variables
 
@@ -103,19 +95,17 @@ holds the generated SQL (committed). Two root scripts:
   change to `shared/src/db/schema.ts`, review, commit.
 - `npm run db:migrate` — apply pending files to `DATABASE_URL`. Idempotent.
 
-In containers the migrate step runs `drizzle-kit` directly
-(`node node_modules/drizzle-kit/bin.cjs migrate`): compose runs it as the
-one-shot `migrate` service, Railway runs it as `preDeployCommand`. Details in
-`migrations/README.md`.
+Run `npm run db:migrate` to apply pending files to `DATABASE_URL`. In containers
+the migrate step runs `drizzle-kit` directly
+(`node node_modules/drizzle-kit/bin.cjs migrate`) as the one-shot compose
+`migrate` service. Details in `migrations/README.md`.
 
-## Cost note (Railway)
+## Resource note
 
-Railway bills flat-rate for what runs, with no idle suspend: a small always-on
-service plus a Postgres plugin is roughly a low-tens-of-dollars-per-month
-baseline, and it does not sleep between outreach windows. Budget ~2GB of memory
-per service once real browser runs land (one headful Chromium). A sticky
-residential or ISP-static proxy IP adds ~$2-6/account/month from the proxy
-provider (see `PROXY.md`); that cost is per account and is not Railway's.
+Budget ~2GB of memory for the app once real browser runs land (one headful
+Chromium), plus a Postgres instance. A sticky residential or ISP-static proxy IP
+adds ~$2-6/account/month from the proxy provider (see `PROXY.md`); that cost is
+per account.
 
 ## Caveats
 
