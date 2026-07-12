@@ -26,6 +26,7 @@ export type {
   HealthReport,
   AuditRecord,
   ProfileSummary,
+  ProfilePosition,
   PostSummary,
   EngagerSummary,
   JobSummary,

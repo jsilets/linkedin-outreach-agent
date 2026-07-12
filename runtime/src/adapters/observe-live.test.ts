@@ -647,62 +647,201 @@ describe('profileIdFromUrn', () => {
   });
 });
 
-describe('normalizeProfileResponse', () => {
-  it('reads a full profileView payload', () => {
-    const body = {
-      profile: {
-        firstName: 'Dana',
-        lastName: 'Lopez',
-        headline: 'VP Engineering at Acme',
-        publicIdentifier: 'dana-lopez',
-        occupation: 'ignored when headline present',
+/** A trimmed voyagerIdentityDashProfileComponents (experience) payload: a flat
+ * list of single positions. Mirrors the live shape the normalizer walks. */
+function experiencePayload(
+  positions: Array<{ title: string; subtitle: string; caption: string; location?: string }>,
+) {
+  return {
+    data: {
+      identityDashProfileComponentsBySectionType: {
+        elements: [
+          {
+            components: {
+              pagedListComponent: {
+                components: {
+                  elements: positions.map((p) => ({
+                    components: {
+                      entityComponent: {
+                        titleV2: { text: { text: p.title } },
+                        subtitle: { text: p.subtitle },
+                        caption: { text: p.caption },
+                        ...(p.location ? { metadata: { text: p.location } } : {}),
+                      },
+                    },
+                  })),
+                },
+              },
+            },
+          },
+        ],
       },
-    };
+    },
+  };
+}
+
+describe('normalizeProfileResponse', () => {
+  it('reads the experience section into positions + current role/company', () => {
+    const body = experiencePayload([
+      { title: 'VP Engineering', subtitle: 'Acme Corp · Full-time', caption: 'Jan 2022 - Present · 2 yrs', location: 'San Francisco' },
+      { title: 'Staff Engineer', subtitle: 'Globex · Full-time', caption: 'Jan 2018 - Dec 2021 · 4 yrs' },
+    ]);
     const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:ACoAAF9');
     expect(p).toMatchObject({
       linkedinUrn: 'urn:li:fsd_profile:ACoAAF9',
-      handle: 'dana-lopez',
-      name: 'Dana Lopez',
-      headline: 'VP Engineering at Acme',
+      handle: 'ACoAAF9',
+      currentTitle: 'VP Engineering',
+      currentCompany: 'Acme Corp',
+      // headline is synthesized from the current role.
+      headline: 'VP Engineering at Acme Corp',
     });
-    // raw carries the profile slice for callers wanting more than the summary.
-    expect((p.raw as { firstName?: string }).firstName).toBe('Dana');
+    expect(p.positions).toHaveLength(2);
+    expect(p.positions![0]).toMatchObject({
+      title: 'VP Engineering',
+      company: 'Acme Corp',
+      location: 'San Francisco',
+      current: true,
+    });
+    expect(p.positions![1]).toMatchObject({ title: 'Staff Engineer', company: 'Globex', current: false });
+    // raw carries the data slice for callers wanting more than the summary.
+    expect((p.raw as { identityDashProfileComponentsBySectionType?: unknown }).identityDashProfileComponentsBySectionType).toBeTruthy();
   });
 
-  it('handles a sparse payload (missing name/headline/publicId)', () => {
-    const p = normalizeProfileResponse({ profile: {} }, 'urn:li:fsd_profile:ACoAAF9');
+  it('handles a sparse payload (no experience section)', () => {
+    const p = normalizeProfileResponse({ data: {} }, 'urn:li:fsd_profile:ACoAAF9');
     expect(p).toMatchObject({
       linkedinUrn: 'urn:li:fsd_profile:ACoAAF9',
-      handle: 'ACoAAF9', // falls back to the urn tail when no publicIdentifier
+      handle: 'ACoAAF9', // falls back to the urn tail
       name: '',
       headline: '',
     });
+    expect(p.positions ?? []).toEqual([]);
+    expect(p.currentCompany).toBeUndefined();
   });
 
-  it('falls back to miniProfile fields when the top-level profile lacks them', () => {
+  it('flattens a grouped multi-role company into one position per role', () => {
     const body = {
-      profile: {
-        miniProfile: {
-          firstName: 'Sam',
-          lastName: 'Reed',
-          occupation: 'Founder',
-          publicIdentifier: 'sam-reed',
+      data: {
+        identityDashProfileComponentsBySectionType: {
+          elements: [
+            {
+              components: {
+                pagedListComponent: {
+                  components: {
+                    elements: [
+                      {
+                        components: {
+                          entityComponent: {
+                            // Grouped: the outer title is the company name.
+                            titleV2: { text: { text: 'Acme Corp' } },
+                            subComponents: {
+                              components: [
+                                {
+                                  components: {
+                                    pagedListComponent: {
+                                      components: {
+                                        elements: [
+                                          {
+                                            components: {
+                                              entityComponent: {
+                                                titleV2: { text: { text: 'Senior PM' } },
+                                                subtitle: { text: 'Full-time' },
+                                                caption: { text: 'Jan 2023 - Present · 1 yr' },
+                                                metadata: { text: 'Remote' },
+                                              },
+                                            },
+                                          },
+                                          {
+                                            components: {
+                                              entityComponent: {
+                                                titleV2: { text: { text: 'PM' } },
+                                                subtitle: { text: 'Full-time' },
+                                                caption: { text: 'Jan 2021 - Dec 2022 · 2 yrs' },
+                                              },
+                                            },
+                                          },
+                                        ],
+                                      },
+                                    },
+                                  },
+                                },
+                              ],
+                            },
+                          },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          ],
         },
       },
     };
     const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:x');
-    expect(p).toMatchObject({ handle: 'sam-reed', name: 'Sam Reed', headline: 'Founder' });
+    expect(p.positions).toHaveLength(2);
+    expect(p.positions![0]).toMatchObject({ title: 'Senior PM', company: 'Acme Corp', current: true, location: 'Remote' });
+    expect(p.positions![1]).toMatchObject({ title: 'PM', company: 'Acme Corp', current: false });
+    expect(p.currentTitle).toBe('Senior PM');
+    expect(p.currentCompany).toBe('Acme Corp');
+  });
+
+  it('collects positions split across multiple top-level section elements', () => {
+    const oneElement = (title: string, company: string, caption: string) => ({
+      components: {
+        pagedListComponent: {
+          components: {
+            elements: [
+              {
+                components: {
+                  entityComponent: {
+                    titleV2: { text: { text: title } },
+                    subtitle: { text: `${company} · Full-time` },
+                    caption: { text: caption },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    const body = {
+      data: {
+        identityDashProfileComponentsBySectionType: {
+          // Experience split across TWO top-level elements — reading only [0]
+          // would drop the second job.
+          elements: [
+            oneElement('VP Eng', 'Acme Corp', 'Jan 2022 - Present · 2 yrs'),
+            oneElement('Staff Eng', 'Globex', 'Jan 2018 - Dec 2021 · 4 yrs'),
+          ],
+        },
+      },
+    };
+    const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:x');
+    expect(p.positions).toHaveLength(2);
+    expect(p.positions![0]).toMatchObject({ title: 'VP Eng', company: 'Acme Corp', current: true });
+    expect(p.positions![1]).toMatchObject({ title: 'Staff Eng', company: 'Globex', current: false });
+    expect(p.currentTitle).toBe('VP Eng');
+    expect(p.currentCompany).toBe('Acme Corp');
   });
 });
 
 describe('LiveObserve.getProfile', () => {
-  it('drives the profileView endpoint and normalizes the payload', async () => {
+  it('drives the profile-components graphql endpoint and normalizes the payload', async () => {
     const page = new SearchFakePage([
-      { profile: { firstName: 'Dana', lastName: 'Lopez', headline: 'VP Eng', publicIdentifier: 'dana-lopez' } },
+      experiencePayload([{ title: 'VP Eng', subtitle: 'Acme · Full-time', caption: 'Jan 2020 - Present' }]),
     ]);
     const p = await observeWith(page).getProfile('acct', 'urn:li:fsd_profile:ACoAAF9');
-    expect(p.name).toBe('Dana Lopez');
-    expect(page.calls[0]).toContain('/voyager/api/identity/profiles/ACoAAF9/profileView');
+    expect(p.currentCompany).toBe('Acme');
+    expect(p.currentTitle).toBe('VP Eng');
+    // It hit the modern profile-components graphql query, not the dead profileView.
+    expect(page.calls[0]).toContain('/voyager/api/graphql?');
+    expect(page.calls[0]).toContain('voyagerIdentityDashProfileComponents');
+    expect(page.calls[0]).toContain('sectionType:experience');
+    expect(page.calls[0]).toContain(encodeURIComponent('urn:li:fsd_profile:ACoAAF9'));
+    expect(page.calls[0]).not.toContain('profileView');
   });
 });
 
