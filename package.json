@@ -55,6 +55,9 @@
       "zod": "^3.25.76"
     }
   },
+  "dependencies": {
+    "postgres": "^3.4.9"
+  },
   "devDependencies": {
     "@biomejs/biome": "2.5.3",
     "@types/node": "^24.10.0",
