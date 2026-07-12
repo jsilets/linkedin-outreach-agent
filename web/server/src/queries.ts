@@ -10,10 +10,12 @@ import {
   DEFAULT_CAPS,
   defaultLimits,
   extractCompany,
+  FAILURE_EVENT_KIND_SUFFIXES,
   planCampaignTargetRemoval,
   readIcpScore,
 } from '@loa/shared';
-import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
 import { type Db, db, schema } from './db.js';
 import { type NormalizedStep, normalizeSteps } from './steps.js';
 
@@ -557,6 +559,145 @@ export async function getActivity(opts: {
     return tb - ta;
   });
   return items.slice(0, opts.limit);
+}
+
+export interface ErrorItem {
+  /** Where the row came from: an events-table failure kind, or a failed action. */
+  source: 'event' | 'action';
+  /** For events, the event kind (reply_probe_failed, ...); for actions, the
+   * action type prefixed so the two never collide in a histogram
+   * (action_failed:connect). */
+  kind: string;
+  ts: string;
+  campaignId: string | null;
+  targetId: string | null;
+  accountId: string | null;
+  /** Human-readable context pulled from the payload (event detail / action type). */
+  detail: string | null;
+}
+
+export interface ErrorsSummary {
+  /** Trailing window this feed covers, echoed back for the caller. */
+  hours: number;
+  total: number;
+  /** Per-kind rollup: count and the window's first/last occurrence. */
+  byKind: Array<{ kind: string; count: number; firstSeen: string; lastSeen: string }>;
+}
+
+export interface ErrorsResult {
+  summary: ErrorsSummary;
+  items: ErrorItem[];
+}
+
+// SQL predicate matching failure-ish event kinds by suffix (see
+// FAILURE_EVENT_KIND_SUFFIXES). Underscore is a LIKE wildcard, so it is escaped
+// to match a literal '_'. Built from the shared list so adding a new suffix is a
+// one-line change that both this query and the ops-report script pick up.
+export function failureKindPredicate(): SQL {
+  const likes = FAILURE_EVENT_KIND_SUFFIXES.map(
+    (suffix) => sql`${events.kind} LIKE ${`%\\${suffix}`} ESCAPE '\\'`,
+  );
+  // or() over one element returns that element; over many, the disjunction.
+  return (likes.length === 1 ? likes[0] : or(...likes)) as SQL;
+}
+
+// The failure-events query, isolated so a test can assert its SQL shape without a
+// live DB. Reverse-chron events whose kind is failure-ish, within the trailing
+// window.
+export function buildErrorEventsQuery(hours: number) {
+  const since = sql`now() - (${hours} * interval '1 hour')`;
+  return db
+    .select({
+      id: events.id,
+      ts: events.ts,
+      kind: events.kind,
+      accountId: events.accountId,
+      campaignId: sql<string | null>`${events.payload}->>'campaignId'`,
+      targetId: sql<string | null>`${events.payload}->>'targetId'`,
+      detail: sql<string | null>`${events.payload}->>'detail'`,
+    })
+    .from(events)
+    .where(and(gte(events.ts, since), failureKindPredicate()))
+    .orderBy(desc(events.ts));
+}
+
+// The failed-actions query, isolated for the same reason. Actions whose result is
+// 'failed', within the trailing window (by executed-else-scheduled time).
+export function buildFailedActionsQuery(hours: number) {
+  const ts = sql`coalesce(${actions.executedAt}, ${actions.scheduledAt})`;
+  const since = sql`now() - (${hours} * interval '1 hour')`;
+  return db
+    .select({
+      id: actions.id,
+      ts,
+      type: actions.type,
+      accountId: actions.accountId,
+      campaignId: actions.campaignId,
+      targetId: actions.targetId,
+    })
+    .from(actions)
+    .where(and(eq(actions.result, 'failed'), gte(ts, since)))
+    .orderBy(desc(ts));
+}
+
+/**
+ * Ops/errors feed: a reverse-chron view of everything that went wrong in the last
+ * `hours`, merged from two sources that today have no single home — failure-ish
+ * events (reply_probe_failed and any *_failed / *_cancelled kind) and actions
+ * that executed with result='failed'. Each item carries its campaign/target/
+ * account context so an operator can trace a failure back to a lead without a
+ * second query. A `summary` rolls the feed up by kind with first/last-seen so a
+ * silent, repeating failure (the reply-probe incident) is one glance, not 200
+ * scrolled rows.
+ */
+export async function getErrors(opts: { hours: number }): Promise<ErrorsResult> {
+  const eventRows = await buildErrorEventsQuery(opts.hours);
+  const actionRows = await buildFailedActionsQuery(opts.hours);
+
+  const items: ErrorItem[] = [
+    ...eventRows.map((r) => ({
+      source: 'event' as const,
+      kind: r.kind,
+      ts: r.ts.toISOString(),
+      campaignId: r.campaignId,
+      targetId: r.targetId,
+      accountId: r.accountId,
+      detail: r.detail,
+    })),
+    ...actionRows.map((r) => ({
+      source: 'action' as const,
+      // Namespaced so a failed connect action doesn't merge into a connect event.
+      kind: `action_failed:${r.type}`,
+      ts: (r.ts as Date).toISOString(),
+      campaignId: r.campaignId,
+      targetId: r.targetId,
+      accountId: r.accountId,
+      detail: r.type,
+    })),
+  ];
+
+  items.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+
+  // Roll up by kind: count + first/last seen across the window.
+  const rollup = new Map<string, { count: number; firstSeen: string; lastSeen: string }>();
+  for (const it of items) {
+    const cur = rollup.get(it.kind);
+    if (!cur) {
+      rollup.set(it.kind, { count: 1, firstSeen: it.ts, lastSeen: it.ts });
+    } else {
+      cur.count += 1;
+      if (it.ts < cur.firstSeen) cur.firstSeen = it.ts;
+      if (it.ts > cur.lastSeen) cur.lastSeen = it.ts;
+    }
+  }
+  const byKind = [...rollup.entries()]
+    .map(([kind, v]) => ({ kind, ...v }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    summary: { hours: opts.hours, total: items.length, byKind },
+    items,
+  };
 }
 
 // Replace the whole step list for a campaign in one transaction: delete the

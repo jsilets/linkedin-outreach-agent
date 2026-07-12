@@ -138,3 +138,22 @@ export const CONTACTED_TARGET_STAGES = [
   'won',
 ] as const;
 export type ContactedTargetStage = (typeof CONTACTED_TARGET_STAGES)[number];
+
+// Which event `kind`s count as failures for the ops/errors feed. Event kinds are
+// free-form strings (the events table has no enum on kind), so the failure set is
+// defined by suffix, not an exhaustive list: any kind ending in one of these is a
+// failure-ish event. Today that captures reply_probe_failed, action_failed, and
+// approved_send_cancelled; new failure kinds are picked up automatically as long
+// as they follow the *_failed / *_cancelled naming the runtime already uses.
+// Kept here (not scattered across the query and the script) so both read one
+// source of truth.
+export const FAILURE_EVENT_KIND_SUFFIXES = ['_failed', '_cancelled'] as const;
+
+/**
+ * True when an event kind is failure-ish by the suffix rule above. Used by the
+ * ops-report script to classify already-fetched rows; the web query pushes the
+ * same rule into SQL so it never loads non-failures in the first place.
+ */
+export function isFailureEventKind(kind: string): boolean {
+  return FAILURE_EVENT_KIND_SUFFIXES.some((suffix) => kind.endsWith(suffix));
+}
