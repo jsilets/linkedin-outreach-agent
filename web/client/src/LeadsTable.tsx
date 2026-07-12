@@ -13,11 +13,20 @@ function Chip({ statusKey }: { statusKey: string }) {
 }
 
 // The key the funnel filters on: the RAW progress cursor (or stage when not
-// enrolled), matching the segment keys the funnel bar is built from. Kept
-// separate from the displayed milestone so clicking a coarse funnel segment
-// still selects every lead in it.
+// enrolled), matching the segment keys the funnel bar is built from. An approved-
+// but-paced awaiting_approval lead reports the action-specific message_queued /
+// invite_queued bucket the server split it into, so clicking those segments
+// selects it. Mirrors the server's leadFunnelBucket across the package boundary.
 function leadFilterKey(l: Lead): string {
+  if (l.progressState === 'awaiting_approval' && l.approvedQueued) {
+    return l.queuedActionType === 'connect' ? 'invite_queued' : 'message_queued';
+  }
   return l.progressState ?? l.stage;
+}
+
+// What the paced send will do, phrased for the "next step" cell.
+function pacedNextStep(l: Lead): string {
+  return l.queuedActionType === 'connect' ? 'Invite soon (paced)' : 'Message soon (paced)';
 }
 
 function ts(iso: string | null | undefined): number | null {
@@ -136,7 +145,7 @@ export function LeadsTable({
       cellClassName: 'when',
       cell: (l) =>
         l.progressState === 'awaiting_approval' && l.approvedQueued ? (
-          <span>Sending soon (paced)</span>
+          <span>{pacedNextStep(l)}</span>
         ) : (
           <span title={formatStamp(l.nextStepAt)}>
             {isFlowing(l) ? nextStepLabel(l.nextStepType, l.nextStepAt) : '—'}

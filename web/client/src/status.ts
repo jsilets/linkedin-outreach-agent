@@ -11,6 +11,10 @@ export const PROGRESS_ORDER = [
   'in_progress',
   'awaiting_connection',
   'awaiting_approval',
+  // Approved-but-paced buckets the server splits out of awaiting_approval: the
+  // human already approved, so they sit just past the approval checkpoint.
+  'message_queued',
+  'invite_queued',
   'replied',
   'completed',
   'failed',
@@ -29,12 +33,13 @@ const META: Record<string, Meta> = {
   completed: { label: 'Completed', varName: '--st-done' },
   failed: { label: 'Failed', varName: '--st-failed' },
   skipped: { label: 'Skipped', varName: '--st-idle' },
-  // derived lead milestones (see deriveLeadStatus) — finer than the raw states
-  invite_queued: { label: 'Invite queued', varName: '--st-idle' },
+  // derived lead milestones (see deriveLeadStatus) — finer than the raw states.
+  // Approved-but-paced sends: the operator already approved, only the pacer/send
+  // window is left, so they use the in-progress color, NOT amber (amber means "a
+  // human must act", which is done). Named for the action that will actually fire.
+  message_queued: { label: 'Message queued', varName: '--st-active' },
+  invite_queued: { label: 'Invite queued', varName: '--st-active' },
   messaged: { label: 'Message sent', varName: '--st-active' },
-  // Approved by the operator, now only waiting on the pacer/send window. Uses the
-  // in-progress color, NOT amber — amber means "a human must act", which is done.
-  send_queued: { label: 'Send queued', varName: '--st-active' },
   // target stages
   sourced: { label: 'Sourced', varName: '--st-idle' },
   queued: { label: 'Queued', varName: '--st-idle' },
@@ -63,8 +68,11 @@ export interface LeadStatusInput {
   progressState: string | null;
   lastAction: { type: string; result: string } | null;
   // Operator already approved a paced-but-unsent message. When true, an
-  // awaiting_approval cursor is "send queued", not "needs approval".
+  // awaiting_approval cursor is "message/invite queued", not "needs approval".
   approvedQueued?: boolean;
+  // The action the queued send will fire ("message" / "connect"), so the milestone
+  // can name it. A missing or non-connect type reads as a message.
+  queuedActionType?: string | null;
 }
 
 /**
@@ -79,9 +87,13 @@ export interface LeadStatusInput {
 export function deriveLeadStatus(l: LeadStatusInput): string {
   const st = l.progressState;
   // Terminal / attention states read straight through — they already say it.
-  // An approved-but-paced message no longer needs a human, so drop the amber
-  // "needs approval" chip and show the neutral "send queued" milestone instead.
-  if (st === 'awaiting_approval') return l.approvedQueued ? 'send_queued' : 'awaiting_approval';
+  // An approved-but-paced send no longer needs a human, so drop the amber "needs
+  // approval" chip and show the action-specific queued milestone: a connect reads
+  // "Invite queued", anything else (a message, or an unknown type) "Message queued".
+  if (st === 'awaiting_approval') {
+    if (!l.approvedQueued) return 'awaiting_approval';
+    return l.queuedActionType === 'connect' ? 'invite_queued' : 'message_queued';
+  }
   if (st === 'replied') return 'replied';
   if (st === 'completed') return 'completed';
   if (st === 'failed') return 'failed';

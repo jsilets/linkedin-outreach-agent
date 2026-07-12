@@ -11,6 +11,9 @@ let campaignDeleteStatements: typeof import('./queries.js').campaignDeleteStatem
 let buildErrorEventsQuery: typeof import('./queries.js').buildErrorEventsQuery;
 let buildFailedActionsQuery: typeof import('./queries.js').buildFailedActionsQuery;
 let buildApprovedMessagesQuery: typeof import('./queries.js').buildApprovedMessagesQuery;
+let buildApprovedQueuedCountsQuery: typeof import('./queries.js').buildApprovedQueuedCountsQuery;
+let splitApprovedQueued: typeof import('./queries.js').splitApprovedQueued;
+let leadFunnelBucket: typeof import('./queries.js').leadFunnelBucket;
 let buildActivityActionsQuery: typeof import('./queries.js').buildActivityActionsQuery;
 let deriveApprovedQueued: typeof import('./queries.js').deriveApprovedQueued;
 let readLeadContext: typeof import('./queries.js').readLeadContext;
@@ -23,6 +26,9 @@ beforeAll(async () => {
     buildErrorEventsQuery,
     buildFailedActionsQuery,
     buildApprovedMessagesQuery,
+    buildApprovedQueuedCountsQuery,
+    splitApprovedQueued,
+    leadFunnelBucket,
     buildActivityActionsQuery,
     deriveApprovedQueued,
     readLeadContext,
@@ -159,6 +165,94 @@ describe('buildApprovedMessagesQuery', () => {
     expect(params).toContain('outbound');
     expect(params).toContain(campaignId);
     expect(sql).toContain('group by');
+  });
+
+  it('projects the queued action type out of the pending_req blob', () => {
+    const { sql } = buildApprovedMessagesQuery(campaignId).toSQL();
+    expect(sql).toContain("->> 'type'");
+  });
+});
+
+describe('buildApprovedQueuedCountsQuery', () => {
+  it('finds awaiting_approval targets with an approved item and no pending draft', () => {
+    const { sql, params } = buildApprovedQueuedCountsQuery().toSQL();
+    expect(sql).toContain('"target_progress"');
+    expect(sql).toContain('"messages"');
+    // awaiting_approval cursor + approved outbound item are bound params.
+    expect(params).toContain('awaiting_approval');
+    expect(params).toContain('approved');
+    expect(params).toContain('outbound');
+    // A NOT EXISTS excludes targets that still have a draft awaiting approval.
+    expect(sql.toLowerCase()).toContain('not exists');
+    expect(sql).toContain("->> 'type'");
+    expect(sql).toContain('group by');
+  });
+
+  it('scopes to one campaign when given', () => {
+    const campaignId = '63f1cd27-2222-2222-2222-222222222222';
+    const { params } = buildApprovedQueuedCountsQuery(campaignId).toSQL();
+    expect(params).toContain(campaignId);
+  });
+});
+
+describe('splitApprovedQueued', () => {
+  it('moves message-typed approved-queued leads into message_queued', () => {
+    const out = splitApprovedQueued({ awaiting_approval: 3, in_progress: 5 }, { message: 3 });
+    expect(out.message_queued).toBe(3);
+    expect(out.awaiting_approval).toBeUndefined();
+    expect(out.in_progress).toBe(5);
+  });
+
+  it('buckets connect-typed leads as invite_queued and keeps true drafts', () => {
+    const out = splitApprovedQueued({ awaiting_approval: 4 }, { connect: 1, message: 1 });
+    expect(out.invite_queued).toBe(1);
+    expect(out.message_queued).toBe(1);
+    // Two of four moved out; two true drafts remain.
+    expect(out.awaiting_approval).toBe(2);
+  });
+
+  it('defaults an unknown/missing type to message_queued', () => {
+    const out = splitApprovedQueued({ awaiting_approval: 1 }, { message: 1 });
+    expect(out.message_queued).toBe(1);
+    expect(out.awaiting_approval).toBeUndefined();
+  });
+
+  it('is a no-op when nothing is approved-queued', () => {
+    const out = splitApprovedQueued({ awaiting_approval: 2 }, {});
+    expect(out).toEqual({ awaiting_approval: 2 });
+  });
+});
+
+describe('leadFunnelBucket', () => {
+  const base = { stage: 'invited', approvedQueued: false, queuedActionType: null };
+
+  it('reports message_queued / invite_queued for approved-queued leads by action type', () => {
+    expect(
+      leadFunnelBucket({
+        ...base,
+        progressState: 'awaiting_approval',
+        approvedQueued: true,
+        queuedActionType: 'message',
+      }),
+    ).toBe('message_queued');
+    expect(
+      leadFunnelBucket({
+        ...base,
+        progressState: 'awaiting_approval',
+        approvedQueued: true,
+        queuedActionType: 'connect',
+      }),
+    ).toBe('invite_queued');
+  });
+
+  it('keeps a true-draft awaiting_approval lead in awaiting_approval', () => {
+    expect(leadFunnelBucket({ ...base, progressState: 'awaiting_approval' })).toBe(
+      'awaiting_approval',
+    );
+  });
+
+  it('falls back to the stage when unenrolled', () => {
+    expect(leadFunnelBucket({ ...base, progressState: null })).toBe('invited');
   });
 });
 

@@ -16,6 +16,7 @@ import {
 } from '@loa/shared';
 import type { SQL } from 'drizzle-orm';
 import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { type Db, db, schema } from './db.js';
 import { type NormalizedStep, normalizeSteps } from './steps.js';
 
@@ -105,6 +106,8 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
     .where(pendingDraftFilter())
     .groupBy(targets.campaignId);
 
+  const queuedByCampaign = queuedTypeCountsByCampaign(await buildApprovedQueuedCountsQuery());
+
   const stageByCampaign = new Map<string, { total: number; byStage: Record<string, number> }>();
   for (const r of stageRows) {
     const entry = stageByCampaign.get(r.campaignId) ?? { total: 0, byStage: {} };
@@ -123,7 +126,13 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
 
   return rows.map((c) => {
     const counts = stageByCampaign.get(c.id) ?? { total: 0, byStage: {} };
-    const byProgressState = progressByCampaign.get(c.id) ?? {};
+    // Status is derived from the RAW histogram (awaiting_approval still counts as
+    // an active lifecycle state); the split only reshapes what the funnel renders.
+    const rawByProgressState = progressByCampaign.get(c.id) ?? {};
+    const byProgressState = splitApprovedQueued(
+      rawByProgressState,
+      queuedByCampaign.get(c.id) ?? {},
+    );
     return {
       id: c.id,
       goal: c.goal,
@@ -133,7 +142,7 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
       targetCount: counts.total,
       byStage: counts.byStage,
       byProgressState,
-      status: deriveStatus(byProgressState),
+      status: deriveStatus(rawByProgressState),
       pendingCount: pendingByCampaign.get(c.id) ?? 0,
     };
   });
@@ -180,12 +189,15 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     byStage[r.stage] = r.count;
     total += r.count;
   }
-  const byProgressState: Record<string, number> = {};
+  const rawByProgressState: Record<string, number> = {};
   let enrolledCount = 0;
   for (const r of progressRows) {
-    byProgressState[r.state] = r.count;
+    rawByProgressState[r.state] = r.count;
     enrolledCount += r.count;
   }
+  const queuedByType =
+    queuedTypeCountsByCampaign(await buildApprovedQueuedCountsQuery(id)).get(id) ?? {};
+  const byProgressState = splitApprovedQueued(rawByProgressState, queuedByType);
 
   return {
     id: campaign.id,
@@ -196,7 +208,9 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     targetCount: total,
     byStage,
     byProgressState,
-    status: deriveStatus(byProgressState),
+    // Derived from the raw histogram: awaiting_approval is an active lifecycle
+    // state, and the split only reshapes what the funnel renders (see listCampaigns).
+    status: deriveStatus(rawByProgressState),
     pendingCount: pending?.count ?? 0,
     enrolledCount,
     steps,
@@ -277,6 +291,10 @@ export interface Lead {
    * outbound message already approved: the human approved and the send is only
    * waiting on the dispatch pacer ("send queued", not "needs approval"). */
   approvedQueued: boolean;
+  /** The pending_req type of the approved-but-paced outbound item ("message" /
+   * "connect"), so the UI can name the queued action ("Message queued" vs "Invite
+   * queued"). Null when approvedQueued is false. */
+  queuedActionType: string | null;
 }
 
 // A lead is "send queued" (approved, waiting on the dispatch pacer) rather than
@@ -291,12 +309,17 @@ export function deriveApprovedQueued(
   return progressState === 'awaiting_approval' && !hasPendingDraft && hasApprovedMessage;
 }
 
-// Targets in a campaign with at least one approved outbound message. Isolated so
-// a test can assert its SQL shape without a live DB (see buildVolumeQuery), and
-// grouped like pendingRows so one round-trip covers the whole campaign.
+// Targets in a campaign with at least one approved outbound message, plus the
+// action type of that approved item (pending_req->>'type': "message"/"connect"/…)
+// so a queued send can be named for what it actually is. Isolated so a test can
+// assert its SQL shape without a live DB (see buildVolumeQuery), and grouped like
+// pendingRows so one round-trip covers the whole campaign.
 export function buildApprovedMessagesQuery(campaignId: string) {
   return db
-    .select({ targetId: messages.targetId })
+    .select({
+      targetId: messages.targetId,
+      queuedActionType: sql<string | null>`max(${messages.pendingReq} ->> 'type')`,
+    })
     .from(messages)
     .innerJoin(targets, eq(messages.targetId, targets.id))
     .where(
@@ -309,9 +332,87 @@ export function buildApprovedMessagesQuery(campaignId: string) {
     .groupBy(messages.targetId);
 }
 
+// Per-campaign, per-target breakdown of approved-queued leads at awaiting_approval:
+// a cursor parked at awaiting_approval whose outbound message is already approved
+// and which has no pending draft left to approve (the SQL twin of
+// deriveApprovedQueued). Each row carries the approved item's action type so the
+// caller can bucket it as message_queued vs invite_queued. One row per target
+// (grouped, action type collapsed with max). Optional campaignId narrows to one.
+// Isolated so a test can assert its SQL shape without a live DB.
+export function buildApprovedQueuedCountsQuery(campaignId?: string) {
+  // A raw NOT EXISTS on a second reference to `messages`: emit the base table with
+  // its alias (`"messages" "draft"`) explicitly, since a raw sql fragment has no
+  // FROM clause to register the alias the way the query builder would.
+  const draft = alias(messages, 'draft');
+  const noPendingDraft = sql`not exists (select 1 from ${messages} ${draft} where ${draft.targetId} = ${targetProgress.targetId} and ${draft.direction} = 'outbound' and ${draft.status} = 'draft' and ${draft.pendingReq} is not null)`;
+  const conditions = [
+    eq(targetProgress.state, 'awaiting_approval'),
+    eq(messages.direction, 'outbound'),
+    eq(messages.status, 'approved'),
+    noPendingDraft,
+  ];
+  if (campaignId) conditions.push(eq(targetProgress.campaignId, campaignId));
+  return db
+    .select({
+      campaignId: targetProgress.campaignId,
+      targetId: targetProgress.targetId,
+      actionType: sql<string | null>`max(${messages.pendingReq} ->> 'type')`,
+    })
+    .from(targetProgress)
+    .innerJoin(messages, eq(messages.targetId, targetProgress.targetId))
+    .where(and(...conditions))
+    .groupBy(targetProgress.campaignId, targetProgress.targetId);
+}
+
+// Redistribute the approved-queued slice out of the raw awaiting_approval bucket
+// into action-specific message_queued / invite_queued buckets, so the funnel
+// stops claiming "needs approval" for leads whose message a human already
+// approved (it is only waiting on the send pacer). `queuedByType` is a per-action-
+// type count of approved-queued leads keyed by pending_req type; a connect buckets
+// as invite_queued, anything else (message, or a missing type) as message_queued.
+// Pure and shared by listCampaigns + getCampaign so the two views can't drift.
+export function splitApprovedQueued(
+  byProgressState: Record<string, number>,
+  queuedByType: Record<string, number>,
+): Record<string, number> {
+  const out: Record<string, number> = { ...byProgressState };
+  let moved = 0;
+  for (const [type, n] of Object.entries(queuedByType)) {
+    if (n <= 0) continue;
+    const bucket = type === 'connect' ? 'invite_queued' : 'message_queued';
+    out[bucket] = (out[bucket] ?? 0) + n;
+    moved += n;
+  }
+  if (moved > 0) {
+    const remaining = (out.awaiting_approval ?? 0) - moved;
+    if (remaining > 0) out.awaiting_approval = remaining;
+    else delete out.awaiting_approval;
+  }
+  return out;
+}
+
+// Roll approved-queued count rows (buildApprovedQueuedCountsQuery) up per campaign
+// into the per-type shape splitApprovedQueued consumes. A null action type falls
+// back to "message" so it buckets as message_queued.
+function queuedTypeCountsByCampaign(
+  rows: Array<{ campaignId: string; actionType: string | null }>,
+): Map<string, Record<string, number>> {
+  const byCampaign = new Map<string, Record<string, number>>();
+  for (const r of rows) {
+    const type = r.actionType ?? 'message';
+    const entry = byCampaign.get(r.campaignId) ?? {};
+    entry[type] = (entry[type] ?? 0) + 1;
+    byCampaign.set(r.campaignId, entry);
+  }
+  return byCampaign;
+}
+
 // Per-progressState sort rank; anything unlisted (incl. no cursor) sorts last.
 const LEAD_STATE_ORDER = [
   'awaiting_approval',
+  // Approved-but-paced buckets sort with awaiting_approval (same raw cursor).
+  'message_queued',
+  'invite_queued',
   'in_progress',
   'awaiting_connection',
   'pending',
@@ -330,6 +431,20 @@ function leadStateRank(state: string | null): number {
 // collapsed ("Awaiting Approval" == "awaiting_approval").
 function normalizeStateKey(s: string): string {
   return s.toLowerCase().replace(/[\s_]+/g, '_');
+}
+
+// The funnel-segment key a lead falls under: its raw progress state (or stage when
+// unenrolled), except an approved-queued awaiting_approval lead reports the action-
+// specific message_queued / invite_queued bucket the histogram split put it in.
+// Mirrors splitApprovedQueued so a funnel click and the histogram agree; the client
+// LeadsTable.leadFilterKey mirrors this across the package boundary.
+export function leadFunnelBucket(
+  l: Pick<Lead, 'progressState' | 'stage' | 'approvedQueued' | 'queuedActionType'>,
+): string {
+  if (l.progressState === 'awaiting_approval' && l.approvedQueued) {
+    return l.queuedActionType === 'connect' ? 'invite_queued' : 'message_queued';
+  }
+  return l.progressState ?? l.stage;
 }
 
 /**
@@ -385,6 +500,7 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
   // is the "send queued" state (see deriveApprovedQueued).
   const approvedRows = await buildApprovedMessagesQuery(campaignId);
   const approvedTargets = new Set(approvedRows.map((a) => a.targetId));
+  const approvedTypeByTarget = new Map(approvedRows.map((a) => [a.targetId, a.queuedActionType]));
 
   // The campaign's enabled steps in order; the cursor's currentStep indexes into
   // this list, so steps[currentStep] is the step about to run.
@@ -402,6 +518,11 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
       r.currentStep !== null && r.currentStep >= 0
         ? (enabledStepTypes[r.currentStep] ?? null)
         : null;
+    const approvedQueued = deriveApprovedQueued(
+      r.progressState ?? null,
+      pendingByTarget.has(r.targetId),
+      approvedTargets.has(r.targetId),
+    );
     return {
       targetId: r.targetId,
       name: ctx.name,
@@ -425,21 +546,17 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
           }
         : null,
       pendingMessageId: pendingByTarget.get(r.targetId) ?? null,
-      approvedQueued: deriveApprovedQueued(
-        r.progressState ?? null,
-        pendingByTarget.has(r.targetId),
-        approvedTargets.has(r.targetId),
-      ),
+      approvedQueued,
+      queuedActionType: approvedQueued ? (approvedTypeByTarget.get(r.targetId) ?? null) : null,
     };
   });
 
   const filtered = stateFilter
     ? leads.filter((l) => {
         const key = normalizeStateKey(stateFilter);
-        return (
-          (l.progressState !== null && normalizeStateKey(l.progressState) === key) ||
-          normalizeStateKey(l.stage) === key
-        );
+        // Match the funnel bucket (covers the split message_queued / invite_queued
+        // keys and keeps awaiting_approval to true drafts), then fall back to stage.
+        return normalizeStateKey(leadFunnelBucket(l)) === key || normalizeStateKey(l.stage) === key;
       })
     : leads;
 
