@@ -1,5 +1,5 @@
-// HeuristicQualifier: the offline, deterministic scorer behind the autonomous
-// discover_leads path. No network, no key. It reads only the fields a people
+// HeuristicQualifier: the offline, deterministic scorer behind score_list (the
+// keyless fallback path). No network, no key. It reads only the fields a people
 // search already returns (headline, company, location, degree) and scores them
 // against the ICP's structured attributes plus a free-text description overlap.
 //

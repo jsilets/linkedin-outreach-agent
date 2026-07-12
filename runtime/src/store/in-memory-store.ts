@@ -7,8 +7,13 @@
 // reads action rows; the executor writes them). This store adds both. The
 // account/action/event-read surfaces are async to match the RuntimeStore shape.
 
-import { db as shared, defaultLimits } from '@loa/shared';
-import type { Json } from '@loa/shared';
+import {
+  db as shared,
+  defaultLimits,
+  ACTIVE_PROGRESS_STATES,
+  CANCELABLE_MESSAGE_STATUSES,
+} from '@loa/shared';
+import type { ActiveProgressState, CancelableMessageStatus, Json } from '@loa/shared';
 import type {
   ApprovalRepoPort,
   CampaignRepoPort,
@@ -180,6 +185,9 @@ class InMemTargetRepo implements TargetRepoPort {
   }
   async findById(id: string): Promise<TargetRow | undefined> {
     return this.rows.get(id);
+  }
+  async listByCampaign(campaignId: string): Promise<TargetRow[]> {
+    return [...this.rows.values()].filter((t) => t.campaignId === campaignId);
   }
   async setExternalContext(id: string, blob: NewTargetRow['externalContext']): Promise<TargetRow> {
     const cur = this.rows.get(id);
@@ -431,21 +439,26 @@ class InMemSequenceStore implements SequenceStorePort {
   }
 
   async pullTargetFromFunnel(targetId: string, reason: string): Promise<void> {
+    this.stopFunnel(targetId, reason, 'replied');
+  }
+
+  async excludeTargetFromFunnel(targetId: string, reason: string): Promise<void> {
+    this.stopFunnel(targetId, reason, 'skipped');
+  }
+
+  // Terminate an active enrollment cursor and cancel its undelivered sends.
+  // `terminal` keeps an operator removal ('skipped') distinct from a reply-driven
+  // pull ('replied') so reply metrics stay honest.
+  private stopFunnel(targetId: string, reason: string, terminal: 'replied' | 'skipped'): void {
     for (const [id, p] of this.progress) {
       if (p.targetId !== targetId) continue;
       // Terminal, and only from an active enrollment (including one parked for
       // approval or awaiting an invite accept); leave completed/failed/skipped/
       // replied as-is.
-      if (
-        p.state !== 'in_progress' &&
-        p.state !== 'pending' &&
-        p.state !== 'awaiting_approval' &&
-        p.state !== 'awaiting_connection'
-      )
-        continue;
+      if (!ACTIVE_PROGRESS_STATES.includes(p.state as ActiveProgressState)) continue;
       this.progress.set(id, {
         ...p,
-        state: 'replied',
+        state: terminal,
         nextStepAt: null,
         errorMessage: reason,
         updatedAt: new Date(),
@@ -455,7 +468,7 @@ class InMemSequenceStore implements SequenceStorePort {
     // draft never fires after the person has left the funnel.
     for (const [mid, m] of this.messages.rows) {
       if (m.targetId !== targetId || m.direction !== 'outbound') continue;
-      if (m.status !== 'draft' && m.status !== 'approved') continue;
+      if (!CANCELABLE_MESSAGE_STATUSES.includes(m.status as CancelableMessageStatus)) continue;
       this.messages.rows.set(mid, { ...m, status: 'cancelled', updatedAt: new Date() });
     }
   }
@@ -561,6 +574,18 @@ class InMemLeadListStore implements LeadListStorePort {
       inserted += 1;
     }
     return { inserted };
+  }
+
+  async removeMembers(listId: string, linkedinUrns: string[]): Promise<{ removed: number }> {
+    const urns = new Set(linkedinUrns);
+    let removed = 0;
+    for (const [id, m] of this.members) {
+      if (m.listId === listId && urns.has(m.linkedinUrn)) {
+        this.members.delete(id);
+        removed += 1;
+      }
+    }
+    return { removed };
   }
 
   async updateMemberContext(

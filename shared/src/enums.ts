@@ -122,3 +122,33 @@ export const PROGRESS_STATES = [
   'awaiting_connection',
 ] as const;
 export type ProgressState = (typeof PROGRESS_STATES)[number];
+
+// Funnel-state lists shared between the runtime stores and the web server's
+// removal query. An operator removal terminates a cursor ONLY from one of these
+// active progress states; the same list must be used in both stores' stopFunnel
+// and the removal query, so it lives here to stay in lockstep.
+export const ACTIVE_PROGRESS_STATES = [
+  'pending',
+  'in_progress',
+  'awaiting_approval',
+  'awaiting_connection',
+] as const;
+export type ActiveProgressState = (typeof ACTIVE_PROGRESS_STATES)[number];
+
+// Outbound message statuses a removal must cancel so an approved-but-unsent draft
+// never fires after the target has left the funnel. Duplicated across both stores
+// and the web removal query; keep them in lockstep by importing from here.
+export const CANCELABLE_MESSAGE_STATUSES = ['draft', 'approved'] as const;
+export type CancelableMessageStatus = (typeof CANCELABLE_MESSAGE_STATUSES)[number];
+
+// Stages that mean real outreach has already happened. A removal marks a target
+// 'lost' only from one of these; pre-contact stages stay untouched so eject does
+// not inflate invite metrics. Shared so the stores and the removal query agree.
+export const CONTACTED_TARGET_STAGES = [
+  'invited',
+  'connected',
+  'in_conversation',
+  'replied',
+  'won',
+] as const;
+export type ContactedTargetStage = (typeof CONTACTED_TARGET_STAGES)[number];

@@ -77,6 +77,9 @@ export class InMemTargetRepo implements TargetRepoPort {
   async findById(tid: string): Promise<TargetRow | undefined> {
     return this.rows.get(tid);
   }
+  async listByCampaign(campaignId: string): Promise<TargetRow[]> {
+    return [...this.rows.values()].filter((r) => r.campaignId === campaignId);
+  }
   async setExternalContext(tid: string, blob: NewTargetRow['externalContext']): Promise<TargetRow> {
     const cur = this.rows.get(tid);
     if (!cur) throw new Error('no target');

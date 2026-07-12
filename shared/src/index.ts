@@ -5,4 +5,5 @@ export * from './enums.js';
 export * from './types.js';
 export * from './interfaces.js';
 export * from './company.js';
+export * from './icp.js';
 export * as db from './db/index.js';
