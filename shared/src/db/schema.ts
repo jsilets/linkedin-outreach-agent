@@ -153,18 +153,31 @@ export const campaigns = pgTable('campaigns', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const targets = pgTable('targets', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  campaignId: uuid('campaign_id')
-    .notNull()
-    .references(() => campaigns.id),
-  prospectRef: text('prospect_ref').notNull(),
-  linkedinUrn: text('linkedin_urn').notNull(),
-  externalContext: jsonb('external_context').notNull().default({}),
-  stage: targetStageEnum('stage').notNull().default('sourced'),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const targets = pgTable(
+  'targets',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    campaignId: uuid('campaign_id')
+      .notNull()
+      .references(() => campaigns.id),
+    prospectRef: text('prospect_ref').notNull(),
+    // The canonical bare person key (urn:li:fsd_profile:<id>); see
+    // canonicalProfileKey in @loa/shared. Never the search wrapper.
+    linkedinUrn: text('linkedin_urn').notNull(),
+    externalContext: jsonb('external_context').notNull().default({}),
+    stage: targetStageEnum('stage').notNull().default('sourced'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Race-safe within-campaign dedup: two concurrent addTargets calls can no
+    // longer both insert the same person. Backed by onConflictDoNothing.
+    uniqueIndex('targets_campaign_urn_uq').on(t.campaignId, t.linkedinUrn),
+    // Cross-campaign contact lock lookup: the dispatch tick reads every target
+    // sharing a canonical urn to avoid double-contacting one person.
+    index('targets_urn_idx').on(t.linkedinUrn),
+  ],
+);
 
 export const actions = pgTable(
   'actions',

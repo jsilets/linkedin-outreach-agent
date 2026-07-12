@@ -67,6 +67,33 @@ describe('ICP list-hygiene tools', () => {
     expect(unfit.offIcp).toBe(true);
   });
 
+  it('insertMembers stores the canonical bare urn and dedups across wrapper forms', async () => {
+    const listAdapter = new LeadListAdapter(store);
+    const list = await store.leadList.createList({ name: 'canon' });
+
+    // Only the search wrapper is carried (no bare linkedinUrn), as free-tier
+    // search cards arrive; the write site must still persist the bare person key.
+    const personA = {
+      entityUrn: 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo9,SEARCH_SRP,DEFAULT)',
+      profileUrl: 'https://www.linkedin.com/in/dana/',
+      name: 'Dana',
+    };
+    const r1 = await listAdapter.insertMembers(list.id, [personA]);
+    expect(r1.inserted).toBe(1);
+    const members = await store.leadList.listMembers(list.id);
+    expect(members[0]!.linkedinUrn).toBe('urn:li:fsd_profile:ACo9'); // bare, never the wrapper
+
+    // The same person via a different search wrapper collapses to the same key.
+    const personB = {
+      entityUrn: 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo9,PEOPLE,DEFAULT)',
+      profileUrl: 'https://www.linkedin.com/in/dana/',
+      name: 'Dana',
+    };
+    const r2 = await listAdapter.insertMembers(list.id, [personB]);
+    expect(r2.inserted).toBe(0);
+    expect(r2.duplicates).toBe(1);
+  });
+
   it('remove_from_list ejects a member by urn', async () => {
     const listId = await seedList('remove');
     const res = (await run('remove_from_list', { listId, linkedinUrns: ['urn:li:unfit'] }, ports)) as {

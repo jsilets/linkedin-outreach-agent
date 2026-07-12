@@ -2,6 +2,7 @@
 // and read/set the autonomy level. Every mutating operation records an event
 // through the EventLog so the audit spine sees it.
 
+import { canonicalProfileKey } from '@loa/shared';
 import type { AutonomyLevel, Campaign, Json, Target } from '@loa/shared';
 import type { EventLog } from './event-log.js';
 import type { CampaignRepoPort, TargetRepoPort } from './repo-ports.js';
@@ -42,17 +43,18 @@ export class CampaignService {
   }
 
   async addTargets(campaignId: string, inputs: AddTargetInput[]): Promise<Target[]> {
-    // Dedupe on linkedinUrn against the campaign's existing targets (any stage,
-    // so a previously removed/lost target is not re-added — removal sticks) and
-    // within the input batch itself. Only genuinely new rows get created.
-    // Read-then-insert is not race-safe: two concurrent calls can both see a urn
-    // as fresh (targets has no unique index on campaignId+linkedinUrn). Fine
-    // under the current single-operator runtime; the real fix is that index plus
-    // onConflictDoNothing, which needs a migration against live data.
+    // Key every dedup decision on the canonical bare person urn, never the search
+    // wrapper: the same person sourced via a different flow must collapse to one
+    // key. Dedupe against the campaign's existing targets (any stage, so a
+    // previously removed/lost target is not re-added — removal sticks) and within
+    // the input batch. The read-then-insert dedup below still races two
+    // concurrent calls, but the targets (campaignId, linkedinUrn) unique index +
+    // createMany's onConflictDoNothing is the race-safe backstop that closes it.
+    const canon = inputs.map((t) => ({ ...t, linkedinUrn: canonicalProfileKey(t.linkedinUrn) }));
     const existing = await this.targets.listByCampaign(campaignId);
-    const seen = new Set(existing.map((t) => t.linkedinUrn));
+    const seen = new Set(existing.map((t) => canonicalProfileKey(t.linkedinUrn)));
     const fresh: AddTargetInput[] = [];
-    for (const t of inputs) {
+    for (const t of canon) {
       if (seen.has(t.linkedinUrn)) continue;
       seen.add(t.linkedinUrn);
       fresh.push(t);

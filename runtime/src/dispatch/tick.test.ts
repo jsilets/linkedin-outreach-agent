@@ -287,6 +287,90 @@ describe('DispatchTick', () => {
     expect(executor.calls[0]).toMatchObject({ type: 'message', payload: 'hi' });
   });
 
+  it('holds a connect step when the same person is already contacted in another campaign', async () => {
+    // A DIFFERENT campaign already has this person at a contacted stage (invited).
+    await store.target.create({
+      id: 'tgt-other',
+      campaignId: 'camp-other',
+      prospectRef: 'p1',
+      linkedinUrn: 'urn:li:person:p1', // same canonical key as TGT
+      externalContext: {},
+      stage: 'invited',
+    });
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hi' });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const executor = new RecordingExecutor();
+    const events: string[] = [];
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+      log: {
+        async recordEvent(kind: string) {
+          events.push(kind);
+          return undefined;
+        },
+      },
+    });
+
+    const res = await tick.runTick(new Date());
+
+    expect(executor.calls).toHaveLength(0); // never contacted
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'cross_campaign_active' });
+    expect(events).toContain('step_held_cross_campaign');
+    // Cursor left in place: if the other campaign goes terminal, a later tick releases this.
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.currentStep).toBe(0);
+    expect(progress.state).toBe('in_progress');
+  });
+
+  it('does not hold when the other-campaign target is only sourced (not yet contacted)', async () => {
+    // Two pre-contact enrollments must not deadlock: whichever fires first wins.
+    await store.target.create({
+      id: 'tgt-other',
+      campaignId: 'camp-other',
+      prospectRef: 'p1',
+      linkedinUrn: 'urn:li:person:p1',
+      externalContext: {},
+      stage: 'sourced',
+    });
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hi' });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const executor = new RecordingExecutor();
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+
+    const res = await tick.runTick(new Date());
+
+    expect(executor.calls).toHaveLength(1); // connect fired
+    expect(res.outcomes[0]).toMatchObject({ kind: 'awaiting_connection' });
+  });
+
+  it('holds a message step too when the person is contacted in another campaign', async () => {
+    await store.target.create({
+      id: 'tgt-other',
+      campaignId: 'camp-other',
+      prospectRef: 'p1',
+      linkedinUrn: 'urn:li:person:p1',
+      externalContext: {},
+      stage: 'connected',
+    });
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    // This campaign's target is connected, so the message would otherwise fire.
+    await store.target.setStage(TGT, 'connected');
+
+    const executor = new RecordingExecutor();
+    const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
+
+    const res = await tick.runTick(new Date());
+
+    expect(executor.calls).toHaveLength(0);
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'cross_campaign_active' });
+  });
+
   it('gate deny leaves the cursor in place for a later retry', async () => {
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'view_profile' });
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 1, stepType: 'delay', delaySeconds: 0 });

@@ -7,6 +7,7 @@
 // back by scanning events for that URN. This keeps the audit spine as the single
 // source of truth and needs no schema change.
 
+import { canonicalProfileKey } from '@loa/shared';
 import type { EventLog } from './event-log.js';
 import type { EventRepoPort, TargetRepoPort } from './repo-ports.js';
 
@@ -28,11 +29,12 @@ export class SuppressionService {
     if (!target) {
       throw new Error(`target not found: ${targetId}`);
     }
+    const linkedinUrn = canonicalProfileKey(target.linkedinUrn);
     await this.log.recordEvent(SUPPRESSION_KIND, null, {
-      linkedinUrn: target.linkedinUrn,
+      linkedinUrn,
       originTargetId: targetId,
     });
-    return { linkedinUrn: target.linkedinUrn };
+    return { linkedinUrn };
   }
 
   /** True if the person behind this target has been suppressed on any campaign. */
@@ -46,11 +48,18 @@ export class SuppressionService {
 
   /** True if any suppression event names this URN. */
   async isUrnSuppressed(linkedinUrn: string): Promise<boolean> {
-    // Suppression events are recorded with accountId null; scan that bucket.
+    // Compare on the canonical person key so a suppression recorded under one urn
+    // form matches a target stored under another (and legacy events written with
+    // the old search wrapper still match a bare target).
+    const key = canonicalProfileKey(linkedinUrn);
     const rows = await this.events.listSuppression();
     return rows.some((r) => {
       const payload = r.payload as { linkedinUrn?: unknown } | null;
-      return payload != null && payload.linkedinUrn === linkedinUrn;
+      return (
+        payload != null &&
+        typeof payload.linkedinUrn === 'string' &&
+        canonicalProfileKey(payload.linkedinUrn) === key
+      );
     });
   }
 }

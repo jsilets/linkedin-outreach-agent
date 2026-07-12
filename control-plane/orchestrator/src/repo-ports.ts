@@ -28,6 +28,9 @@ export interface TargetRepoPort {
   createMany(rows: NewTargetRow[]): Promise<TargetRow[]>;
   findById(id: string): Promise<TargetRow | undefined>;
   listByCampaign(campaignId: string): Promise<TargetRow[]>;
+  /** Every target row across all campaigns sharing a (canonical) LinkedIn URN.
+   * Backs the dispatch tick's cross-campaign contact lock. */
+  listByUrn(linkedinUrn: string): Promise<TargetRow[]>;
   setExternalContext(id: string, blob: NewTargetRow['externalContext']): Promise<TargetRow>;
   mergeExternalContext(id: string, patch: Record<string, Json>): Promise<TargetRow>;
   setStage(id: string, stage: TargetRow['stage']): Promise<TargetRow>;

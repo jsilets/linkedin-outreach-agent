@@ -101,7 +101,15 @@ export class TargetRepo {
 
   async createMany(rows: NewTargetRow[]): Promise<TargetRow[]> {
     if (rows.length === 0) return [];
-    return this.db.handle.insert(targets).values(rows).returning();
+    // Race-safe within-campaign dedup: a concurrent addTargets that already
+    // inserted this (campaignId, linkedinUrn) wins, and the conflicting row is
+    // skipped here (returning() yields only the rows this call actually created,
+    // so the caller's added-count stays honest).
+    return this.db.handle
+      .insert(targets)
+      .values(rows)
+      .onConflictDoNothing({ target: [targets.campaignId, targets.linkedinUrn] })
+      .returning();
   }
 
   async findById(id: string): Promise<TargetRow | undefined> {
