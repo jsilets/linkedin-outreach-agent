@@ -11,7 +11,12 @@
 // action. Persisting rather than holding it in memory is what lets list_pending
 // and approve keep working after a runtime restart.
 
-import { extractCompany, readIcpScore, CONTACTED_TARGET_STAGES } from '@loa/shared';
+import {
+  extractCompany,
+  readIcpScore,
+  canonicalProfileKey,
+  CONTACTED_TARGET_STAGES,
+} from '@loa/shared';
 import type {
   Account,
   AutonomyLevel,
@@ -516,7 +521,11 @@ function memberRowFromPerson(
 ): shared.NewLeadListMemberRow {
   return {
     listId,
-    linkedinUrn: p.entityUrn || p.linkedinUrn || p.profileUrl,
+    // Persist the canonical bare person key, never the volatile search wrapper,
+    // so the (listId, linkedinUrn) dedup index keys on the person. The search
+    // normalizer already sets linkedinUrn to the bare form; entityUrn is the
+    // wrapper. canonicalProfileKey unwraps either and passes a url ref through.
+    linkedinUrn: canonicalProfileKey(p.linkedinUrn || p.entityUrn || p.profileUrl),
     name: p.name ?? null,
     headline: p.headline ?? null,
     profileUrl: p.profileUrl ?? null,

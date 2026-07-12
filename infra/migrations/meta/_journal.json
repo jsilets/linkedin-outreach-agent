@@ -78,6 +78,13 @@
       "when": 1783787908651,
       "tag": "0010_send_safety_statuses",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783823674451,
+      "tag": "0011_canonical_urn_dedup",
+      "breakpoints": true
     }
   ]
 }

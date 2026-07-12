@@ -23,7 +23,12 @@
 // assumptions and no shared mutable tick state, so it is restartable.
 
 import type { AccountSchedule, CampaignStepType, Json } from '@loa/shared';
-import { DEFAULT_SCHEDULE, SafetyDeferredError } from '@loa/shared';
+import {
+  DEFAULT_SCHEDULE,
+  SafetyDeferredError,
+  canonicalProfileKey,
+  CONTACTED_TARGET_STAGES,
+} from '@loa/shared';
 import type { db as shared } from '@loa/shared';
 import { gateAct, type ActRequest, type GateDeps, type GateOutcome } from '@loa/mcp';
 import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
@@ -46,6 +51,23 @@ const SEQUENCE_STOP_STAGES: ReadonlySet<string> = new Set([
   'won',
   'lost',
 ]);
+
+/** Stages at which a target in ANOTHER campaign counts as "already being
+ * contacted" for the cross-campaign lock: real outreach has gone out (invited)
+ * or landed (connected / in_conversation / replied / won). A person only sourced
+ * or queued elsewhere is fair game — whichever campaign fires first wins and the
+ * other then holds, so two pre-contact enrollments never deadlock. Mirrors the
+ * shared CONTACTED_TARGET_STAGES used by list/campaign removal. */
+const CROSS_CAMPAIGN_CONTACT_STAGES: ReadonlySet<string> = new Set(CONTACTED_TARGET_STAGES);
+
+/** Of the contacted stages, the only TRANSIENT one: an outstanding invite that
+ * will resolve (accepted -> connected, or withdrawn). While another campaign's
+ * invite to the same person is pending we HOLD this campaign's outbound step, so
+ * we never send two invites at once. Every OTHER contacted stage
+ * (connected / in_conversation / replied / won) can be a permanent resting
+ * state, so holding on it would livelock forever — those cases eject this
+ * target cleanly instead. */
+const CROSS_CAMPAIGN_HOLD_STAGES: ReadonlySet<string> = new Set(['invited']);
 
 /**
  * Send-time reply probe. Returns true if the target has an inbound message newer
@@ -78,7 +100,7 @@ export interface TickResult {
 /** Narrow target-stage surface the tick needs: read the stage before a message
  * step (the connected gate) and set it after a connect step (park at 'invited').
  * Supplied by compose from the store's target repo; tests pass a fake. */
-type TargetStagePort = Pick<TargetRepoPort, 'findById' | 'setStage'>;
+type TargetStagePort = Pick<TargetRepoPort, 'findById' | 'setStage' | 'listByUrn'>;
 
 export interface DispatchTickDeps {
   sequence: SequenceStorePort;
@@ -175,6 +197,24 @@ export class DispatchTick {
   /** Fire-and-forget audit event; a logging failure never affects the tick. */
   private logEvent(kind: string, accountId: string | null, payload: Json): void {
     void this.log?.recordEvent(kind, accountId, payload).catch(() => {});
+  }
+
+  /** Is the person behind this cursor already actively contacted in a DIFFERENT
+   * campaign? Returns the blocking target's identity (for the audit event) when
+   * so, else undefined. Keys on the canonical person urn so a match holds across
+   * however the two campaigns sourced the same person. */
+  private async heldByOtherCampaign(
+    progress: TargetProgressRow,
+  ): Promise<{ campaignId: string; stage: string; linkedinUrn: string } | undefined> {
+    const target = await this.targets.findById(progress.targetId);
+    if (!target) return undefined;
+    const key = canonicalProfileKey(target.linkedinUrn);
+    const others = await this.targets.listByUrn(key);
+    const blocker = others.find(
+      (t) => t.campaignId !== progress.campaignId && CROSS_CAMPAIGN_CONTACT_STAGES.has(t.stage),
+    );
+    if (!blocker) return undefined;
+    return { campaignId: blocker.campaignId, stage: blocker.stage, linkedinUrn: key };
   }
 
   /** The account's working schedule (its own, else the global default). */
@@ -427,6 +467,37 @@ export class DispatchTick {
     ) {
       await this.sequence.pullTargetFromFunnel(progress.targetId, 'suppressed');
       return { kind: 'held', progressId: progress.id, reason: 'suppressed' };
+    }
+
+    // Cross-campaign contact lock: never let two campaigns contact the same
+    // person at once. Only connect/message are outbound contact; view/follow/
+    // react are low-touch and not gated here.
+    if (step.stepType === 'connect' || step.stepType === 'message') {
+      const held = await this.heldByOtherCampaign(progress);
+      if (held) {
+        const payload = {
+          progressId: progress.id,
+          targetId: progress.targetId,
+          linkedinUrn: held.linkedinUrn,
+          otherCampaignId: held.campaignId,
+          otherStage: held.stage,
+        };
+        if (CROSS_CAMPAIGN_HOLD_STAGES.has(held.stage)) {
+          // Another campaign's invite to this person is still pending — hold and
+          // leave the cursor for a later tick; it resolves when that invite is
+          // accepted (-> we then eject) or withdrawn (-> we proceed).
+          this.logEvent('step_held_cross_campaign', progress.accountId, payload);
+          return { kind: 'held', progressId: progress.id, reason: 'cross_campaign_active' };
+        }
+        // The person is already landed/engaged (connected / in_conversation /
+        // replied / won) in another campaign. That stage can rest forever, so
+        // holding would livelock — eject this target cleanly instead, with a
+        // visible reason, rather than silently pile a second touch on them.
+        this.logEvent('target_skipped_cross_campaign', progress.accountId, payload);
+        await this.sequence.excludeTargetFromFunnel(progress.targetId, 'cross_campaign_contacted');
+        await this.targets.setStage(progress.targetId, 'lost');
+        return { kind: 'held', progressId: progress.id, reason: 'cross_campaign_contacted' };
+      }
     }
 
     // Action step: route through the SAME gate + executor path as the Act tools.

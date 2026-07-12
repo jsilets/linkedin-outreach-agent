@@ -23,8 +23,9 @@ export interface MakeDispatchTickDeps {
   sequence: SequenceStorePort;
   /** The SAME gate ports the MCP Act tools route through. */
   gate: GateDeps;
-  /** Target-stage reads/writes: park at 'invited' on connect, gate messages. */
-  targets: Pick<TargetRepoPort, 'findById' | 'setStage'>;
+  /** Target-stage reads/writes: park at 'invited' on connect, gate messages, and
+   * (listByUrn) enforce the cross-campaign contact lock. */
+  targets: Pick<TargetRepoPort, 'findById' | 'setStage' | 'listByUrn'>;
   /** Messages, so the tick sends human-approved drafts when the window opens. */
   messages: MessageRepoPort;
   /** Cross-campaign suppression check (person said Stop). */

@@ -115,6 +115,35 @@ describe('CampaignService', () => {
       w.campaigns.attachExternalContext(target!.id, 42 as never),
     ).rejects.toThrow(/must be a JSON object/);
   });
+
+  it('stores the canonical bare urn and dedupes the same person across urn forms', async () => {
+    const w = wire();
+    const camp = await w.campaigns.createCampaign({
+      goal: 'g',
+      messageStrategy: 's',
+      owner: 'o',
+    });
+    const wrappedA = 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo1,SEARCH_SRP,DEFAULT)';
+    const wrappedB = 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo1,PEOPLE,DEFAULT)';
+
+    const first = await w.campaigns.addTargets(camp.id, [{ prospectRef: 'a', linkedinUrn: wrappedA }]);
+    expect(first).toHaveLength(1);
+    expect(first[0]!.linkedinUrn).toBe('urn:li:fsd_profile:ACo1'); // persisted bare, not the wrapper
+
+    // Same person via a different search wrapper: deduped against the stored bare key.
+    const second = await w.campaigns.addTargets(camp.id, [{ prospectRef: 'a2', linkedinUrn: wrappedB }]);
+    expect(second).toHaveLength(0);
+
+    // Within a single batch, a bare and a wrapped form of one person collapse too.
+    const batch = await w.campaigns.addTargets(camp.id, [
+      { prospectRef: 'b', linkedinUrn: 'urn:li:fsd_profile:ACo2' },
+      {
+        prospectRef: 'b2',
+        linkedinUrn: 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo2,SEARCH_SRP,DEFAULT)',
+      },
+    ]);
+    expect(batch).toHaveLength(1);
+  });
 });
 
 describe('ApprovalService', () => {
@@ -227,6 +256,29 @@ describe('ReplyRouter', () => {
     expect(await w.suppression.isSuppressed(a.id)).toBe(true);
     expect(await w.suppression.isSuppressed(b.id)).toBe(true);
     expect(w.eventRepo.rows.map((e) => e.kind)).toContain('target_suppressed');
+  });
+
+  it('suppression matches across wrapped and bare urn forms of one person', async () => {
+    const w = wire();
+    // Same person, but one campaign stored the search wrapper and the other the
+    // bare urn. Before canonicalization the wrapped one would never match.
+    const wrapped = await w.targetRepo.create({
+      campaignId: 'camp-A',
+      prospectRef: 'a',
+      linkedinUrn: 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoZ,SEARCH_SRP,DEFAULT)',
+    });
+    const bare = await w.targetRepo.create({
+      campaignId: 'camp-B',
+      prospectRef: 'b',
+      linkedinUrn: 'urn:li:fsd_profile:ACoZ',
+    });
+
+    const res = await w.suppression.suppressByTarget(wrapped.id);
+    expect(res.linkedinUrn).toBe('urn:li:fsd_profile:ACoZ'); // recorded under the canonical key
+
+    expect(await w.suppression.isSuppressed(wrapped.id)).toBe(true);
+    expect(await w.suppression.isSuppressed(bare.id)).toBe(true);
+    expect(await w.suppression.isUrnSuppressed('urn:li:fsd_profile:ACoZ')).toBe(true);
   });
 
   it('Interested and Question route to a drafted reply behind the human gate', async () => {

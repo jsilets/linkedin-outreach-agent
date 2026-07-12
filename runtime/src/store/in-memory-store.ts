@@ -189,6 +189,9 @@ class InMemTargetRepo implements TargetRepoPort {
   async listByCampaign(campaignId: string): Promise<TargetRow[]> {
     return [...this.rows.values()].filter((t) => t.campaignId === campaignId);
   }
+  async listByUrn(linkedinUrn: string): Promise<TargetRow[]> {
+    return [...this.rows.values()].filter((t) => t.linkedinUrn === linkedinUrn);
+  }
   async setExternalContext(id: string, blob: NewTargetRow['externalContext']): Promise<TargetRow> {
     const cur = this.rows.get(id);
     if (!cur) throw new Error(`no target: ${id}`);
