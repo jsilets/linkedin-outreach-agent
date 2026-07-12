@@ -17,6 +17,7 @@ import {
   getActivity,
   getCampaign,
   getCampaignLeads,
+  getErrors,
   getList,
   getPending,
   getVolume,
@@ -396,6 +397,17 @@ api.get('/activity', async (req, res, next) => {
   }
 });
 
+// Reverse-chron feed of failures (failure-ish events + failed actions) over the
+// last ?hours (default 24), with a per-kind rollup. The one place an operator can
+// see silent errors like a repeating reply_probe_failed.
+api.get('/errors', async (req, res, next) => {
+  try {
+    res.json(await getErrors({ hours: clampHours(req.query.hours) }));
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Bulk approve. Registered before the parameterized :messageId routes; distinct
 // segment count means no route collision, but keep it first for clarity. Each
 // approval is enqueued sequentially; the runtime paces the actual sends.
@@ -533,6 +545,14 @@ function clampLimit(raw: unknown): number {
   const n = Number(Array.isArray(raw) ? raw[0] : raw);
   if (!Number.isFinite(n) || n <= 0) return 50;
   return Math.min(Math.floor(n), 200);
+}
+
+// Errors-feed lookback in hours: default 24, capped at a rolling week so a
+// runaway query can't scan the whole event log.
+function clampHours(raw: unknown): number {
+  const n = Number(Array.isArray(raw) ? raw[0] : raw);
+  if (!Number.isFinite(n) || n <= 0) return 24;
+  return Math.min(Math.floor(n), 24 * 7);
 }
 
 const port = Number(process.env.PORT ?? 4000);

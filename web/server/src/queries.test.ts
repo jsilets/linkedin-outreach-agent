@@ -8,10 +8,13 @@ process.env.DATABASE_URL ??= 'postgres://loa:loa@localhost:5432/loa';
 // Import lazily so the dummy DATABASE_URL is in place first.
 let buildVolumeQuery: typeof import('./queries.js').buildVolumeQuery;
 let campaignDeleteStatements: typeof import('./queries.js').campaignDeleteStatements;
+let buildErrorEventsQuery: typeof import('./queries.js').buildErrorEventsQuery;
+let buildFailedActionsQuery: typeof import('./queries.js').buildFailedActionsQuery;
 let db: typeof import('./db.js').db;
 
 beforeAll(async () => {
-  ({ buildVolumeQuery, campaignDeleteStatements } = await import('./queries.js'));
+  ({ buildVolumeQuery, campaignDeleteStatements, buildErrorEventsQuery, buildFailedActionsQuery } =
+    await import('./queries.js'));
   ({ db } = await import('./db.js'));
 });
 
@@ -75,5 +78,40 @@ describe('campaignDeleteStatements', () => {
     for (const stmt of campaignDeleteStatements(db, id)) {
       expect(stmt.toSQL().params).toContain(id);
     }
+  });
+});
+
+describe('buildErrorEventsQuery', () => {
+  it('filters events to failure-ish kinds by suffix with an escaped underscore', () => {
+    const { sql, params } = buildErrorEventsQuery(24).toSQL();
+    expect(sql).toContain('"events"');
+    // Both shared suffixes become escaped LIKE patterns (underscore is a wildcard).
+    expect(sql).toContain('LIKE');
+    expect(sql).toContain("ESCAPE '\\'");
+    expect(params).toContain('%\\_failed');
+    expect(params).toContain('%\\_cancelled');
+  });
+
+  it('pulls campaign/target context out of the jsonb payload', () => {
+    const { sql } = buildErrorEventsQuery(24).toSQL();
+    expect(sql).toContain("->>'campaignId'");
+    expect(sql).toContain("->>'targetId'");
+  });
+
+  it('honors the hours lookback in the interval expression', () => {
+    const { params } = buildErrorEventsQuery(72).toSQL();
+    expect(params).toContain(72);
+  });
+});
+
+describe('buildFailedActionsQuery', () => {
+  it('filters actions to result=failed within the window', () => {
+    const { sql, params } = buildFailedActionsQuery(24).toSQL();
+    expect(sql).toContain('"actions"');
+    // result='failed' is a bound param.
+    expect(params).toContain('failed');
+    expect(params).toContain(24);
+    // Windowed by executed-else-scheduled time.
+    expect(sql).toContain('coalesce');
   });
 });
