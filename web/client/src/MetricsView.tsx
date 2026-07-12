@@ -11,7 +11,7 @@ import {
 import { type Column, DataTable } from './DataTable';
 import { FunnelBar, MiniFunnel } from './FunnelBar';
 import { formatRelative, formatStamp } from './format';
-import { actionLabel, statusLabel, statusVar } from './status';
+import { actionLabel, actionResultLabel, actionResultVar, statusLabel, statusVar } from './status';
 
 // One theme-aware status token per action type, used as a categorical palette in
 // the chart and legend. Amber (--st-approval) is deliberately excluded — it is
@@ -209,15 +209,16 @@ function ActivityFeed({ items }: { items: ActivityItem[] }) {
     {
       key: 'result',
       header: 'Result',
-      // An invite_accepted row is inbound, not a send: show "Accepted", not the
-      // action result vocabulary ("Sent").
-      sortValue: (a) => (a.type === 'invite_accepted' ? 'Accepted' : statusLabel(a.result)),
+      // An invite_accepted row is inbound, not a send: show "Accepted" in the
+      // lead-milestone vocabulary. Every other row is an ACTION result, which has
+      // its own labels — an in-flight 'pending' reads "Running", not "Not started".
+      sortValue: (a) => (a.type === 'invite_accepted' ? 'Accepted' : actionResultLabel(a.result)),
       cell: (a) => {
         const isAccept = a.type === 'invite_accepted';
-        const key = isAccept ? 'connected' : a.result;
-        const label = isAccept ? 'Accepted' : statusLabel(a.result);
+        const color = isAccept ? statusVar('connected') : actionResultVar(a.result);
+        const label = isAccept ? 'Accepted' : actionResultLabel(a.result);
         return (
-          <span className="chip" style={{ ['--c' as string]: statusVar(key) }}>
+          <span className="chip" style={{ ['--c' as string]: color }}>
             {label}
           </span>
         );
@@ -227,7 +228,14 @@ function ActivityFeed({ items }: { items: ActivityItem[] }) {
       key: 'lead',
       header: 'Lead',
       sortValue: (a) => (a.name ?? '').toLowerCase(),
-      cell: (a) => a.name ?? '—',
+      cell: (a) =>
+        a.profileUrl ? (
+          <a href={a.profileUrl} target="_blank" rel="noopener noreferrer">
+            {a.name ?? 'Unknown'}
+          </a>
+        ) : (
+          (a.name ?? '—')
+        ),
     },
   ];
 

@@ -103,7 +103,15 @@ function ApprovalCard({
   return (
     <div className="approval">
       <div className="approval-head">
-        <span className="to">{recipient}</span>
+        <span className="to">
+          {item.profileUrl ? (
+            <a href={item.profileUrl} target="_blank" rel="noopener noreferrer">
+              {recipient}
+            </a>
+          ) : (
+            recipient
+          )}
+        </span>
         {item.company && <span className="muted">· {item.company}</span>}
         {showCampaign && item.campaignGoal && <span className="muted">· {item.campaignGoal}</span>}
         <span className="age">

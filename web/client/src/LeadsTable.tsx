@@ -100,7 +100,7 @@ export function LeadsTable({
         <>
           <div className="who">
             {l.profileUrl ? (
-              <a href={l.profileUrl} target="_blank" rel="noreferrer">
+              <a href={l.profileUrl} target="_blank" rel="noopener noreferrer">
                 {l.name ?? 'Unknown'}
               </a>
             ) : (
@@ -134,11 +134,14 @@ export function LeadsTable({
       header: 'Next step',
       sortValue: (l) => (isFlowing(l) ? ts(l.nextStepAt) : null),
       cellClassName: 'when',
-      cell: (l) => (
-        <span title={formatStamp(l.nextStepAt)}>
-          {isFlowing(l) ? nextStepLabel(l.nextStepType, l.nextStepAt) : '—'}
-        </span>
-      ),
+      cell: (l) =>
+        l.progressState === 'awaiting_approval' && l.approvedQueued ? (
+          <span>Sending soon (paced)</span>
+        ) : (
+          <span title={formatStamp(l.nextStepAt)}>
+            {isFlowing(l) ? nextStepLabel(l.nextStepType, l.nextStepAt) : '—'}
+          </span>
+        ),
     },
     {
       key: 'last',
@@ -188,7 +191,11 @@ export function LeadsTable({
         columns={columns}
         rowKey={(l) => l.targetId}
         rowClassName={(l) =>
-          l.progressState === 'awaiting_approval' ? 'needs-you' : l.offIcp ? 'row-warn' : undefined
+          l.progressState === 'awaiting_approval' && !l.approvedQueued
+            ? 'needs-you'
+            : l.offIcp
+              ? 'row-warn'
+              : undefined
         }
       />
     </div>

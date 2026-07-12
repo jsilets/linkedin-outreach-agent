@@ -53,6 +53,11 @@
   --st-done: #2f8266;
   --st-failed: #b4483f;
   --st-idle: #7c8590;
+  /* Legible foreground for the pale-amber badges (.icp-badge, .nav-badge). Mixing
+     the amber toward the theme's own text color keeps it dark on the light badge
+     and light on the dark badge — resolved per-element, so the one definition
+     adapts to whichever theme's --st-approval / --ink-1 are in scope. */
+  --st-approval-ink: color-mix(in srgb, var(--st-approval) 42%, var(--ink-1));
   --font-display: ui-serif, Georgia, "Times New Roman", serif;
   --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, Menlo, monospace;
@@ -196,7 +201,7 @@ nav button.active {
   line-height: 1;
   background: color-mix(in srgb, var(--st-approval) 16%, var(--surface-1));
   border: 1px solid color-mix(in srgb, var(--st-approval) 35%, var(--line));
-  color: color-mix(in srgb, var(--st-approval) 30%, black);
+  color: var(--st-approval-ink);
 }
 
 /* Accent underline indicator, overlapping the nav's bottom rule. */
@@ -604,7 +609,7 @@ textarea {
   font-size: var(--text-meta);
   font-weight: var(--weight-medium);
   background: color-mix(in srgb, var(--st-approval) 16%, var(--surface-1));
-  color: color-mix(in srgb, var(--st-approval) 30%, black);
+  color: var(--st-approval-ink);
   border: 1px solid color-mix(in srgb, var(--st-approval) 35%, var(--line));
 }
 

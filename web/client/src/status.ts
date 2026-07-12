@@ -32,6 +32,9 @@ const META: Record<string, Meta> = {
   // derived lead milestones (see deriveLeadStatus) — finer than the raw states
   invite_queued: { label: 'Invite queued', varName: '--st-idle' },
   messaged: { label: 'Message sent', varName: '--st-active' },
+  // Approved by the operator, now only waiting on the pacer/send window. Uses the
+  // in-progress color, NOT amber — amber means "a human must act", which is done.
+  send_queued: { label: 'Send queued', varName: '--st-active' },
   // target stages
   sourced: { label: 'Sourced', varName: '--st-idle' },
   queued: { label: 'Queued', varName: '--st-idle' },
@@ -59,6 +62,9 @@ export interface LeadStatusInput {
   stage: string;
   progressState: string | null;
   lastAction: { type: string; result: string } | null;
+  // Operator already approved a paced-but-unsent message. When true, an
+  // awaiting_approval cursor is "send queued", not "needs approval".
+  approvedQueued?: boolean;
 }
 
 /**
@@ -73,7 +79,9 @@ export interface LeadStatusInput {
 export function deriveLeadStatus(l: LeadStatusInput): string {
   const st = l.progressState;
   // Terminal / attention states read straight through — they already say it.
-  if (st === 'awaiting_approval') return 'awaiting_approval';
+  // An approved-but-paced message no longer needs a human, so drop the amber
+  // "needs approval" chip and show the neutral "send queued" milestone instead.
+  if (st === 'awaiting_approval') return l.approvedQueued ? 'send_queued' : 'awaiting_approval';
   if (st === 'replied') return 'replied';
   if (st === 'completed') return 'completed';
   if (st === 'failed') return 'failed';
@@ -121,4 +129,27 @@ const ACTION_LABELS: Record<string, string> = {
 
 export function actionLabel(type: string): string {
   return ACTION_LABELS[type] ?? type.replace(/_/g, ' ');
+}
+
+// Outcome of a single dispatched action, distinct from a lead's enrollment
+// state: an action's 'pending' means "running now", not "not started" (which is
+// what 'pending' means for a lead). Kept separate so the activity feed never
+// borrows the lead-lifecycle vocabulary for something that is already in flight.
+const ACTION_RESULT_META: Record<string, Meta> = {
+  pending: { label: 'Running', varName: '--st-idle' },
+  success: { label: 'Done', varName: '--st-done' },
+  failed: { label: 'Failed', varName: '--st-failed' },
+  deferred: { label: 'Deferred', varName: '--st-waiting' },
+};
+
+function actionResultMeta(result: string): Meta {
+  return ACTION_RESULT_META[result] ?? statusMeta(result);
+}
+
+export function actionResultLabel(result: string): string {
+  return actionResultMeta(result).label;
+}
+
+export function actionResultVar(result: string): string {
+  return `var(${actionResultMeta(result).varName})`;
 }
