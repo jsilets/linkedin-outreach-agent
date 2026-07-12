@@ -43,6 +43,17 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
+  "overrides": {
+    "@modelcontextprotocol/sdk": {
+      "zod": "^3.25.76",
+      "zod-to-json-schema": {
+        "zod": "^3.25.76"
+      }
+    },
+    "@anthropic-ai/sdk": {
+      "zod": "^3.25.76"
+    }
+  },
   "devDependencies": {
     "@biomejs/biome": "2.5.3",
     "@types/node": "^24.10.0",
