@@ -34,6 +34,7 @@
     "login": "node --env-file-if-exists=.env --import tsx runtime/src/login.ts",
     "leak-test": "node --env-file-if-exists=.env --import tsx runtime/src/tools/leak-test.ts",
     "search-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/search-shakeout.ts",
+    "inbox-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/inbox-shakeout.ts",
     "act-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/act-shakeout.ts",
     "profile-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/profile-shakeout.ts",
     "link-account": "node --env-file-if-exists=.env --import tsx runtime/src/tools/link-account.ts",

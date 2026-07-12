@@ -290,10 +290,10 @@ export interface InboxReaderPort {
  * hash as it ships new web builds; a stale hash eventually 400s. Override with
  * LOA_INBOX_QUERY_ID once you capture a current one from a live browser's Network
  * tab (the messengerConversations.<hash> fired on a /messaging/ load). This is a
- * best-effort default that could NOT be verified live from this worktree — treat
- * it as UNPROVEN and expect to set the env override after the first live run.
+ * default captured LIVE by npm run inbox-shakeout on 2026-07-12 (HTTP 200, parser
+ * verified against the real payload). Re-run the shakeout if reads start 400ing.
  */
-const DEFAULT_INBOX_QUERY_ID = 'messengerConversations.7ff89bd4c9f4c4b5e4a9c8b9f7a1e6d2';
+const DEFAULT_INBOX_QUERY_ID = 'messengerConversations.0d5e6781bbee71c3e51c8843c6519f48';
 
 function inboxQueryId(): string {
   return process.env.LOA_INBOX_QUERY_ID?.trim() || DEFAULT_INBOX_QUERY_ID;
