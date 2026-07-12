@@ -231,7 +231,7 @@ function str(v: unknown): string | null {
 
 // name / company / headline / profileUrl pulled from the external_context blob.
 // Company falls back to extractCompany(headline) when not explicitly present.
-function readLeadContext(raw: unknown): {
+export function readLeadContext(raw: unknown): {
   name: string | null;
   company: string | null;
   headline: string | null;
@@ -273,6 +273,40 @@ export interface Lead {
   errorMessage: string | null;
   lastAction: { type: string; result: string; executedAt: string | null } | null;
   pendingMessageId: string | null;
+  /** True when the cursor sits at awaiting_approval with no pending draft yet an
+   * outbound message already approved: the human approved and the send is only
+   * waiting on the dispatch pacer ("send queued", not "needs approval"). */
+  approvedQueued: boolean;
+}
+
+// A lead is "send queued" (approved, waiting on the dispatch pacer) rather than
+// "needs approval" when its cursor sits at awaiting_approval, it has no pending
+// draft to approve, yet an outbound message is already approved. Pure so the
+// derivation is unit-testable.
+export function deriveApprovedQueued(
+  progressState: string | null,
+  hasPendingDraft: boolean,
+  hasApprovedMessage: boolean,
+): boolean {
+  return progressState === 'awaiting_approval' && !hasPendingDraft && hasApprovedMessage;
+}
+
+// Targets in a campaign with at least one approved outbound message. Isolated so
+// a test can assert its SQL shape without a live DB (see buildVolumeQuery), and
+// grouped like pendingRows so one round-trip covers the whole campaign.
+export function buildApprovedMessagesQuery(campaignId: string) {
+  return db
+    .select({ targetId: messages.targetId })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(
+      and(
+        eq(targets.campaignId, campaignId),
+        eq(messages.direction, 'outbound'),
+        eq(messages.status, 'approved'),
+      ),
+    )
+    .groupBy(messages.targetId);
 }
 
 // Per-progressState sort rank; anything unlisted (incl. no cursor) sorts last.
@@ -346,6 +380,12 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
   for (const p of pendingRows)
     if (!pendingByTarget.has(p.targetId)) pendingByTarget.set(p.targetId, p.id);
 
+  // Targets whose latest human step already produced an approved outbound
+  // message; combined with an awaiting_approval cursor and no pending draft this
+  // is the "send queued" state (see deriveApprovedQueued).
+  const approvedRows = await buildApprovedMessagesQuery(campaignId);
+  const approvedTargets = new Set(approvedRows.map((a) => a.targetId));
+
   // The campaign's enabled steps in order; the cursor's currentStep indexes into
   // this list, so steps[currentStep] is the step about to run.
   const stepRows = await db
@@ -385,6 +425,11 @@ export async function getCampaignLeads(campaignId: string, stateFilter?: string)
           }
         : null,
       pendingMessageId: pendingByTarget.get(r.targetId) ?? null,
+      approvedQueued: deriveApprovedQueued(
+        r.progressState ?? null,
+        pendingByTarget.has(r.targetId),
+        approvedTargets.has(r.targetId),
+      ),
     };
   });
 
@@ -420,6 +465,7 @@ export interface Pending {
   targetId: string;
   name: string | null;
   company: string | null;
+  profileUrl: string | null;
   body: string;
   intent: string | null;
   accountId: string;
@@ -462,6 +508,7 @@ export async function getPending(campaignId?: string): Promise<Pending[]> {
       targetId: r.targetId,
       name: ctx.name,
       company: ctx.company,
+      profileUrl: ctx.profileUrl,
       body: r.body,
       intent: r.intent ?? null,
       accountId: r.accountId,
@@ -478,7 +525,33 @@ export interface ActivityItem {
   scheduledAt: string;
   targetId: string;
   name: string | null;
+  profileUrl: string | null;
   campaignId: string | null;
+}
+
+// Reverse-chron outbound action rows for the activity feed, newest first, with
+// the target's name + profileUrl pulled from external_context. Isolated so a
+// test can assert its SQL shape (incl. the profileUrl projection) without a live
+// DB (see buildVolumeQuery).
+export function buildActivityActionsQuery(opts: { campaignId?: string; limit: number }) {
+  const ordering = sql`coalesce(${actions.executedAt}, ${actions.scheduledAt})`;
+  return db
+    .select({
+      actionId: actions.id,
+      type: actions.type,
+      result: actions.result,
+      executedAt: actions.executedAt,
+      scheduledAt: actions.scheduledAt,
+      targetId: actions.targetId,
+      campaignId: actions.campaignId,
+      name: sql<string | null>`${targets.externalContext}->>'name'`,
+      profileUrl: sql<string | null>`${targets.externalContext}->>'profileUrl'`,
+    })
+    .from(actions)
+    .innerJoin(targets, eq(actions.targetId, targets.id))
+    .where(opts.campaignId ? eq(actions.campaignId, opts.campaignId) : undefined)
+    .orderBy(desc(ordering))
+    .limit(opts.limit);
 }
 
 /**
@@ -492,25 +565,9 @@ export async function getActivity(opts: {
   campaignId?: string;
   limit: number;
 }): Promise<ActivityItem[]> {
-  const ordering = sql`coalesce(${actions.executedAt}, ${actions.scheduledAt})`;
-  const actionRows = await db
-    .select({
-      actionId: actions.id,
-      type: actions.type,
-      result: actions.result,
-      executedAt: actions.executedAt,
-      scheduledAt: actions.scheduledAt,
-      targetId: actions.targetId,
-      campaignId: actions.campaignId,
-      name: sql<string | null>`${targets.externalContext}->>'name'`,
-    })
-    .from(actions)
-    .innerJoin(targets, eq(actions.targetId, targets.id))
-    .where(opts.campaignId ? eq(actions.campaignId, opts.campaignId) : undefined)
-    .orderBy(desc(ordering))
-    .limit(opts.limit);
+  const actionRows = await buildActivityActionsQuery(opts);
 
-  // Acceptance events carry targetId/campaignId/name in their jsonb payload.
+  // Acceptance events carry targetId/campaignId/name/profileUrl in their jsonb payload.
   const payloadCampaign = sql<string | null>`${events.payload}->>'campaignId'`;
   const acceptRows = await db
     .select({
@@ -519,6 +576,7 @@ export async function getActivity(opts: {
       targetId: sql<string | null>`${events.payload}->>'targetId'`,
       campaignId: payloadCampaign,
       name: sql<string | null>`${events.payload}->>'name'`,
+      profileUrl: sql<string | null>`${events.payload}->>'profileUrl'`,
     })
     .from(events)
     .where(
@@ -538,6 +596,7 @@ export async function getActivity(opts: {
       scheduledAt: r.scheduledAt.toISOString(),
       targetId: r.targetId,
       name: r.name,
+      profileUrl: r.profileUrl,
       campaignId: r.campaignId,
     })),
     ...acceptRows.map((r) => ({
@@ -548,6 +607,7 @@ export async function getActivity(opts: {
       scheduledAt: r.ts.toISOString(),
       targetId: r.targetId ?? '',
       name: r.name,
+      profileUrl: r.profileUrl ?? null,
       campaignId: r.campaignId,
     })),
   ];

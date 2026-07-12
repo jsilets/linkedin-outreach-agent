@@ -10,11 +10,23 @@ let buildVolumeQuery: typeof import('./queries.js').buildVolumeQuery;
 let campaignDeleteStatements: typeof import('./queries.js').campaignDeleteStatements;
 let buildErrorEventsQuery: typeof import('./queries.js').buildErrorEventsQuery;
 let buildFailedActionsQuery: typeof import('./queries.js').buildFailedActionsQuery;
+let buildApprovedMessagesQuery: typeof import('./queries.js').buildApprovedMessagesQuery;
+let buildActivityActionsQuery: typeof import('./queries.js').buildActivityActionsQuery;
+let deriveApprovedQueued: typeof import('./queries.js').deriveApprovedQueued;
+let readLeadContext: typeof import('./queries.js').readLeadContext;
 let db: typeof import('./db.js').db;
 
 beforeAll(async () => {
-  ({ buildVolumeQuery, campaignDeleteStatements, buildErrorEventsQuery, buildFailedActionsQuery } =
-    await import('./queries.js'));
+  ({
+    buildVolumeQuery,
+    campaignDeleteStatements,
+    buildErrorEventsQuery,
+    buildFailedActionsQuery,
+    buildApprovedMessagesQuery,
+    buildActivityActionsQuery,
+    deriveApprovedQueued,
+    readLeadContext,
+  } = await import('./queries.js'));
   ({ db } = await import('./db.js'));
 });
 
@@ -113,5 +125,67 @@ describe('buildFailedActionsQuery', () => {
     expect(params).toContain(24);
     // Windowed by executed-else-scheduled time.
     expect(sql).toContain('coalesce');
+  });
+});
+
+describe('deriveApprovedQueued', () => {
+  it('is true only at awaiting_approval with no pending draft and an approved message', () => {
+    expect(deriveApprovedQueued('awaiting_approval', false, true)).toBe(true);
+  });
+
+  it('is false when a pending draft still awaits approval', () => {
+    // A live draft binding means "needs approval", not "send queued".
+    expect(deriveApprovedQueued('awaiting_approval', true, true)).toBe(false);
+  });
+
+  it('is false without an approved message', () => {
+    expect(deriveApprovedQueued('awaiting_approval', false, false)).toBe(false);
+  });
+
+  it('is false for any other cursor state', () => {
+    expect(deriveApprovedQueued('in_progress', false, true)).toBe(false);
+    expect(deriveApprovedQueued(null, false, true)).toBe(false);
+  });
+});
+
+describe('buildApprovedMessagesQuery', () => {
+  const campaignId = '63f1cd27-0000-0000-0000-000000000000';
+
+  it('groups approved outbound messages by target for one campaign', () => {
+    const { sql, params } = buildApprovedMessagesQuery(campaignId).toSQL();
+    expect(sql).toContain('"messages"');
+    // status='approved' and direction='outbound' are bound params.
+    expect(params).toContain('approved');
+    expect(params).toContain('outbound');
+    expect(params).toContain(campaignId);
+    expect(sql).toContain('group by');
+  });
+});
+
+describe('buildActivityActionsQuery', () => {
+  it('projects the target name and profileUrl out of external_context', () => {
+    const { sql } = buildActivityActionsQuery({ limit: 50 }).toSQL();
+    expect(sql).toContain('"actions"');
+    expect(sql).toContain("->>'name'");
+    expect(sql).toContain("->>'profileUrl'");
+  });
+
+  it('scopes to one campaign when given', () => {
+    const campaignId = '63f1cd27-1111-1111-1111-111111111111';
+    const { sql, params } = buildActivityActionsQuery({ campaignId, limit: 10 }).toSQL();
+    expect(sql).toContain('"campaign_id"');
+    expect(params).toContain(campaignId);
+    expect(params).toContain(10);
+  });
+});
+
+describe('readLeadContext', () => {
+  it('pulls profileUrl out of external_context for the pending feed', () => {
+    const ctx = readLeadContext({ name: 'Benoit', profileUrl: 'https://linkedin.com/in/benoit' });
+    expect(ctx.profileUrl).toBe('https://linkedin.com/in/benoit');
+  });
+
+  it('returns null profileUrl when absent', () => {
+    expect(readLeadContext({ name: 'Benoit' }).profileUrl).toBeNull();
   });
 });
