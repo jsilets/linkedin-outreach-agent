@@ -2,11 +2,11 @@
 // and read/set the autonomy level. Every mutating operation records an event
 // through the EventLog so the audit spine sees it.
 
-import { canonicalProfileKey } from '@loa/shared';
 import type { AutonomyLevel, Campaign, Json, Target } from '@loa/shared';
+import { canonicalProfileKey } from '@loa/shared';
 import type { EventLog } from './event-log.js';
-import type { CampaignRepoPort, TargetRepoPort } from './repo-ports.js';
 import { rowToCampaign, rowToTarget } from './mappers.js';
+import type { CampaignRepoPort, TargetRepoPort } from './repo-ports.js';
 
 export interface CreateCampaignInput {
   goal: string;

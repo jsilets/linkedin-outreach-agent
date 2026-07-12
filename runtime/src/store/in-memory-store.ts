@@ -7,20 +7,19 @@
 // reads action rows; the executor writes them). This store adds both. The
 // account/action/event-read surfaces are async to match the RuntimeStore shape.
 
-import {
-  db as shared,
-  defaultLimits,
-  ACTIVE_PROGRESS_STATES,
-  CANCELABLE_MESSAGE_STATUSES,
-} from '@loa/shared';
-import type { ActiveProgressState, CancelableMessageStatus, Json } from '@loa/shared';
 import type {
   ApprovalRepoPort,
   CampaignRepoPort,
-  EventRepoPort,
   MessageRepoPort,
   TargetRepoPort,
 } from '@loa/orchestrator';
+import type { ActiveProgressState, CancelableMessageStatus, Json } from '@loa/shared';
+import {
+  ACTIVE_PROGRESS_STATES,
+  CANCELABLE_MESSAGE_STATUSES,
+  defaultLimits,
+  type db as shared,
+} from '@loa/shared';
 import type {
   AccountStorePort,
   ActionStorePort,
@@ -29,7 +28,7 @@ import type {
   RuntimeStore,
   SequenceStorePort,
   TargetProgressPatch,
-} from './index.js';
+} from './types.js';
 
 type AccountRow = shared.AccountRow;
 type NewAccountRow = shared.NewAccountRow;

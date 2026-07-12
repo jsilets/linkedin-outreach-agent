@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ApprovalsPanel } from './ApprovalsPanel';
 import {
-  api,
   type Account,
   type ActivityItem,
+  api,
   type CampaignSummary,
   type Pending,
   type VolumeRow,
 } from './api';
-import { ApprovalsPanel } from './ApprovalsPanel';
-import { DataTable, type Column } from './DataTable';
+import { type Column, DataTable } from './DataTable';
 import { FunnelBar, MiniFunnel } from './FunnelBar';
 import { formatRelative, formatStamp } from './format';
 import { actionLabel, statusLabel, statusVar } from './status';
@@ -53,13 +53,25 @@ export function MetricsView() {
   const [error, setError] = useState<string | null>(null);
 
   const loadOps = useCallback(() => {
-    api.campaigns().then(setCampaigns).catch(() => {});
-    api.pending().then(setPending).catch(() => {});
-    api.activity({ limit: 60 }).then(setActivity).catch(() => {});
+    api
+      .campaigns()
+      .then(setCampaigns)
+      .catch(() => {});
+    api
+      .pending()
+      .then(setPending)
+      .catch(() => {});
+    api
+      .activity({ limit: 60 })
+      .then(setActivity)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
-    api.accounts().then(setAccounts).catch((e) => setError(String(e)));
+    api
+      .accounts()
+      .then(setAccounts)
+      .catch((e) => setError(String(e)));
     loadOps();
   }, [loadOps]);
 
@@ -133,7 +145,10 @@ export function MetricsView() {
         <FunnelBar counts={agg} />
         <div className="grid" style={{ marginTop: 'var(--space-4)', gap: 'var(--space-2)' }}>
           {campaigns.map((c) => (
-            <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+            <div
+              key={c.id}
+              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}
+            >
               <div style={{ width: 220, minWidth: 0 }}>
                 <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {c.goal}
@@ -146,7 +161,10 @@ export function MetricsView() {
                 <MiniFunnel counts={c.byProgressState} />
               </div>
               {c.pendingCount > 0 && (
-                <span className="chip" style={{ ['--c' as string]: statusVar('awaiting_approval') }}>
+                <span
+                  className="chip"
+                  style={{ ['--c' as string]: statusVar('awaiting_approval') }}
+                >
                   {c.pendingCount}
                 </span>
               )}

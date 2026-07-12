@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
 import type { Target } from '@loa/shared';
-import { personalizeBody, firstNameFromTarget, companyFromTarget } from './session-provider.js';
+import { describe, expect, it } from 'vitest';
+import { companyFromTarget, firstNameFromTarget, personalizeBody } from './session-provider.js';
 
 function target(over: Partial<Target>): Target {
   return {
@@ -18,7 +18,9 @@ function target(over: Partial<Target>): Target {
 
 describe('firstNameFromTarget', () => {
   it('takes the first token of the sourced name', () => {
-    expect(firstNameFromTarget(target({ externalContext: { name: 'Kenney Tran' } }))).toBe('Kenney');
+    expect(firstNameFromTarget(target({ externalContext: { name: 'Kenney Tran' } }))).toBe(
+      'Kenney',
+    );
   });
 
   it('is undefined when no name was captured', () => {
@@ -65,11 +67,15 @@ describe('personalizeBody', () => {
 
 describe('companyFromTarget', () => {
   it('reads the sourced currentCompany', () => {
-    expect(companyFromTarget(target({ externalContext: { currentCompany: 'Globex' } }))).toBe('Globex');
+    expect(companyFromTarget(target({ externalContext: { currentCompany: 'Globex' } }))).toBe(
+      'Globex',
+    );
   });
   it('is undefined when absent or blank', () => {
     expect(companyFromTarget(target({ externalContext: {} }))).toBeUndefined();
-    expect(companyFromTarget(target({ externalContext: { currentCompany: '  ' } }))).toBeUndefined();
+    expect(
+      companyFromTarget(target({ externalContext: { currentCompany: '  ' } })),
+    ).toBeUndefined();
   });
 });
 
@@ -89,7 +95,9 @@ describe('personalizeBody — {Company}', () => {
   });
 
   it('personalizes both tokens together', () => {
-    expect(personalizeBody('Hey {First}, how is {Company}?', withCo)).toBe('Hey Kenney, how is Globex?');
+    expect(personalizeBody('Hey {First}, how is {Company}?', withCo)).toBe(
+      'Hey Kenney, how is Globex?',
+    );
     expect(personalizeBody('Hey {First}, thanks.', noCo)).toBe('Hey Kenney, thanks.');
   });
 

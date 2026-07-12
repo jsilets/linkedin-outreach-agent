@@ -48,7 +48,10 @@ function strList(v: unknown): string[] | null {
  * blob being undefined, a non-object, or missing the score fields (an unscored
  * member reads back score=null, offIcp=false).
  */
-export function readIcpScore(externalContext: unknown, threshold = ICP_FIT_THRESHOLD): IcpScoreView {
+export function readIcpScore(
+  externalContext: unknown,
+  threshold = ICP_FIT_THRESHOLD,
+): IcpScoreView {
   const ec = (externalContext ?? {}) as Record<string, unknown>;
   const score = num(ec.score);
   return {

@@ -6,8 +6,8 @@
 // on this matching, so a wrapper that fails to match means messages never send
 // and replies never pull a target out.
 
-import { describe, expect, it } from 'vitest';
 import type { db as shared } from '@loa/shared';
+import { describe, expect, it } from 'vitest';
 import { matchesIdentity, urnTail, vanityOf } from './match-target.js';
 
 type TargetRow = shared.TargetRow;
@@ -78,7 +78,11 @@ describe('matchesIdentity', () => {
 
   it('does not match a different person', () => {
     expect(
-      matchesIdentity('urn:li:fsd_profile:ACoAADIFFERENT', 'https://www.linkedin.com/in/someone-else', target({})),
+      matchesIdentity(
+        'urn:li:fsd_profile:ACoAADIFFERENT',
+        'https://www.linkedin.com/in/someone-else',
+        target({}),
+      ),
     ).toBe(false);
   });
 });

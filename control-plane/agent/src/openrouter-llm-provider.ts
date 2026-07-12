@@ -9,7 +9,6 @@
 // that also fails it defaults to NotInterested (the safest routing bucket),
 // mirroring ClaudeLLMProvider.
 
-import { REPLY_INTENTS } from '@loa/shared';
 import type {
   Draft,
   Intent,
@@ -19,6 +18,7 @@ import type {
   TargetContext,
   Thread,
 } from '@loa/shared';
+import { REPLY_INTENTS } from '@loa/shared';
 import type { OpenRouterSeam, SeamTool } from './openrouter-seam.js';
 import { OpenRouterClientSeam } from './openrouter-seam.js';
 
@@ -38,8 +38,7 @@ const STYLE_RULES = [
 // The classify tool constrains output to exactly one enum value.
 const CLASSIFY_TOOL: SeamTool = {
   name: 'record_intent',
-  description:
-    'Record the single best-fitting intent for the inbound message. Choose exactly one.',
+  description: 'Record the single best-fitting intent for the inbound message. Choose exactly one.',
   input_schema: {
     type: 'object',
     properties: {
@@ -65,7 +64,7 @@ function intentFromText(text: string): ReplyIntent | undefined {
   try {
     const parsed = JSON.parse(trimmed) as unknown;
     if (parsed && typeof parsed === 'object') {
-      const candidate = (parsed as Record<string, unknown>)['intent'];
+      const candidate = (parsed as Record<string, unknown>).intent;
       if (isReplyIntent(candidate)) return candidate;
     }
   } catch {
@@ -192,7 +191,7 @@ export class OpenRouterLLMProvider implements LLMProvider {
       return 'NotInterested';
     }
     // Prefer a valid tool call.
-    const candidate = res.toolUse?.input?.['intent'];
+    const candidate = res.toolUse?.input?.intent;
     if (isReplyIntent(candidate)) {
       return candidate;
     }

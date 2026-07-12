@@ -31,12 +31,19 @@ async function main(): Promise<void> {
     // with Premium"), then click a PLAIN one (no "Premium") and report whether
     // the box comes up empty — testing whether the Premium button is what
     // prefills the AI icebreaker.
-    const msgSel = 'main button[aria-label^="Message"], main a[aria-label^="Message"], main button:has-text("Message")';
+    const msgSel =
+      'main button[aria-label^="Message"], main a[aria-label^="Message"], main button:has-text("Message")';
     const cands = page.locator(msgSel);
     const n = await cands.count();
     console.log('[dump] message button count:', n);
     const arias: string[] = [];
-    for (let i = 0; i < n; i++) arias.push((await cands.nth(i).getAttribute('aria-label').catch(() => null)) ?? '(none)');
+    for (let i = 0; i < n; i++)
+      arias.push(
+        (await cands
+          .nth(i)
+          .getAttribute('aria-label')
+          .catch(() => null)) ?? '(none)',
+      );
     console.log('[dump] message button arias:', JSON.stringify(arias));
     const boxSel = 'div[contenteditable="true"]';
     // Prefer a plain "Message" (exactly, or without "Premium"); fall back to first.
@@ -45,17 +52,32 @@ async function main(): Promise<void> {
     let picked = -1;
     for (let i = 0; i < n; i++) {
       const a = arias[i] ?? '';
-      if (/^message$/i.test(a) || /^message with premium$/i.test(a)) { picked = i; break; }
+      if (/^message$/i.test(a) || /^message with premium$/i.test(a)) {
+        picked = i;
+        break;
+      }
     }
     if (picked === -1) picked = 0;
     console.log(`[dump] clicking candidate ${picked} (aria="${arias[picked]}")`);
-    await cands.nth(picked).scrollIntoViewIfNeeded().catch(() => {});
-    await cands.nth(picked).click().catch((e) => console.log('[dump] click failed:', String(e)));
+    await cands
+      .nth(picked)
+      .scrollIntoViewIfNeeded()
+      .catch(() => {});
+    await cands
+      .nth(picked)
+      .click()
+      .catch((e) => console.log('[dump] click failed:', String(e)));
     await page.waitForTimeout(4000);
     const boxes = page.locator(boxSel);
     if ((await boxes.count()) > 0) {
-      const txt = (await boxes.first().textContent().catch(() => '')) ?? '';
-      console.log(`[dump] compose box text after plain click: "${txt.replace(/\s+/g, ' ').trim().slice(0, 80)}" (len ${txt.length})`);
+      const txt =
+        (await boxes
+          .first()
+          .textContent()
+          .catch(() => '')) ?? '';
+      console.log(
+        `[dump] compose box text after plain click: "${txt.replace(/\s+/g, ' ').trim().slice(0, 80)}" (len ${txt.length})`,
+      );
     } else {
       console.log('[dump] no compose box after plain click');
     }
@@ -72,7 +94,9 @@ async function main(): Promise<void> {
         out.push({
           aria: await el.getAttribute('aria-label').catch(() => null),
           href: await el.getAttribute('href').catch(() => null),
-          text: (await el.textContent().catch(() => ''))?.replace(/\s+/g, ' ').trim().slice(0, 50) ?? '',
+          text:
+            (await el.textContent().catch(() => ''))?.replace(/\s+/g, ' ').trim().slice(0, 50) ??
+            '',
           visible: String(await el.isVisible().catch(() => false)),
         });
       }
@@ -80,10 +104,19 @@ async function main(): Promise<void> {
       console.log(JSON.stringify(out, null, 2));
     }
     await listAria('div[contenteditable="true"]', 'compose-boxes');
-    await listAria('button[aria-label*="Close" i], button[aria-label*="conversation" i]', 'close-buttons');
+    await listAria(
+      'button[aria-label*="Close" i], button[aria-label*="conversation" i]',
+      'close-buttons',
+    );
     await listAria('button[aria-label*="Send" i], button.msg-form__send-button', 'send-buttons');
-    await listAria('[class*="msg-overlay"] a[href*="/in/"], .msg-overlay-conversation-bubble a[href*="/in/"]', 'overlay-recipient-links');
-    await listAria('[class*="msg-overlay-bubble-header"], [class*="msg-overlay-conversation-bubble__title"]', 'overlay-headers');
+    await listAria(
+      '[class*="msg-overlay"] a[href*="/in/"], .msg-overlay-conversation-bubble a[href*="/in/"]',
+      'overlay-recipient-links',
+    );
+    await listAria(
+      '[class*="msg-overlay-bubble-header"], [class*="msg-overlay-conversation-bubble__title"]',
+      'overlay-headers',
+    );
 
     // Exact container classes for overlays that hold a compose box, so the runner
     // can scope box+send to the overlay whose recipient link matches the target.
@@ -96,16 +129,23 @@ async function main(): Promise<void> {
       const c = await loc.count();
       const rows: string[] = [];
       for (let i = 0; i < Math.min(c, 8); i++) {
-        const cn = await loc.nth(i).evaluate((el) => (el as { className: string }).className).catch(() => '?');
+        const cn = await loc
+          .nth(i)
+          .evaluate((el) => (el as { className: string }).className)
+          .catch(() => '?');
         const hasBox = (await loc.nth(i).locator('div[contenteditable="true"]').count()) > 0;
         const links = await loc
           .nth(i)
           .locator('a[href*="/in/"]')
           .evaluateAll((els) =>
-            els.map((e) => (e as { getAttribute(name: string): string | null }).getAttribute('href')),
+            els.map((e) =>
+              (e as { getAttribute(name: string): string | null }).getAttribute('href'),
+            ),
           )
           .catch(() => []);
-        rows.push(`  #${i} hasBox=${hasBox} links=${JSON.stringify(links)} class="${String(cn).slice(0, 80)}"`);
+        rows.push(
+          `  #${i} hasBox=${hasBox} links=${JSON.stringify(links)} class="${String(cn).slice(0, 80)}"`,
+        );
       }
       console.log(`\n[container ${sel}] count=${c}\n${rows.join('\n')}`);
     }
@@ -121,9 +161,17 @@ async function main(): Promise<void> {
       ['scoped box', `${convo} div.msg-form__contenteditable[contenteditable="true"]`],
       ['scoped box (aria)', `${convo} div[contenteditable="true"][aria-label*="message" i]`],
       ['scoped send', `${convo} button.msg-form__send-button`],
-      ['wrong-recipient convo (should be 0)', `.msg-overlay-conversation-bubble:has(a[href*="/in/nonexistentperson999/"]) div.msg-form__contenteditable`],
+      [
+        'wrong-recipient convo (should be 0)',
+        `.msg-overlay-conversation-bubble:has(a[href*="/in/nonexistentperson999/"]) div.msg-form__contenteditable`,
+      ],
     ] as const) {
-      console.log(`[scoped] ${label}: count=${await page.locator(sel).count().catch((e) => 'ERR ' + e)}`);
+      console.log(
+        `[scoped] ${label}: count=${await page
+          .locator(sel)
+          .count()
+          .catch((e) => `ERR ${e}`)}`,
+      );
     }
 
     const info = await page.evaluate(`(function(){

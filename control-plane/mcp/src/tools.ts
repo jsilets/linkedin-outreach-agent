@@ -8,18 +8,19 @@
 // gateAct() and never calls the executor. Privileged tools call
 // requirePrivileged() first. Observe / campaign / metrics tools run open.
 
-import { z } from 'zod';
 import { AUTONOMY_LEVELS, CAMPAIGN_STEP_TYPES, ICP_FIT_THRESHOLD } from '@loa/shared';
-import type { RequestContext } from './context.js';
+import { z } from 'zod';
 import { requirePrivileged } from './capability.js';
-import { gateAct, type GateOutcome } from './gate.js';
+import type { RequestContext } from './context.js';
+import { type GateOutcome, gateAct } from './gate.js';
 import type { ActRequest, Icp, PeopleQuery, Ports, TargetInput } from './ports.js';
+import { sourceToList } from './source-to-list.js';
 
 export type ToolFamily = 'observe' | 'act' | 'campaign' | 'approval' | 'safety';
 
 /** A JSON-serializable tool result. Handlers return plain data; the server
  *  wraps it in the MCP content envelope. */
-export type ToolOutput = unknown;
+type ToolOutput = unknown;
 
 export interface ToolDef<Shape extends z.ZodRawShape = z.ZodRawShape> {
   name: string;
@@ -28,15 +29,15 @@ export interface ToolDef<Shape extends z.ZodRawShape = z.ZodRawShape> {
   /** Privileged tools reject without an operator capability. */
   privileged: boolean;
   inputShape: Shape;
-  handler: (args: z.infer<z.ZodObject<Shape>>, ports: Ports, ctx: RequestContext) => Promise<ToolOutput>;
+  handler: (
+    args: z.infer<z.ZodObject<Shape>>,
+    ports: Ports,
+    ctx: RequestContext,
+  ) => Promise<ToolOutput>;
 }
 
 // Helper to build an ActRequest and route it through the single chokepoint.
-async function act(
-  ports: Ports,
-  req: ActRequest,
-  draftBody?: string,
-): Promise<GateOutcome> {
+async function act(ports: Ports, req: ActRequest, draftBody?: string): Promise<GateOutcome> {
   return gateAct(
     { safety: ports.safety, approval: ports.approval, executor: ports.executor },
     req,
@@ -131,7 +132,11 @@ const observeTools: ToolDef[] = [
     family: 'observe',
     description: 'Fetch recent posts for a profile.',
     privileged: false,
-    inputShape: { accountId: z.string(), linkedinUrn: z.string(), limit: z.number().int().positive().max(100).default(10) },
+    inputShape: {
+      accountId: z.string(),
+      linkedinUrn: z.string(),
+      limit: z.number().int().positive().max(100).default(10),
+    },
     handler: (a, p) => p.observe.getRecentPosts(a.accountId, a.linkedinUrn, a.limit),
   },
   {
@@ -139,7 +144,11 @@ const observeTools: ToolDef[] = [
     family: 'observe',
     description: 'List people who engaged with a post.',
     privileged: false,
-    inputShape: { accountId: z.string(), postUrn: z.string(), limit: z.number().int().positive().max(200).default(50) },
+    inputShape: {
+      accountId: z.string(),
+      postUrn: z.string(),
+      limit: z.number().int().positive().max(200).default(50),
+    },
     handler: (a, p) => p.observe.getPostEngagers(a.accountId, a.postUrn, a.limit),
   },
   {
@@ -147,7 +156,11 @@ const observeTools: ToolDef[] = [
     family: 'observe',
     description: 'List open jobs at a company.',
     privileged: false,
-    inputShape: { accountId: z.string(), companyUrn: z.string(), limit: z.number().int().positive().max(100).default(25) },
+    inputShape: {
+      accountId: z.string(),
+      companyUrn: z.string(),
+      limit: z.number().int().positive().max(100).default(25),
+    },
     handler: (a, p) => p.observe.getCompanyJobs(a.accountId, a.companyUrn, a.limit),
   },
   {
@@ -180,8 +193,7 @@ const observeTools: ToolDef[] = [
       network: z.array(z.enum(['F', 'S', 'O'])).optional(),
       limit: z.number().int().positive().max(1000).default(25),
     },
-    handler: (a, p) =>
-      p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit),
+    handler: (a, p) => p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit),
   },
   {
     name: 'source_people',
@@ -238,7 +250,17 @@ const actTools: ToolDef[] = [
       note: z.string().max(300).optional(),
     },
     handler: (a, p) =>
-      act(p, { type: 'connect', accountId: a.accountId, targetId: a.targetId, campaignId: a.campaignId, payload: a.note ?? null }, a.note),
+      act(
+        p,
+        {
+          type: 'connect',
+          accountId: a.accountId,
+          targetId: a.targetId,
+          campaignId: a.campaignId,
+          payload: a.note ?? null,
+        },
+        a.note,
+      ),
   },
   {
     name: 'send_message',
@@ -252,7 +274,17 @@ const actTools: ToolDef[] = [
       body: z.string().min(1),
     },
     handler: (a, p) =>
-      act(p, { type: 'message', accountId: a.accountId, targetId: a.targetId, campaignId: a.campaignId, payload: a.body }, a.body),
+      act(
+        p,
+        {
+          type: 'message',
+          accountId: a.accountId,
+          targetId: a.targetId,
+          campaignId: a.campaignId,
+          payload: a.body,
+        },
+        a.body,
+      ),
   },
   {
     name: 'view_profile',
@@ -261,7 +293,12 @@ const actTools: ToolDef[] = [
     privileged: false,
     inputShape: { accountId: z.string(), targetId: z.string(), campaignId: z.string() },
     handler: (a, p) =>
-      act(p, { type: 'view_profile', accountId: a.accountId, targetId: a.targetId, campaignId: a.campaignId }),
+      act(p, {
+        type: 'view_profile',
+        accountId: a.accountId,
+        targetId: a.targetId,
+        campaignId: a.campaignId,
+      }),
   },
   {
     name: 'follow',
@@ -270,7 +307,12 @@ const actTools: ToolDef[] = [
     privileged: false,
     inputShape: { accountId: z.string(), targetId: z.string(), campaignId: z.string() },
     handler: (a, p) =>
-      act(p, { type: 'follow', accountId: a.accountId, targetId: a.targetId, campaignId: a.campaignId }),
+      act(p, {
+        type: 'follow',
+        accountId: a.accountId,
+        targetId: a.targetId,
+        campaignId: a.campaignId,
+      }),
   },
   {
     name: 'withdraw_invite',
@@ -279,7 +321,12 @@ const actTools: ToolDef[] = [
     privileged: false,
     inputShape: { accountId: z.string(), targetId: z.string(), campaignId: z.string() },
     handler: (a, p) =>
-      act(p, { type: 'withdraw_invite', accountId: a.accountId, targetId: a.targetId, campaignId: a.campaignId }),
+      act(p, {
+        type: 'withdraw_invite',
+        accountId: a.accountId,
+        targetId: a.targetId,
+        campaignId: a.campaignId,
+      }),
   },
   {
     name: 'react_to_post',
@@ -526,7 +573,9 @@ const campaignTools: ToolDef[] = [
     privileged: false,
     inputShape: { name: z.string().min(1), description: z.string().optional() },
     handler: (a, p) =>
-      p.lists.createList(a.description ? { name: a.name, description: a.description } : { name: a.name }),
+      p.lists.createList(
+        a.description ? { name: a.name, description: a.description } : { name: a.name },
+      ),
   },
   {
     name: 'list_lists',
@@ -616,16 +665,19 @@ const campaignTools: ToolDef[] = [
       listId: z.string().optional(),
       listName: z.string().optional(),
     },
-    handler: async (a, p) => {
-      if (!a.listId && !a.listName) {
-        throw new Error('source_to_list: provide either listId or listName');
-      }
-      // Resolve the target list up front (create it when only a name was given).
-      const listId = a.listId ?? (await p.lists.createList({ name: a.listName! })).id;
-      const people = await p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit);
-      const { inserted, duplicates } = await p.lists.insertMembers(listId, people);
-      return { listId, found: people.length, inserted, duplicates };
-    },
+    handler: (a, p) =>
+      // Shared search -> dedup -> write core, the same one the source-to-list CLI
+      // runs. a.limit rides on the query (toPeopleQuery copies it), so the search
+      // uses the same page size as before.
+      sourceToList(
+        { observe: p.observe, lists: p.lists },
+        {
+          accountId: a.accountId,
+          ...(a.listId ? { listId: a.listId } : {}),
+          ...(a.listName ? { listName: a.listName } : {}),
+          query: toPeopleQuery(a),
+        },
+      ),
   },
   {
     name: 'enroll_from_list',
@@ -733,7 +785,7 @@ const campaignTools: ToolDef[] = [
       'harness-driven qualification path: after reading a list (get_list) and ' +
       'judging each lead against an ICP yourself, write your scores back here. ' +
       'Each { linkedinUrn, score (0..100), reasons? } merges into that member ' +
-      "external_context (the list-stage sibling of attach_external_context, which " +
+      'external_context (the list-stage sibling of attach_external_context, which ' +
       'only reaches campaign targets). Returns { updated, missed } where missed ' +
       'lists urns with no matching member. Always available (no live search).',
     privileged: false,

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 
 // A generic, sortable, client-paginated table. Sort and page state live in the
 // component and survive parent refetches (e.g. after an approval reloads leads):
@@ -131,7 +131,8 @@ export function DataTable<T>({
             {columns.map((col) => {
               const canSort = col.sortable !== false && Boolean(col.sortValue);
               const sortState = ariaSort(col);
-              const indicator = sortState === 'ascending' ? '↑' : sortState === 'descending' ? '↓' : '↕';
+              const indicator =
+                sortState === 'ascending' ? '↑' : sortState === 'descending' ? '↓' : '↕';
               return (
                 <th
                   key={col.key}
@@ -164,9 +165,10 @@ export function DataTable<T>({
               {columns.map((col) => (
                 <td
                   key={col.key}
-                  className={[col.numeric ? 'num' : '', col.cellClassName ?? '']
-                    .filter(Boolean)
-                    .join(' ') || undefined}
+                  className={
+                    [col.numeric ? 'num' : '', col.cellClassName ?? ''].filter(Boolean).join(' ') ||
+                    undefined
+                  }
                 >
                   {col.cell(row)}
                 </td>

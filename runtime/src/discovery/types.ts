@@ -3,10 +3,10 @@
 // candidate shape a data source yields, the score a qualifier returns, and the
 // two ports the feeder depends on.
 
-import type { Json } from '@loa/shared';
 import type { Icp } from '@loa/mcp';
+import type { Json } from '@loa/shared';
 
-export type { Icp, IcpAttribute, IcpField } from '@loa/mcp';
+export type { Icp, IcpField } from '@loa/mcp';
 
 /**
  * A discovered prospect, before scoring. A superset of a PersonSearchResult: a

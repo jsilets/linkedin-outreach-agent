@@ -23,9 +23,11 @@
     "@loa/orchestrator": "*",
     "@loa/safety": "*",
     "@loa/scheduler": "*",
-    "@loa/shared": "*"
+    "@loa/shared": "*",
+    "drizzle-orm": "^0.45.2"
   },
   "devDependencies": {
-    "@types/node": "^24.10.0"
+    "@types/node": "^24.10.0",
+    "patchright": "^1.61.1"
   }
 }

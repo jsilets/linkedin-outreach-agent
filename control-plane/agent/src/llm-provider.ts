@@ -3,7 +3,6 @@
 // and drafts replies. The Anthropic call sits behind AnthropicSeam so tests can
 // inject a fake and run with no network.
 
-import { REPLY_INTENTS } from '@loa/shared';
 import type {
   Draft,
   Intent,
@@ -13,6 +12,7 @@ import type {
   TargetContext,
   Thread,
 } from '@loa/shared';
+import { REPLY_INTENTS } from '@loa/shared';
 import type { AnthropicSeam, SeamTool } from './anthropic-seam.js';
 import { AnthropicClientSeam } from './anthropic-seam.js';
 
@@ -29,8 +29,7 @@ const STYLE_RULES = [
 // The classify tool constrains output to exactly one enum value.
 const CLASSIFY_TOOL: SeamTool = {
   name: 'record_intent',
-  description:
-    'Record the single best-fitting intent for the inbound message. Choose exactly one.',
+  description: 'Record the single best-fitting intent for the inbound message. Choose exactly one.',
   input_schema: {
     type: 'object',
     properties: {
@@ -122,8 +121,7 @@ export class ClaudeLLMProvider implements LLMProvider {
 
   constructor(opts: ClaudeLLMProviderOptions = {}) {
     this.model = opts.model ?? process.env.LOA_LLM_MODEL ?? DEFAULT_MODEL;
-    this.seam =
-      opts.seam ?? new AnthropicClientSeam({ apiKey: opts.apiKey, model: this.model });
+    this.seam = opts.seam ?? new AnthropicClientSeam({ apiKey: opts.apiKey, model: this.model });
   }
 
   async personalize(ctx: TargetContext): Promise<Draft> {
@@ -151,7 +149,7 @@ export class ClaudeLLMProvider implements LLMProvider {
     if (res.refused) {
       return 'NotInterested';
     }
-    const candidate = res.toolUse?.input?.['intent'];
+    const candidate = res.toolUse?.input?.intent;
     if (isReplyIntent(candidate)) {
       return candidate;
     }

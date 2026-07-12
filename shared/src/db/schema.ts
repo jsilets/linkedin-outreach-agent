@@ -52,10 +52,7 @@ export const actionResultEnum = pgEnum('action_result', [
   'deferred',
 ]);
 
-export const messageDirectionEnum = pgEnum('message_direction', [
-  'inbound',
-  'outbound',
-]);
+export const messageDirectionEnum = pgEnum('message_direction', ['inbound', 'outbound']);
 
 // 'draft'     — proposed, awaiting human approval (the pending queue).
 // 'approved'  — a human approved it; the dispatch tick sends it at the next open
@@ -94,11 +91,7 @@ export const replyIntentEnum = pgEnum('reply_intent', [
   'Stop',
 ]);
 
-export const approvalDecisionEnum = pgEnum('approval_decision', [
-  'approved',
-  'rejected',
-  'edited',
-]);
+export const approvalDecisionEnum = pgEnum('approval_decision', ['approved', 'rejected', 'edited']);
 
 export const campaignStepTypeEnum = pgEnum('campaign_step_type', [
   'view_profile',
@@ -137,7 +130,14 @@ export const accounts = pgTable('accounts', {
   limits: jsonb('limits')
     .notNull()
     .default({
-      caps: { connect: 20, message: 20, view_profile: 60, follow: 15, withdraw_invite: 10, react: 30 },
+      caps: {
+        connect: 20,
+        message: 20,
+        view_profile: 60,
+        follow: 15,
+        withdraw_invite: 10,
+        react: 30,
+      },
     }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

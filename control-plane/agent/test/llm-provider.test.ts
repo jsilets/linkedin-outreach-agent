@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
 import { REPLY_INTENTS } from '@loa/shared';
+import { describe, expect, it } from 'vitest';
 import { ClaudeLLMProvider } from '../src/llm-provider.js';
 import {
   FakeSeam,

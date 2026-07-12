@@ -2,16 +2,11 @@
 // network: each test scripts the raw OpenAI-compatible response body the seam
 // would receive, then asserts the provider maps it onto the LLMProvider contract.
 
-import { describe, expect, it } from 'vitest';
 import { REPLY_INTENTS } from '@loa/shared';
+import { describe, expect, it } from 'vitest';
 import { OpenRouterLLMProvider } from '../src/openrouter-llm-provider.js';
-import { OpenRouterClientSeam, type FetchLike } from '../src/openrouter-seam.js';
-import {
-  fakeAccount,
-  fakeCampaign,
-  fakeMessage,
-  fakeTarget,
-} from './fakes.js';
+import { type FetchLike, OpenRouterClientSeam } from '../src/openrouter-seam.js';
+import { fakeAccount, fakeCampaign, fakeMessage, fakeTarget } from './fakes.js';
 
 interface Recorded {
   url: string;
@@ -31,9 +26,7 @@ function fakeFetch(
       ok: opts.ok ?? true,
       status: opts.status ?? 200,
       async text() {
-        return typeof responseBody === 'string'
-          ? responseBody
-          : JSON.stringify(responseBody);
+        return typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody);
       },
     };
   };
@@ -86,7 +79,7 @@ describe('OpenRouterLLMProvider.personalize', () => {
     expect(draft.model).toBe('anthropic/claude-fable-5');
     // It POSTed to OpenRouter with a bearer token and a system+user message pair.
     expect(calls[0]!.url).toBe('https://openrouter.ai/api/v1/chat/completions');
-    expect(calls[0]!.headers['Authorization']).toBe('Bearer test-key');
+    expect(calls[0]!.headers.Authorization).toBe('Bearer test-key');
     const body = calls[0]!.body as { messages: { role: string }[] };
     expect(body.messages.map((m) => m.role)).toEqual(['system', 'user']);
   });
@@ -180,9 +173,9 @@ describe('OpenRouterClientSeam transport', () => {
   it('throws on a non-200 response', async () => {
     const { fetch } = fakeFetch('rate limited', { ok: false, status: 429 });
     const seam = new OpenRouterClientSeam({ apiKey: 'k', fetch });
-    await expect(
-      seam.send({ system: 's', user: 'u' }),
-    ).rejects.toThrow(/OpenRouter request failed: 429/);
+    await expect(seam.send({ system: 's', user: 'u' })).rejects.toThrow(
+      /OpenRouter request failed: 429/,
+    );
   });
 
   it('adds attribution headers only when configured', async () => {

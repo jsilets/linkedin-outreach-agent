@@ -27,10 +27,8 @@
 // paced follow-up. Persisting a processed-marker (e.g. a messages-row insert
 // keyed by the LinkedIn message urn) is the durable fix; deferred here.
 
-import type { Intent, LLMProvider, Message } from '@loa/shared';
-import type { db as shared } from '@loa/shared';
-import type { ReplyRouter } from '@loa/orchestrator';
-import type { TargetRepoPort } from '@loa/orchestrator';
+import type { ReplyRouter, TargetRepoPort } from '@loa/orchestrator';
+import type { Intent, LLMProvider, Message, db as shared } from '@loa/shared';
 import type { InboundMessage, InboxReaderPort } from '../adapters/observe-live.js';
 import { matchesIdentity } from './match-target.js';
 
@@ -88,7 +86,7 @@ export interface ReplyTickDeps {
  * identity matcher (the acceptance tick uses the same one against accepted
  * connections) so reply-mapping and accept-mapping stay identical.
  */
-export function matchesTarget(msg: InboundMessage, target: TargetRow): boolean {
+function matchesTarget(msg: InboundMessage, target: TargetRow): boolean {
   return matchesIdentity(msg.senderUrn, msg.profileUrl, target);
 }
 
@@ -188,8 +186,7 @@ export class ReplyTick {
     const inbound = await this.readInboxCached(accountId);
     const matches = inbound.filter(
       (m) =>
-        matchesTarget(m, target) &&
-        (since == null || m.receivedAt.getTime() > since.getTime()),
+        matchesTarget(m, target) && (since == null || m.receivedAt.getTime() > since.getTime()),
     );
     if (matches.length === 0) return false;
     for (const msg of matches) {
@@ -203,7 +200,7 @@ export class ReplyTick {
 
   /** Map, dedupe, classify, and route one inbound message. */
   private async handle(
-    accountId: string,
+    _accountId: string,
     enrolled: TargetProgressRow[],
     msg: InboundMessage,
   ): Promise<ReplyOutcome> {

@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
 
 // Dev server proxies /api to the local JSON API. API_PORT lets you match a
 // non-default server PORT. The client itself is host-agnostic; it always calls

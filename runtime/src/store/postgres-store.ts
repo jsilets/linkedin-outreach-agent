@@ -6,15 +6,10 @@
 // against a live database in dev/smoke, which run in memory. Bringing it up
 // requires a reachable Postgres with the shared Drizzle schema migrated.
 
-import { db as shared, ACTIVE_PROGRESS_STATES, CANCELABLE_MESSAGE_STATUSES } from '@loa/shared';
+import { type Db, makeRepositories, PostgresDb, type Repositories } from '@loa/orchestrator';
 import type { Json } from '@loa/shared';
+import { ACTIVE_PROGRESS_STATES, CANCELABLE_MESSAGE_STATUSES, db as shared } from '@loa/shared';
 import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
-import {
-  PostgresDb,
-  makeRepositories,
-  type Db,
-  type Repositories,
-} from '@loa/orchestrator';
 import type {
   AccountStorePort,
   ActionStorePort,
@@ -23,7 +18,7 @@ import type {
   RuntimeStore,
   SequenceStorePort,
   TargetProgressPatch,
-} from './index.js';
+} from './types.js';
 
 const { campaignSteps, targetProgress, targets, actions, messages, leadLists, leadListMembers } =
   shared.schema;
@@ -121,13 +116,17 @@ class PgSequenceStore implements SequenceStorePort {
         await tx
           .update(campaignSteps)
           .set({ stepOrder: -1 - i, updatedAt: new Date() })
-          .where(and(eq(campaignSteps.id, orderedIds[i]!), eq(campaignSteps.campaignId, campaignId)));
+          .where(
+            and(eq(campaignSteps.id, orderedIds[i]!), eq(campaignSteps.campaignId, campaignId)),
+          );
       }
       for (let i = 0; i < orderedIds.length; i += 1) {
         await tx
           .update(campaignSteps)
           .set({ stepOrder: i, updatedAt: new Date() })
-          .where(and(eq(campaignSteps.id, orderedIds[i]!), eq(campaignSteps.campaignId, campaignId)));
+          .where(
+            and(eq(campaignSteps.id, orderedIds[i]!), eq(campaignSteps.campaignId, campaignId)),
+          );
       }
     });
   }
@@ -158,9 +157,7 @@ class PgSequenceStore implements SequenceStorePort {
       .where(eq(targetProgress.campaignId, campaignId));
   }
 
-  async getTargetProgressByTarget(
-    targetId: string,
-  ): Promise<shared.TargetProgressRow | undefined> {
+  async getTargetProgressByTarget(targetId: string): Promise<shared.TargetProgressRow | undefined> {
     const [row] = await this.db.handle
       .select()
       .from(targetProgress)
@@ -376,10 +373,7 @@ class PgLeadListStore implements LeadListStorePort {
     const out = await this.db.handle
       .delete(leadListMembers)
       .where(
-        and(
-          eq(leadListMembers.listId, listId),
-          inArray(leadListMembers.linkedinUrn, linkedinUrns),
-        ),
+        and(eq(leadListMembers.listId, listId), inArray(leadListMembers.linkedinUrn, linkedinUrns)),
       )
       .returning({ id: leadListMembers.id });
     return { removed: out.length };
@@ -397,12 +391,7 @@ class PgLeadListStore implements LeadListStorePort {
       .set({
         externalContext: sql`${leadListMembers.externalContext} || ${JSON.stringify(patch)}::jsonb`,
       })
-      .where(
-        and(
-          eq(leadListMembers.listId, listId),
-          eq(leadListMembers.linkedinUrn, linkedinUrn),
-        ),
-      )
+      .where(and(eq(leadListMembers.listId, listId), eq(leadListMembers.linkedinUrn, linkedinUrn)))
       .returning({ id: leadListMembers.id });
     return out.length > 0;
   }

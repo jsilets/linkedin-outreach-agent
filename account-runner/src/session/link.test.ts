@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildStorageStateFromPastedCookies } from './link.js';
-import { extractSessionCookies, seal, open, resolveVaultKey, VaultError } from './vault.js';
+import { extractSessionCookies, open, resolveVaultKey, seal, VaultError } from './vault.js';
 
 const KEY = Buffer.alloc(32, 7); // deterministic 32-byte key for the test
 
@@ -38,9 +38,9 @@ describe('buildStorageStateFromPastedCookies', () => {
   });
 
   it('rejects a pasted cookie header or name=value pair', () => {
-    expect(() => buildStorageStateFromPastedCookies({ liAt: 'li_at=abc', jsessionId: 'ajax:1' })).toThrow(
-      VaultError,
-    );
+    expect(() =>
+      buildStorageStateFromPastedCookies({ liAt: 'li_at=abc', jsessionId: 'ajax:1' }),
+    ).toThrow(VaultError);
     expect(() =>
       buildStorageStateFromPastedCookies({ liAt: 'abc; JSESSIONID=x', jsessionId: 'ajax:1' }),
     ).toThrow(VaultError);

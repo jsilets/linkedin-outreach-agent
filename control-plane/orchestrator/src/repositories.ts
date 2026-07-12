@@ -3,20 +3,12 @@
 // they map rows in and out and expose the queries the orchestrator needs. They
 // deliberately do not encode business rules (that lives in the services).
 
+import type { Json } from '@loa/shared';
 import { db as shared } from '@loa/shared';
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
-import type { Json } from '@loa/shared';
 import type { Db } from './db.js';
 
-const {
-  accounts,
-  campaigns,
-  targets,
-  actions,
-  messages,
-  approvals,
-  events,
-} = shared.schema;
+const { accounts, campaigns, targets, actions, messages, approvals, events } = shared.schema;
 
 type AccountRow = shared.AccountRow;
 type NewAccountRow = shared.NewAccountRow;
@@ -42,10 +34,7 @@ export class AccountRepo {
   }
 
   async findById(id: string): Promise<AccountRow | undefined> {
-    const [out] = await this.db.handle
-      .select()
-      .from(accounts)
-      .where(eq(accounts.id, id));
+    const [out] = await this.db.handle.select().from(accounts).where(eq(accounts.id, id));
     return out;
   }
 
@@ -74,10 +63,7 @@ export class CampaignRepo {
   }
 
   async findById(id: string): Promise<CampaignRow | undefined> {
-    const [out] = await this.db.handle
-      .select()
-      .from(campaigns)
-      .where(eq(campaigns.id, id));
+    const [out] = await this.db.handle.select().from(campaigns).where(eq(campaigns.id, id));
     return out;
   }
 
@@ -113,26 +99,17 @@ export class TargetRepo {
   }
 
   async findById(id: string): Promise<TargetRow | undefined> {
-    const [out] = await this.db.handle
-      .select()
-      .from(targets)
-      .where(eq(targets.id, id));
+    const [out] = await this.db.handle.select().from(targets).where(eq(targets.id, id));
     return out;
   }
 
   async listByCampaign(campaignId: string): Promise<TargetRow[]> {
-    return this.db.handle
-      .select()
-      .from(targets)
-      .where(eq(targets.campaignId, campaignId));
+    return this.db.handle.select().from(targets).where(eq(targets.campaignId, campaignId));
   }
 
   /** Every target row across all campaigns that shares a LinkedIn URN. */
   async listByUrn(linkedinUrn: string): Promise<TargetRow[]> {
-    return this.db.handle
-      .select()
-      .from(targets)
-      .where(eq(targets.linkedinUrn, linkedinUrn));
+    return this.db.handle.select().from(targets).where(eq(targets.linkedinUrn, linkedinUrn));
   }
 
   async setExternalContext(id: string, blob: NewTargetRow['externalContext']): Promise<TargetRow> {
@@ -178,14 +155,15 @@ export class ActionRepo {
   }
 
   async findById(id: string): Promise<ActionRow | undefined> {
-    const [out] = await this.db.handle
-      .select()
-      .from(actions)
-      .where(eq(actions.id, id));
+    const [out] = await this.db.handle.select().from(actions).where(eq(actions.id, id));
     return out;
   }
 
-  async setResult(id: string, result: ActionRow['result'], executedAt: Date | null): Promise<ActionRow> {
+  async setResult(
+    id: string,
+    result: ActionRow['result'],
+    executedAt: Date | null,
+  ): Promise<ActionRow> {
     const [out] = await this.db.handle
       .update(actions)
       .set({ result, executedAt, updatedAt: new Date() })
@@ -202,10 +180,7 @@ export class ActionRepo {
 
   /** Every action for one account. Backs the weekly-invite counter. */
   async listByAccount(accountId: string): Promise<ActionRow[]> {
-    return this.db.handle
-      .select()
-      .from(actions)
-      .where(eq(actions.accountId, accountId));
+    return this.db.handle.select().from(actions).where(eq(actions.accountId, accountId));
   }
 }
 
@@ -218,10 +193,7 @@ export class MessageRepo {
   }
 
   async findById(id: string): Promise<MessageRow | undefined> {
-    const [out] = await this.db.handle
-      .select()
-      .from(messages)
-      .where(eq(messages.id, id));
+    const [out] = await this.db.handle.select().from(messages).where(eq(messages.id, id));
     return out;
   }
 
@@ -253,10 +225,7 @@ export class MessageRepo {
   }
 
   async listByThread(threadRef: string): Promise<MessageRow[]> {
-    return this.db.handle
-      .select()
-      .from(messages)
-      .where(eq(messages.threadRef, threadRef));
+    return this.db.handle.select().from(messages).where(eq(messages.threadRef, threadRef));
   }
 
   async listDrafts(): Promise<MessageRow[]> {

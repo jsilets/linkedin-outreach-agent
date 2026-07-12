@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
 import type {
   Account,
+  AccountSchedule,
   AccountState,
   Action,
   ActionType,
@@ -8,27 +8,26 @@ import type {
   Signal,
   SignalKind,
 } from '@loa/shared';
-
-import { DEFAULT_CONFIG, type CapTable } from './config.js';
-import { transition, isTerminal } from './state-machine.js';
+import { describe, expect, it } from 'vitest';
+import { type CapTable, DEFAULT_CONFIG } from './config.js';
 import {
-  DefaultSafetyGate,
   activeHoursDefer,
-  scheduleDefer,
-  isoDate,
-  type DailyUsageCounter,
-  type RecentActionClock,
-  type WeeklyInviteCounter,
   type Clock,
+  type DailyUsageCounter,
+  DefaultSafetyGate,
+  isoDate,
+  type RecentActionClock,
+  scheduleDefer,
+  type WeeklyInviteCounter,
 } from './safety-gate.js';
-import type { AccountSchedule } from '@loa/shared';
+import { isTerminal, transition } from './state-machine.js';
 
 // Local noon (not UTC) so it sits inside the default 8am-8pm active-hours
 // window in any timezone the tests run in; the window is exercised separately.
 const FIXED_NOW = new Date(2026, 6, 6, 12, 0, 0); // a Monday, local noon
 const fixedClock: Clock = { now: () => FIXED_NOW };
 
-function budget(state: AccountState, used: Partial<Record<ActionType, number>> = {}): DailyBudget {
+function budget(_state: AccountState, used: Partial<Record<ActionType, number>> = {}): DailyBudget {
   return {
     date: isoDate(FIXED_NOW),
     caps: { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 },
@@ -127,7 +126,9 @@ describe('state machine transitions', () => {
 
 describe('budget by state', () => {
   const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
+    allowMissingCounters: true,
+    clock: fixedClock,
+  });
 
   it('Active returns steady-state caps', () => {
     const b = gate.budget(account({ state: 'Active' }));
@@ -152,14 +153,28 @@ describe('budget by state', () => {
   });
 
   it("uses the account's own editable limits over the config default", () => {
-    const caps = { connect: 5, message: 3, view_profile: 40, follow: 7, withdraw_invite: 2, react: 9 };
+    const caps = {
+      connect: 5,
+      message: 3,
+      view_profile: 40,
+      follow: 7,
+      withdraw_invite: 2,
+      react: 9,
+    };
     const b = gate.budget(account({ state: 'Active', limits: { caps } }));
     expect(b.caps.connect).toBe(5);
     expect(b.caps.message).toBe(3);
   });
 
   it('scales the per-account limits when Throttled', () => {
-    const caps = { connect: 8, message: 8, view_profile: 40, follow: 7, withdraw_invite: 2, react: 9 };
+    const caps = {
+      connect: 8,
+      message: 8,
+      view_profile: 40,
+      follow: 7,
+      withdraw_invite: 2,
+      react: 9,
+    };
     // Throttled halves the account's own base caps, not the config default.
     expect(gate.budget(account({ state: 'Throttled', limits: { caps } })).caps.connect).toBe(4);
   });
@@ -178,7 +193,9 @@ describe('budget by state', () => {
 
 describe('canAct enforcement', () => {
   const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
+    allowMissingCounters: true,
+    clock: fixedClock,
+  });
 
   it('allows when under cap in a permitting state', () => {
     const acct = account({ state: 'Active', budget: budget('Active', { connect: 3 }) });
@@ -203,9 +220,14 @@ describe('canAct enforcement', () => {
   });
 
   it('enforces the rolling weekly invite ceiling on connects', () => {
-    const counter: WeeklyInviteCounter = { invitesLast7d: () => DEFAULT_CONFIG.weeklyInviteCeiling };
+    const counter: WeeklyInviteCounter = {
+      invitesLast7d: () => DEFAULT_CONFIG.weeklyInviteCeiling,
+    };
     const g = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock, weeklyInvites: counter });
+      allowMissingCounters: true,
+      clock: fixedClock,
+      weeklyInvites: counter,
+    });
     const acct = account({ state: 'Active', budget: budget('Active', { connect: 1 }) });
     // Under the daily cap, but the weekly ceiling is hit -> defer.
     expect(g.canAct(acct, action('connect')).kind).toBe('defer');
@@ -242,7 +264,10 @@ describe('daily usage cap (store-backed counter)', () => {
     // count, so the gate must read the injected counter. Relying on the row is
     // what let 31 invites go out under a 20/day cap.
     const g = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock, dailyUsage: usage({ connect: CONNECT_CAP }) });
+      allowMissingCounters: true,
+      clock: fixedClock,
+      dailyUsage: usage({ connect: CONNECT_CAP }),
+    });
     const acct = account({
       state: 'Active',
       limits: limitsWith(CONNECT_CAP),
@@ -267,14 +292,23 @@ describe('daily usage cap (store-backed counter)', () => {
 
   it('is per-type: a maxed connect count does not block messages', () => {
     const g = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock, dailyUsage: usage({ connect: CONNECT_CAP }) });
-    const acct = account({ state: 'Active', limits: limitsWith(CONNECT_CAP), budget: budget('Active') });
+      allowMissingCounters: true,
+      clock: fixedClock,
+      dailyUsage: usage({ connect: CONNECT_CAP }),
+    });
+    const acct = account({
+      state: 'Active',
+      limits: limitsWith(CONNECT_CAP),
+      budget: budget('Active'),
+    });
     expect(g.canAct(acct, action('message')).kind).toBe('allow');
   });
 
   it('falls back to acct.budget.used when no counter is wired', () => {
     const g = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
+      allowMissingCounters: true,
+      clock: fixedClock,
+    });
     const acct = account({
       state: 'Active',
       limits: limitsWith(CONNECT_CAP),
@@ -348,14 +382,18 @@ describe('action pacing', () => {
 describe('onSignal back-off escalation', () => {
   it('soft signal moves Active -> Throttled', () => {
     const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
+      allowMissingCounters: true,
+      clock: fixedClock,
+    });
     const t = gate.onSignal(account({ state: 'Active' }), signal('velocity'));
     expect(t.toState).toBe('Throttled');
   });
 
   it('repeated soft signal escalates Throttled -> Cooldown after threshold', () => {
     const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
+      allowMissingCounters: true,
+      clock: fixedClock,
+    });
     const acct = account({ state: 'Active' });
     // First soft signal: throttle (streak = 1).
     expect(gate.onSignal(acct, signal('velocity')).toState).toBe('Throttled');
@@ -366,8 +404,18 @@ describe('onSignal back-off escalation', () => {
 
   it('low_acceptance below floor still throttles', () => {
     const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
-    const acct = account({ state: 'Active', health: { acceptanceRate: 0.2, replyRate: 0.1, challengesLast7d: 0, lastCheckedAt: FIXED_NOW } });
+      allowMissingCounters: true,
+      clock: fixedClock,
+    });
+    const acct = account({
+      state: 'Active',
+      health: {
+        acceptanceRate: 0.2,
+        replyRate: 0.1,
+        challengesLast7d: 0,
+        lastCheckedAt: FIXED_NOW,
+      },
+    });
     const t = gate.onSignal(acct, signal('low_acceptance'));
     expect(t.toState).toBe('Throttled');
     expect(t.reason).toContain('floor');
@@ -375,25 +423,39 @@ describe('onSignal back-off escalation', () => {
 
   it('ban_banner moves Active -> Restricted', () => {
     const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
-    expect(gate.onSignal(account({ state: 'Active' }), signal('ban_banner')).toState).toBe('Restricted');
+      allowMissingCounters: true,
+      clock: fixedClock,
+    });
+    expect(gate.onSignal(account({ state: 'Active' }), signal('ban_banner')).toState).toBe(
+      'Restricted',
+    );
   });
 
   it('ban_banner on Throttled -> Restricted', () => {
     const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
-    expect(gate.onSignal(account({ state: 'Throttled' }), signal('ban_banner')).toState).toBe('Restricted');
+      allowMissingCounters: true,
+      clock: fixedClock,
+    });
+    expect(gate.onSignal(account({ state: 'Throttled' }), signal('ban_banner')).toState).toBe(
+      'Restricted',
+    );
   });
 
   it('challenge routes Active into Throttled', () => {
     const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
-    expect(gate.onSignal(account({ state: 'Active' }), signal('challenge')).toState).toBe('Throttled');
+      allowMissingCounters: true,
+      clock: fixedClock,
+    });
+    expect(gate.onSignal(account({ state: 'Active' }), signal('challenge')).toState).toBe(
+      'Throttled',
+    );
   });
 
   it('geo_drift flags without moving state', () => {
     const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
+      allowMissingCounters: true,
+      clock: fixedClock,
+    });
     const t = gate.onSignal(account({ state: 'Active' }), signal('geo_drift'));
     expect(t.fromState).toBe(t.toState);
     expect(t.reason).toContain('geo');
@@ -402,7 +464,9 @@ describe('onSignal back-off escalation', () => {
 
 describe('lifecycle helpers', () => {
   const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: fixedClock });
+    allowMissingCounters: true,
+    clock: fixedClock,
+  });
 
   it('recover from Throttled -> Active', () => {
     expect(gate.recover(account({ state: 'Throttled' }))?.toState).toBe('Active');
@@ -451,7 +515,9 @@ describe('active-hours window', () => {
   it('canAct defers an otherwise-allowed action when outside the window', () => {
     const nightClock: Clock = { now: () => at(3) };
     const gate = new DefaultSafetyGate({
-      allowMissingCounters: true, clock: nightClock });
+      allowMissingCounters: true,
+      clock: nightClock,
+    });
     const acct = account({ state: 'Active' });
     const d = gate.canAct(acct, action('connect'));
     expect(d.kind).toBe('defer');
@@ -559,7 +625,14 @@ describe('working schedule (hours + days)', () => {
   it('the gate defers a Saturday action for an account scheduled Saturday-off', () => {
     const satClock: Clock = { now: () => at(2026, 6, 11, 12) };
     const gate = new DefaultSafetyGate({ allowMissingCounters: true, clock: satClock });
-    const caps = { connect: 20, message: 20, view_profile: 60, follow: 20, withdraw_invite: 50, react: 30 };
+    const caps = {
+      connect: 20,
+      message: 20,
+      view_profile: 60,
+      follow: 20,
+      withdraw_invite: 50,
+      react: 30,
+    };
     const acct = account({ state: 'Active', limits: { caps, schedule: satOff } });
     const d = gate.canAct(acct, action('message'));
     expect(d.kind).toBe('defer');

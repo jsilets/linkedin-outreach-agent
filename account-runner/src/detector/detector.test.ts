@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { scanPage, acceptanceSignal, geoDriftSignal } from './index.js';
+import { describe, expect, it } from 'vitest';
 import { SELECTORS } from '../selectors.js';
 import { FakePage } from '../testing/fakes.js';
+import { acceptanceSignal, geoDriftSignal, scanPage } from './index.js';
 
 describe('scanPage restriction signals', () => {
   it('emits a velocity signal for the weekly-limit popup', async () => {

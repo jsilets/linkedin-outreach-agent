@@ -9,13 +9,6 @@
 //                              -> classify -> draft, stepwise and resumable.
 //   PORT interfaces            the integration contract with the other packages.
 
-export { ClaudeLLMProvider } from './llm-provider.js';
-export type { ClaudeLLMProviderOptions } from './llm-provider.js';
-
-export { OpenRouterLLMProvider } from './openrouter-llm-provider.js';
-export type { OpenRouterLLMProviderOptions } from './openrouter-llm-provider.js';
-
-export { AnthropicClientSeam } from './anthropic-seam.js';
 export type {
   AnthropicSeam,
   SeamRequest,
@@ -23,21 +16,24 @@ export type {
   SeamTool,
   SeamToolUse,
 } from './anthropic-seam.js';
-
-export { OpenRouterClientSeam } from './openrouter-seam.js';
-export type {
-  OpenRouterSeam,
-  OpenRouterClientSeamOptions,
-  FetchLike,
-} from './openrouter-seam.js';
-
+export { AnthropicClientSeam } from './anthropic-seam.js';
+export type { LoopPhase, LoopState } from './control-loop.js';
 export {
   initialState,
   isTerminal,
   runStep,
   runToStop,
 } from './control-loop.js';
-export type { LoopPhase, LoopState } from './control-loop.js';
+export type { ClaudeLLMProviderOptions } from './llm-provider.js';
+export { ClaudeLLMProvider } from './llm-provider.js';
+export type { OpenRouterLLMProviderOptions } from './openrouter-llm-provider.js';
+export { OpenRouterLLMProvider } from './openrouter-llm-provider.js';
+export type {
+  FetchLike,
+  OpenRouterClientSeamOptions,
+  OpenRouterSeam,
+} from './openrouter-seam.js';
+export { OpenRouterClientSeam } from './openrouter-seam.js';
 
 export type {
   ExecIntent,

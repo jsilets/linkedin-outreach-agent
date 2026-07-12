@@ -44,11 +44,14 @@ export function ApprovalsPanel({
     <div>
       {pending.length > 1 && (
         <div className="toolbar" style={{ margin: '0 0 10px' }}>
-          <span className="muted">
-            {pending.length} messages waiting for approval
-          </span>
+          <span className="muted">{pending.length} messages waiting for approval</span>
           <span className="spacer" />
-          <button className="btn approve tiny" onClick={approveAll} disabled={bulkBusy}>
+          <button
+            type="button"
+            className="btn approve tiny"
+            onClick={approveAll}
+            disabled={bulkBusy}
+          >
             {bulkBusy ? 'Sending…' : `Approve all ${pending.length}`}
           </button>
         </div>
@@ -56,7 +59,12 @@ export function ApprovalsPanel({
       {error && <div className="error">{error}</div>}
       <div className="approvals-wrap">
         {pending.map((p) => (
-          <ApprovalCard key={p.messageId} item={p} onChange={onChange} showCampaign={showCampaign} />
+          <ApprovalCard
+            key={p.messageId}
+            item={p}
+            onChange={onChange}
+            showCampaign={showCampaign}
+          />
         ))}
       </div>
     </div>
@@ -97,14 +105,19 @@ function ApprovalCard({
       <div className="approval-head">
         <span className="to">{recipient}</span>
         {item.company && <span className="muted">· {item.company}</span>}
-        {showCampaign && item.campaignGoal && (
-          <span className="muted">· {item.campaignGoal}</span>
-        )}
-        <span className="age">waiting {formatRelative(item.createdAt).replace('ago', '').trim()}</span>
+        {showCampaign && item.campaignGoal && <span className="muted">· {item.campaignGoal}</span>}
+        <span className="age">
+          waiting {formatRelative(item.createdAt).replace('ago', '').trim()}
+        </span>
       </div>
 
       {mode === 'edit' ? (
-        <textarea className="draft" value={draft} onChange={(e) => setDraft(e.target.value)} rows={5} />
+        <textarea
+          className="draft"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          rows={5}
+        />
       ) : (
         <div className="draft">{item.body}</div>
       )}
@@ -124,16 +137,27 @@ function ApprovalCard({
         {mode === 'view' && (
           <>
             <button
+              type="button"
               className="btn approve tiny"
               disabled={busy}
               onClick={() => run(() => api.approve(item.messageId))}
             >
               {busy ? 'Sending…' : 'Approve & send'}
             </button>
-            <button className="btn ghost tiny" disabled={busy} onClick={() => setMode('edit')}>
+            <button
+              type="button"
+              className="btn ghost tiny"
+              disabled={busy}
+              onClick={() => setMode('edit')}
+            >
               Edit
             </button>
-            <button className="btn ghost tiny" disabled={busy} onClick={() => setMode('reject')}>
+            <button
+              type="button"
+              className="btn ghost tiny"
+              disabled={busy}
+              onClick={() => setMode('reject')}
+            >
               Reject
             </button>
           </>
@@ -141,6 +165,7 @@ function ApprovalCard({
         {mode === 'edit' && (
           <>
             <button
+              type="button"
               className="btn approve tiny"
               disabled={busy || draft.trim().length === 0}
               onClick={() => run(() => api.approve(item.messageId, draft))}
@@ -148,6 +173,7 @@ function ApprovalCard({
               {busy ? 'Sending…' : 'Send edited'}
             </button>
             <button
+              type="button"
               className="btn ghost tiny"
               disabled={busy}
               onClick={() => {
@@ -162,13 +188,19 @@ function ApprovalCard({
         {mode === 'reject' && (
           <>
             <button
+              type="button"
               className="btn ghost tiny"
               disabled={busy || reason.trim().length === 0}
               onClick={() => run(() => api.reject(item.messageId, reason.trim()))}
             >
               {busy ? 'Rejecting…' : 'Confirm reject'}
             </button>
-            <button className="btn ghost tiny" disabled={busy} onClick={() => setMode('view')}>
+            <button
+              type="button"
+              className="btn ghost tiny"
+              disabled={busy}
+              onClick={() => setMode('view')}
+            >
               Cancel
             </button>
           </>

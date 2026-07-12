@@ -4,51 +4,51 @@
 // gate chokepoint, the tool registry, and the server/app builders. Import
 // domain types from @loa/shared.
 
+export { CapabilityError, requirePrivileged } from './capability.js';
+export { AGENT_CONTEXT, operatorContext, type RequestContext } from './context.js';
+export { type GateDeps, type GateOutcome, gateAct, mayExecuteDirectly } from './gate.js';
 export type {
-  Ports,
-  ObservePort,
-  ExecutorPort,
-  SafetyPort,
-  ApprovalPort,
-  ApprovalOutcome,
-  CampaignPort,
-  LeadListPort,
   AccountAdminPort,
   ActRequest,
-  PendingItem,
-  QueueEntry,
-  Metrics,
-  TargetInput,
-  CampaignStepView,
-  SequenceStepInput,
-  EnrollResult,
-  RemoveTargetsResult,
-  HealthReport,
+  ApprovalOutcome,
+  ApprovalPort,
   AuditRecord,
-  ProfileSummary,
-  ProfilePosition,
-  PostSummary,
-  EngagerSummary,
-  JobSummary,
+  CampaignPort,
+  CampaignStepView,
   ConversationSummary,
-  PeopleQuery,
-  PersonSearchResult,
-  RecentConnection,
-  ListSummary,
-  ListMember,
-  ListDetail,
-  InsertMembersResult,
+  DiscoveryPort,
+  EngagerSummary,
+  EnrollResult,
+  ExecutorPort,
+  HealthReport,
   Icp,
   IcpAttribute,
   IcpField,
-  DiscoveryPort,
+  InsertMembersResult,
+  JobSummary,
+  LeadListPort,
   LeadScoreInput,
+  ListDetail,
+  ListMember,
+  ListSummary,
+  Metrics,
+  ObservePort,
+  PendingItem,
+  PeopleQuery,
+  PersonSearchResult,
+  Ports,
+  PostSummary,
+  ProfilePosition,
+  ProfileSummary,
+  QueueEntry,
+  RecentConnection,
+  RemoveTargetsResult,
+  SafetyPort,
   ScoreLeadsResult,
   ScoreListResult,
+  SequenceStepInput,
+  TargetInput,
 } from './ports.js';
-
-export { gateAct, mayExecuteDirectly, type GateOutcome, type GateDeps } from './gate.js';
-export { requirePrivileged, CapabilityError } from './capability.js';
-export { AGENT_CONTEXT, operatorContext, type RequestContext } from './context.js';
+export { type AuthResult, authenticate, buildMcpServer, createApp, startServer } from './server.js';
+export { type SourceToListResult, sourceToList } from './source-to-list.js';
 export { ALL_TOOLS, TOOLS_BY_NAME, type ToolDef, type ToolFamily } from './tools.js';
-export { createApp, buildMcpServer, startServer, authenticate, type AuthResult } from './server.js';

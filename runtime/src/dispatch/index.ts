@@ -4,20 +4,14 @@
 // (safety + approval + executor) and the sequence store. compose() calls this
 // and starts the loop; nothing here assumes a host, so it deploys unchanged.
 
-import type { Json } from '@loa/shared';
 import type { GateDeps } from '@loa/mcp';
 import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
+import type { Json } from '@loa/shared';
 import type { SequenceStorePort } from '../store/index.js';
-import {
-  DispatchTick,
-  type DispatchTickDeps,
-  type SendTimeReplyCheck,
-  type StepOutcome,
-  type TickResult,
-} from './tick.js';
+import { DispatchTick, type SendTimeReplyCheck, type StepOutcome } from './tick.js';
 
+export type { SendTimeReplyCheck };
 export { DispatchTick };
-export type { DispatchTickDeps, SendTimeReplyCheck, StepOutcome, TickResult };
 
 export interface MakeDispatchTickDeps {
   sequence: SequenceStorePort;

@@ -22,20 +22,20 @@
 //   npm run act-shakeout -- <accountId> connect https://www.linkedin.com/in/<public-id>
 //   npm run act-shakeout -- <accountId> connect https://www.linkedin.com/in/<public-id> --note "Hi" --send
 
-import { resolveProxyIdentity, resolveVaultKey } from '@loa/account-runner';
 import {
-  SELECTORS,
-  connect,
-  message,
-  visitProfile,
   type ActionContext,
   type AllowToken,
+  connect,
+  message,
+  resolveProxyIdentity,
+  resolveVaultKey,
+  SELECTORS,
+  visitProfile,
 } from '@loa/account-runner';
 import type { Action, ActionType } from '@loa/shared';
 import { loadConfig } from '../config.js';
 import { LiveSessionProvider } from '../executor/session-provider.js';
 
-const LINKEDIN_ORIGIN = 'https://www.linkedin.com/feed/';
 const SUPPORTED = new Set(['connect', 'message', 'view_profile']);
 
 /** Parse `<accountId> <action> <profileArg> --flag value ...` argv. */
@@ -105,7 +105,9 @@ async function main(): Promise<void> {
   }
 
   const profileUrl = toProfileUrl(profileArg);
-  console.log(`[act] account=${accountId} action=${action} mode=${send ? 'SEND (real)' : 'DRY RUN'}`);
+  console.log(
+    `[act] account=${accountId} action=${action} mode=${send ? 'SEND (real)' : 'DRY RUN'}`,
+  );
   console.log(`[act] profile=${profileUrl}`);
   console.log(`[act] proxy=${identity ? identity.server : 'NO PROXY (local check)'}`);
 

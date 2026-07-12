@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
+import { ApprovalsPanel } from './ApprovalsPanel';
 import {
-  api,
   type Account,
+  api,
   type CampaignDetail,
   type CampaignSummary,
   type Lead,
   type Pending,
 } from './api';
-import { ApprovalsPanel } from './ApprovalsPanel';
 import { FlowEditor } from './FlowEditor';
 import { FunnelBar, MiniFunnel } from './FunnelBar';
 import { LeadsTable } from './LeadsTable';
@@ -27,7 +27,10 @@ export function CampaignsView() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.campaigns().then(setList).catch((e) => setError(String(e)));
+    api
+      .campaigns()
+      .then(setList)
+      .catch((e) => setError(String(e)));
   }, []);
 
   if (selected) {
@@ -37,7 +40,9 @@ export function CampaignsView() {
   if (error) return <div className="error">{error}</div>;
   if (!list) return <p className="muted">Loading...</p>;
   if (list.length === 0) {
-    return <p className="muted">No campaigns yet. Create one via the engine, then it shows here.</p>;
+    return (
+      <p className="muted">No campaigns yet. Create one via the engine, then it shows here.</p>
+    );
   }
 
   return (
@@ -49,7 +54,10 @@ export function CampaignsView() {
               <h3 style={{ margin: 0 }}>{c.goal}</h3>
               <StatusBadge status={c.status} />
               {c.pendingCount > 0 && (
-                <span className="chip" style={{ ['--c' as string]: statusVar('awaiting_approval') }}>
+                <span
+                  className="chip"
+                  style={{ ['--c' as string]: statusVar('awaiting_approval') }}
+                >
                   {c.pendingCount} to approve
                 </span>
               )}
@@ -77,9 +85,18 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
   const [launchMsg, setLaunchMsg] = useState<string | null>(null);
 
   function load() {
-    api.campaign(id).then(setDetail).catch((e) => setError(String(e)));
-    api.leads(id).then(setLeads).catch(() => {});
-    api.pending(id).then(setPending).catch(() => {});
+    api
+      .campaign(id)
+      .then(setDetail)
+      .catch((e) => setError(String(e)));
+    api
+      .leads(id)
+      .then(setLeads)
+      .catch(() => {});
+    api
+      .pending(id)
+      .then(setPending)
+      .catch(() => {});
   }
   useEffect(() => {
     load();
@@ -198,8 +215,8 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
           <>
             <h3 style={{ marginTop: 0 }}>Enrollment</h3>
             <div className="muted" style={{ marginBottom: 12 }}>
-              {detail.enrolledCount} {detail.enrolledCount === 1 ? 'lead is' : 'leads are'} enrolled and
-              stepping through the flow automatically.
+              {detail.enrolledCount} {detail.enrolledCount === 1 ? 'lead is' : 'leads are'} enrolled
+              and stepping through the flow automatically.
               {unenrolled > 0
                 ? ` ${unenrolled} target${unenrolled === 1 ? '' : 's'} not yet enrolled.`
                 : ' Every target is enrolled.'}
@@ -256,7 +273,7 @@ function LaunchControls({
           </option>
         ))}
       </select>
-      <button className="btn" onClick={onLaunch} disabled={!accountId || launching}>
+      <button type="button" className="btn" onClick={onLaunch} disabled={!accountId || launching}>
         {launching ? 'Working…' : label}
       </button>
     </div>

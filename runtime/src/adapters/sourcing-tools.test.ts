@@ -4,13 +4,12 @@
 // an InMemoryStore. Also covers the sourceToList core the CLI reuses. Only
 // ports.observe and ports.lists are exercised, so the rest of Ports is stubbed.
 
-import { describe, expect, it, beforeEach } from 'vitest';
-import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
 import type { PeopleQuery, PersonSearchResult, Ports } from '@loa/mcp';
+import { AGENT_CONTEXT, sourceToList, TOOLS_BY_NAME } from '@loa/mcp';
 import { DefaultSafetyGate } from '@loa/safety';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter, LeadListAdapter } from './mcp-ports.js';
-import { sourceToList } from '../tools/source-to-list.js';
 
 const ACCT = 'acct-1';
 
@@ -39,7 +38,11 @@ class FakeObserve {
 }
 
 /** Build a Ports object wired only for the sourcing tools; the rest is unused. */
-function makePorts(people: PersonSearchResult[]): { ports: Ports; store: InMemoryStore; observe: FakeObserve } {
+function makePorts(people: PersonSearchResult[]): {
+  ports: Ports;
+  store: InMemoryStore;
+  observe: FakeObserve;
+} {
   const store = new InMemoryStore();
   const observe = new FakeObserve(people);
   const ports = {
@@ -59,19 +62,42 @@ describe('list_accounts tool', () => {
   it('lists every sender account with the id/handle/state a caller needs', async () => {
     const store = new InMemoryStore();
     const today = new Date().toISOString().slice(0, 10);
-    const caps = { connect: 10, message: 10, view_profile: 10, follow: 10, withdraw_invite: 10, react: 10 };
-    const used = { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 };
+    const caps = {
+      connect: 10,
+      message: 10,
+      view_profile: 10,
+      follow: 10,
+      withdraw_invite: 10,
+      react: 10,
+    };
+    const used = {
+      connect: 0,
+      message: 0,
+      view_profile: 0,
+      follow: 0,
+      withdraw_invite: 0,
+      react: 0,
+    };
     await store.account.create({
       id: ACCT,
       handle: 'acme-operator',
       state: 'Active',
       proxyBinding: { proxyId: 'p', region: 'us-east', sticky: true },
-      health: { acceptanceRate: 0.6, replyRate: 0.3, challengesLast7d: 0, lastCheckedAt: new Date() },
+      health: {
+        acceptanceRate: 0.6,
+        replyRate: 0.3,
+        challengesLast7d: 0,
+        lastCheckedAt: new Date(),
+      },
       budget: { date: today, caps, used },
     });
     // Only the store is exercised; the orchestrator services are unused here.
     const ports = {
-      campaign: new CampaignAdapter({} as never, store, new DefaultSafetyGate({ allowMissingCounters: true })),
+      campaign: new CampaignAdapter(
+        {} as never,
+        store,
+        new DefaultSafetyGate({ allowMissingCounters: true }),
+      ),
     } as unknown as Ports;
 
     const accounts = (await run('list_accounts', {}, ports)) as Array<{
@@ -90,7 +116,13 @@ describe('source_people tool', () => {
     const { ports, observe } = makePorts([person(1), person(2)]);
     const out = (await run(
       'source_people',
-      { accountId: ACCT, titleKeywords: ['director'], geoUrn: '103644278', network: ['S'], limit: 25 },
+      {
+        accountId: ACCT,
+        titleKeywords: ['director'],
+        geoUrn: '103644278',
+        network: ['S'],
+        limit: 25,
+      },
       ports,
     )) as PersonSearchResult[];
 
@@ -126,14 +158,22 @@ describe('create_list / list_lists / get_list round-trip', () => {
   });
 
   it('creates a list, lists it with a member count, and reads it back empty', async () => {
-    const created = (await run('create_list', { name: 'Field ops', description: 'ICP A' }, ports)) as {
+    const created = (await run(
+      'create_list',
+      { name: 'Field ops', description: 'ICP A' },
+      ports,
+    )) as {
       id: string;
       name: string;
     };
     expect(created.id).toBeTruthy();
     expect(created.name).toBe('Field ops');
 
-    const lists = (await run('list_lists', {}, ports)) as Array<{ id: string; name: string; memberCount: number }>;
+    const lists = (await run('list_lists', {}, ports)) as Array<{
+      id: string;
+      name: string;
+      memberCount: number;
+    }>;
     expect(lists).toHaveLength(1);
     expect(lists[0]).toMatchObject({ id: created.id, name: 'Field ops', memberCount: 0 });
 
@@ -203,7 +243,10 @@ describe('sourceToList core (shared by the CLI)', () => {
     const observe = new FakeObserve([person(1), person(2)]);
 
     const query: PeopleQuery = { keywords: 'field service operations', limit: 25 };
-    const result = await sourceToList({ observe, lists }, { accountId: ACCT, listName: 'cli-list', query });
+    const result = await sourceToList(
+      { observe, lists },
+      { accountId: ACCT, listName: 'cli-list', query },
+    );
 
     expect(result.found).toBe(2);
     expect(result.inserted).toBe(2);

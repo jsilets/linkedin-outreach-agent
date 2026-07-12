@@ -13,7 +13,12 @@ npm install        # install all workspaces
 npm run typecheck  # tsc -b across every package
 npm run build      # tsc -b, emits dist/ per package
 npm test           # vitest run
+npm run lint       # biome check (lint + format)
+npm run knip       # unused files/exports/dependencies
 ```
+
+`npm run format` applies Biome's formatting. CI runs typecheck, lint, test, and
+knip on every PR.
 
 Copy `.env.example` to `.env` before running anything that touches the database
 or an external API. See the [README](./README.md) for the repo layout and
@@ -21,7 +26,8 @@ or an external API. See the [README](./README.md) for the repo layout and
 
 ## Before you open a PR
 
-- `npm run typecheck` and `npm test` pass.
+- `npm run typecheck`, `npm test`, `npm run lint`, and `npm run knip` pass
+  (CI enforces all four).
 - The change is scoped to one thing. No drive-by refactors, renames, or
   reformatting outside what the change needs.
 - Behavior claims come with the command output that shows them.

@@ -5,7 +5,7 @@
 
 import type { SeamRequest, SeamResult, SeamTool, SeamToolUse } from './anthropic-seam.js';
 
-export type { SeamRequest, SeamResult, SeamTool, SeamToolUse };
+export type { SeamRequest, SeamResult, SeamTool };
 
 /** The seam the OpenRouter provider depends on. */
 export interface OpenRouterSeam {
@@ -101,9 +101,9 @@ export class OpenRouterClientSeam implements OpenRouterSeam {
       ],
     };
     if (req.tools && req.tools.length > 0) {
-      body['tools'] = req.tools.map(toOpenAiTool);
+      body.tools = req.tools.map(toOpenAiTool);
       if (req.forceTool) {
-        body['tool_choice'] = {
+        body.tool_choice = {
           type: 'function',
           function: { name: req.forceTool },
         };

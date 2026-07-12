@@ -2,15 +2,10 @@
 // inject cookies), validate/refresh (session health), and raiseHumanTask on a
 // challenge. We never try to defeat a checkpoint; we hand it to a human.
 
-import type {
-  BrowserContextPort,
-  PagePort,
-  StorageStateShape,
-} from '../ports.js';
-import { BrowserContextFactory } from './context-factory.js';
-import type { LaunchConfigInput } from './context-factory.js';
-import { loadStorageState, saveStorageState } from './vault.js';
+import type { BrowserContextPort, PagePort, StorageStateShape } from '../ports.js';
 import { SELECTORS } from '../selectors.js';
+import type { BrowserContextFactory, LaunchConfigInput } from './context-factory.js';
+import { loadStorageState, saveStorageState } from './vault.js';
 
 /** A task escalated to a human operator (e.g. a login or a checkpoint). */
 export interface HumanTask {
@@ -110,10 +105,7 @@ async function hasLinkedInSession(context: BrowserContextPort): Promise<boolean>
  * in and un-challenged. Detects a challenge via the shared selector and, if
  * present, escalates a human task instead of trying to solve it.
  */
-export async function validate(
-  deps: SessionDeps,
-  page: PagePort,
-): Promise<SessionHealth> {
+export async function validate(deps: SessionDeps, page: PagePort): Promise<SessionHealth> {
   await page.goto(FEED_URL, { waitUntil: 'domcontentloaded' });
   const atUrl = page.url();
   const challenged = (await page.locator(SELECTORS.challengeContainer).count()) > 0;

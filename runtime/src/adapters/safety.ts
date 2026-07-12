@@ -14,25 +14,14 @@
 // gate refuses to touch a page without a token matching the exact action.
 
 import { randomUUID } from 'node:crypto';
-import type {
-  Account,
-  Action,
-  ActionType,
-  Campaign,
-  DailyBudget,
-  Decision,
-} from '@loa/shared';
-import { SafetyDeferredError } from '@loa/shared';
-import { DefaultSafetyGate } from '@loa/safety';
-import type { SafetyPort as SchedulerSafetyPort } from '@loa/scheduler';
-import type { ActRequest, SafetyPort as McpSafetyPort } from '@loa/mcp';
+import type { AllowToken, SafetyPort as RunnerSafetyPort } from '@loa/account-runner';
 import type { SafetyPort as AgentSafetyPort } from '@loa/agent';
-import type {
-  AllowToken,
-  SafetyPort as RunnerSafetyPort,
-} from '@loa/account-runner';
-import type { RuntimeStore } from '../store/index.js';
+import type { ActRequest, SafetyPort as McpSafetyPort } from '@loa/mcp';
+import type { DefaultSafetyGate } from '@loa/safety';
+import type { Account, Action, Campaign, Decision } from '@loa/shared';
+import { SafetyDeferredError } from '@loa/shared';
 import { rowToAccount, rowToCampaign } from '../mappers.js';
+import type { RuntimeStore } from '../store/index.js';
 
 /** Default life of a minted allow token. Short by design: a token is consumed
  * immediately by the executor, so a minute is generous. */
@@ -41,7 +30,7 @@ const TOKEN_TTL_MS = 60_000;
 /** Build a transient Action for a gate check from an ActRequest, before any row
  * exists. The dedup key mirrors the loop's actionShell so budget accounting is
  * consistent across entrypoints. */
-export function actionFromRequest(req: ActRequest, now: Date = new Date()): Action {
+function actionFromRequest(req: ActRequest, now: Date = new Date()): Action {
   return {
     id: 'transient',
     type: req.type,
@@ -58,7 +47,7 @@ export function actionFromRequest(req: ActRequest, now: Date = new Date()): Acti
 }
 
 /** Mint an allow token bound to an action + account, valid for TOKEN_TTL_MS. */
-export function mintAllowToken(
+function mintAllowToken(
   action: Action,
   accountId: string,
   now: number = Date.now(),
@@ -73,12 +62,6 @@ export function mintAllowToken(
   };
 }
 
-/** The scheduler's SafetyPort is a structural subset of DefaultSafetyGate, so
- * the gate satisfies it directly. Exposed as a helper for symmetry/readability. */
-export function asSchedulerSafetyPort(gate: DefaultSafetyGate): SchedulerSafetyPort {
-  return gate;
-}
-
 /** The agent loop's SafetyPort needs only canAct(acct, action). */
 export function asAgentSafetyPort(gate: DefaultSafetyGate): AgentSafetyPort {
   return { canAct: (acct: Account, action: Action) => gate.canAct(acct, action) };
@@ -86,10 +69,7 @@ export function asAgentSafetyPort(gate: DefaultSafetyGate): AgentSafetyPort {
 
 /** Adapt the gate + store to the mcp SafetyPort: load account/campaign rows and
  * evaluate canAct against a transient Action built from the ActRequest. */
-export function makeMcpSafetyPort(
-  gate: DefaultSafetyGate,
-  store: RuntimeStore,
-): McpSafetyPort {
+export function makeMcpSafetyPort(gate: DefaultSafetyGate, store: RuntimeStore): McpSafetyPort {
   return {
     async getAccount(accountId: string): Promise<Account> {
       const row = await store.account.findById(accountId);
@@ -130,10 +110,3 @@ export function makeRunnerSafetyPort(gate: DefaultSafetyGate): RunnerSafetyPort 
     },
   };
 }
-
-/** Convenience: the per-action-type budget for an account, via the gate. */
-export function budgetFor(gate: DefaultSafetyGate, acct: Account): DailyBudget {
-  return gate.budget(acct);
-}
-
-export type { ActionType };

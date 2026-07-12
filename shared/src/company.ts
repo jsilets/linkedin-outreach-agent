@@ -27,9 +27,12 @@ export function extractCompany(headline: string | null | undefined): string | un
 
   // All "at X" / "@ X" markers; take the last (most likely the employer).
   const marker = /(?:\bat\s+|@\s*)([A-Za-z0-9][^\n]*)/g;
-  let m: RegExpExecArray | null;
   let tail: string | undefined;
-  while ((m = marker.exec(h)) !== null) tail = m[1];
+  let m = marker.exec(h);
+  while (m !== null) {
+    tail = m[1];
+    m = marker.exec(h);
+  }
   if (!tail) return undefined;
 
   // Cut the tail at the first segment delimiter (pipe, bullet, dash-separator,
@@ -60,7 +63,10 @@ export function extractCompany(headline: string | null | undefined): string | un
   // Drop a dangling connector at the end ("Rivian and" -> "Rivian").
   while (kept.length && CONNECTORS.test(kept[kept.length - 1]!)) kept.pop();
 
-  const company = kept.join(' ').replace(/[.,&\s]+$/, '').trim();
+  const company = kept
+    .join(' ')
+    .replace(/[.,&\s]+$/, '')
+    .trim();
   // Reject too-short or non-alphabetic residue.
   if (company.length < 2 || !/[A-Za-z]/.test(company)) return undefined;
   return company;

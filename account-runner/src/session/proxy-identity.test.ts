@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { resolveProxyIdentity, KNOWN_CITIES } from './proxy-identity.js';
+import { describe, expect, it } from 'vitest';
+import { KNOWN_CITIES, resolveProxyIdentity } from './proxy-identity.js';
 
 describe('resolveProxyIdentity', () => {
   it('returns undefined when PROXY_URL is unset', () => {

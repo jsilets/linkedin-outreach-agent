@@ -5,7 +5,7 @@
 import type { Account, Action } from '@loa/shared';
 
 import { DEFAULT_SCHEDULER_CONFIG, type SchedulerConfig } from './config.js';
-import { seededRng, type Rng, type SafetyPort } from './ports.js';
+import { type Rng, type SafetyPort, seededRng } from './ports.js';
 import { isWithinWorkingHours, nextWorkingInstant } from './working-hours.js';
 
 export interface SchedulerOptions {

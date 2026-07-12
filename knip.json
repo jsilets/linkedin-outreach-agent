@@ -1,0 +1,10 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    "runtime": {
+      "entry": [
+        "src/tools/{act-shakeout,search-shakeout,profile-shakeout,link-account,source-to-list,msg-overlay-dump,selector-scan,leak-test}.ts"
+      ]
+    }
+  }
+}

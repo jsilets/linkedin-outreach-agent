@@ -12,11 +12,7 @@ export const ACCOUNT_STATES = [
 ] as const;
 export type AccountState = (typeof ACCOUNT_STATES)[number];
 
-export const AUTONOMY_LEVELS = [
-  'supervised',
-  'semi_auto',
-  'autonomous',
-] as const;
+export const AUTONOMY_LEVELS = ['supervised', 'semi_auto', 'autonomous'] as const;
 export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
 
 export const ACTION_TYPES = [
@@ -29,13 +25,7 @@ export const ACTION_TYPES = [
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 
-export const ACTION_RESULTS = [
-  'pending',
-  'success',
-  'failed',
-  'skipped',
-  'deferred',
-] as const;
+export const ACTION_RESULTS = ['pending', 'success', 'failed', 'skipped', 'deferred'] as const;
 export type ActionResult = (typeof ACTION_RESULTS)[number];
 
 export const MESSAGE_DIRECTIONS = ['inbound', 'outbound'] as const;
@@ -83,11 +73,7 @@ export const SIGNAL_KINDS = [
 export type SignalKind = (typeof SIGNAL_KINDS)[number];
 
 // Autonomy level under which an approval was captured, and the decision made.
-export const APPROVAL_DECISIONS = [
-  'approved',
-  'rejected',
-  'edited',
-] as const;
+export const APPROVAL_DECISIONS = ['approved', 'rejected', 'edited'] as const;
 export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
 
 // Campaign sequence step kinds. The action-bearing ones map 1:1 to ActionType

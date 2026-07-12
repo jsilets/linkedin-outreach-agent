@@ -146,11 +146,7 @@ export interface ObservePort {
   getPostEngagers(accountId: string, postUrn: string, limit: number): Promise<EngagerSummary[]>;
   getCompanyJobs(accountId: string, companyUrn: string, limit: number): Promise<JobSummary[]>;
   getConversation(accountId: string, threadRef: string): Promise<ConversationSummary>;
-  searchPeople(
-    accountId: string,
-    query: PeopleQuery,
-    limit: number,
-  ): Promise<PersonSearchResult[]>;
+  searchPeople(accountId: string, query: PeopleQuery, limit: number): Promise<PersonSearchResult[]>;
   /** Recently-accepted connections from the account's own network, most-recent
    * first. Read-only; does not charge the people-search budget. */
   listRecentConnections(accountId: string, limit: number): Promise<RecentConnection[]>;
@@ -340,17 +336,10 @@ export interface CampaignPort {
   /** Read a campaign's ordered step sequence. */
   listCampaignSteps(campaignId: string): Promise<CampaignStepView[]>;
   /** Replace a campaign's step sequence with the given ordered steps. */
-  defineCampaignSteps(
-    campaignId: string,
-    steps: SequenceStepInput[],
-  ): Promise<CampaignStepView[]>;
+  defineCampaignSteps(campaignId: string, steps: SequenceStepInput[]): Promise<CampaignStepView[]>;
   /** Enroll targets into the campaign sequence under a sender account. The
    * dispatch tick then advances each enrolled target through the steps. */
-  enrollTargets(
-    campaignId: string,
-    targetIds: string[],
-    accountId: string,
-  ): Promise<EnrollResult>;
+  enrollTargets(campaignId: string, targetIds: string[], accountId: string): Promise<EnrollResult>;
   /** Operator removal: eject targets from a campaign, selected by target id
    * and/or LinkedIn URN (the URN is what the agent has from a list). Stops each
    * target's sequence, cancels its undelivered sends, and marks the target stage

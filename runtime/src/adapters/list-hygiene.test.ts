@@ -3,10 +3,10 @@
 // score, and remove_from_campaign logically removes an enrolled target. Backed by
 // a real InMemoryStore + real orchestrator services, driven through the MCP tools.
 
-import { describe, expect, it, beforeEach } from 'vitest';
-import { DefaultSafetyGate } from '@loa/safety';
-import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
 import type { Ports } from '@loa/mcp';
+import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
+import { DefaultSafetyGate } from '@loa/safety';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter, LeadListAdapter } from './mcp-ports.js';
 import { makeOrchestratorServices } from './orchestrator.js';
@@ -26,7 +26,11 @@ describe('ICP list-hygiene tools', () => {
   beforeEach(() => {
     store = new InMemoryStore();
     const services = makeOrchestratorServices(store, { enqueueFollowUp: async () => {} });
-    const campaign = new CampaignAdapter(services, store, new DefaultSafetyGate({ allowMissingCounters: true }));
+    const campaign = new CampaignAdapter(
+      services,
+      store,
+      new DefaultSafetyGate({ allowMissingCounters: true }),
+    );
     const lists = new LeadListAdapter(store);
     ports = { lists, campaign } as unknown as Ports;
   });
@@ -96,7 +100,11 @@ describe('ICP list-hygiene tools', () => {
 
   it('remove_from_list ejects a member by urn', async () => {
     const listId = await seedList('remove');
-    const res = (await run('remove_from_list', { listId, linkedinUrns: ['urn:li:unfit'] }, ports)) as {
+    const res = (await run(
+      'remove_from_list',
+      { listId, linkedinUrns: ['urn:li:unfit'] },
+      ports,
+    )) as {
       removed: number;
     };
     expect(res.removed).toBe(1);
@@ -110,7 +118,13 @@ describe('ICP list-hygiene tools', () => {
       'enroll_from_list',
       { listId, minScore: 50, goal: 'Book a call', accountId: ACCT },
       ports,
-    )) as { campaignId: string; eligible: number; skippedBelowScore: number; added: number; enrolled: number };
+    )) as {
+      campaignId: string;
+      eligible: number;
+      skippedBelowScore: number;
+      added: number;
+      enrolled: number;
+    };
 
     expect(res.eligible).toBe(1);
     expect(res.skippedBelowScore).toBe(1);
@@ -180,6 +194,75 @@ describe('ICP list-hygiene tools', () => {
     const removedTarget = targets.find((t) => t.linkedinUrn === 'urn:li:unfit')!;
     expect(removedTarget.stage).toBe('lost');
     const prog = await store.sequence.getTargetProgressByTarget(removedTarget.id);
+    expect(prog?.state).toBe('skipped');
+  });
+
+  it('remove_from_campaign cancels an approved-but-unsent outbound message', async () => {
+    const listId = await seedList('camp-msg');
+    const enroll = (await run(
+      'enroll_from_list',
+      { listId, minScore: 0, goal: 'Book a call', accountId: ACCT },
+      ports,
+    )) as { campaignId: string };
+    const before = await store.listTargetsByCampaign(enroll.campaignId);
+    const target = before.find((t) => t.linkedinUrn === 'urn:li:unfit')!;
+
+    // An approved outbound draft queued for this target must not fire after
+    // removal; it is cancelled along with the funnel stop.
+    const msg = await store.message.create({
+      accountId: ACCT,
+      targetId: target.id,
+      direction: 'outbound',
+      body: 'hi there',
+      threadRef: `pending:${ACCT}:${target.id}`,
+      status: 'approved',
+    });
+
+    const res = (await run(
+      'remove_from_campaign',
+      { campaignId: enroll.campaignId, linkedinUrns: ['urn:li:unfit'], reason: 'off-ICP' },
+      ports,
+    )) as { removed: number };
+    expect(res.removed).toBe(1);
+
+    const after = await store.message.findById(msg.id);
+    expect(after?.status).toBe('cancelled');
+  });
+
+  it('remove_from_campaign is idempotent on re-removal', async () => {
+    const listId = await seedList('camp-idem');
+    const enroll = (await run(
+      'enroll_from_list',
+      { listId, minScore: 0, goal: 'Book a call', accountId: ACCT },
+      ports,
+    )) as { campaignId: string };
+    const before = await store.listTargetsByCampaign(enroll.campaignId);
+    const target = before.find((t) => t.linkedinUrn === 'urn:li:unfit')!;
+    await store.target.setStage(target.id, 'invited');
+
+    const first = (await run(
+      'remove_from_campaign',
+      { campaignId: enroll.campaignId, targetIds: [target.id] },
+      ports,
+    )) as { removed: number };
+    expect(first.removed).toBe(1);
+
+    // Removing the same target again does not change its end state: the cursor
+    // stays terminal 'skipped', the stage stays 'lost', and the removed marker
+    // stays set. (The selector still resolves it, so removed is reported as 1.)
+    const second = (await run(
+      'remove_from_campaign',
+      { campaignId: enroll.campaignId, targetIds: [target.id] },
+      ports,
+    )) as { removed: number };
+    expect(second.removed).toBe(1);
+
+    const after = (await store.listTargetsByCampaign(enroll.campaignId)).find(
+      (t) => t.id === target.id,
+    )!;
+    expect(after.stage).toBe('lost');
+    expect((after.externalContext as { removed?: boolean }).removed).toBe(true);
+    const prog = await store.sequence.getTargetProgressByTarget(target.id);
     expect(prog?.state).toBe('skipped');
   });
 

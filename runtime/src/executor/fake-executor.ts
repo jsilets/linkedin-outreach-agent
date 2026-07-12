@@ -10,20 +10,20 @@
 // and drains any inbound messages queued for a target (smoke injects replies
 // this way). This is what dev and smoke use to prove the wiring without a page.
 
-import type { Account, Action, ActionType, Target } from '@loa/shared';
-import type { ActRequest, ExecutorPort as McpExecutorPort } from '@loa/mcp';
 import type {
-  ExecIntent,
   ExecutorPort as AgentExecutorPort,
+  ExecIntent,
   Observation,
   ObservedMessage,
 } from '@loa/agent';
-import type { RuntimeStore } from '../store/index.js';
+import type { ActRequest, ExecutorPort as McpExecutorPort } from '@loa/mcp';
+import type { Account, Action, ActionType, Target } from '@loa/shared';
 import type {
   StoreBackedActionPacer,
   StoreBackedDailyUsage,
   StoreBackedWeeklyInviteCounter,
 } from '../adapters/safety-state.js';
+import type { RuntimeStore } from '../store/index.js';
 
 export interface FakeExecutorDeps {
   store: RuntimeStore;
@@ -72,12 +72,7 @@ export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
   }
 
   async act(_acct: Account, intent: ExecIntent): Promise<Action> {
-    return this.persistAction(
-      intent.type,
-      intent.accountId,
-      intent.targetId,
-      intent.campaignId,
-    );
+    return this.persistAction(intent.type, intent.accountId, intent.targetId, intent.campaignId);
   }
 
   // --- shared write path ---------------------------------------------------

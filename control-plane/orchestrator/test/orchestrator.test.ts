@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { EventLog } from '../src/event-log.js';
-import { CampaignService } from '../src/campaigns.js';
 import { ApprovalService } from '../src/approvals.js';
-import { SuppressionService } from '../src/suppression.js';
+import { CampaignService } from '../src/campaigns.js';
+import { EventLog } from '../src/event-log.js';
 import { ReplyRouter } from '../src/reply-router.js';
+import { SuppressionService } from '../src/suppression.js';
 import {
   InMemApprovalRepo,
   InMemCampaignRepo,
@@ -111,9 +111,9 @@ describe('CampaignService', () => {
     const [target] = await w.campaigns.addTargets(camp.id, [
       { prospectRef: 'crm-1', linkedinUrn: 'urn:1', externalContext: { name: 'Ada' } },
     ]);
-    await expect(
-      w.campaigns.attachExternalContext(target!.id, 42 as never),
-    ).rejects.toThrow(/must be a JSON object/);
+    await expect(w.campaigns.attachExternalContext(target!.id, 42 as never)).rejects.toThrow(
+      /must be a JSON object/,
+    );
   });
 
   it('stores the canonical bare urn and dedupes the same person across urn forms', async () => {
@@ -123,15 +123,20 @@ describe('CampaignService', () => {
       messageStrategy: 's',
       owner: 'o',
     });
-    const wrappedA = 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo1,SEARCH_SRP,DEFAULT)';
+    const wrappedA =
+      'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo1,SEARCH_SRP,DEFAULT)';
     const wrappedB = 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo1,PEOPLE,DEFAULT)';
 
-    const first = await w.campaigns.addTargets(camp.id, [{ prospectRef: 'a', linkedinUrn: wrappedA }]);
+    const first = await w.campaigns.addTargets(camp.id, [
+      { prospectRef: 'a', linkedinUrn: wrappedA },
+    ]);
     expect(first).toHaveLength(1);
     expect(first[0]!.linkedinUrn).toBe('urn:li:fsd_profile:ACo1'); // persisted bare, not the wrapper
 
     // Same person via a different search wrapper: deduped against the stored bare key.
-    const second = await w.campaigns.addTargets(camp.id, [{ prospectRef: 'a2', linkedinUrn: wrappedB }]);
+    const second = await w.campaigns.addTargets(camp.id, [
+      { prospectRef: 'a2', linkedinUrn: wrappedB },
+    ]);
     expect(second).toHaveLength(0);
 
     // Within a single batch, a bare and a wrapped form of one person collapse too.
@@ -139,7 +144,8 @@ describe('CampaignService', () => {
       { prospectRef: 'b', linkedinUrn: 'urn:li:fsd_profile:ACo2' },
       {
         prospectRef: 'b2',
-        linkedinUrn: 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo2,SEARCH_SRP,DEFAULT)',
+        linkedinUrn:
+          'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACo2,SEARCH_SRP,DEFAULT)',
       },
     ]);
     expect(batch).toHaveLength(1);
@@ -181,7 +187,9 @@ describe('ApprovalService', () => {
     expect(decision.message.status).toBe('rejected');
     expect(w.approvalRepo.rows[0]!.decision).toBe('rejected');
     expect(w.eventRepo.rows.map((e) => e.kind)).toContain('approval_decided');
-    await expect(w.approvals.approve(pendingItemRef, 'operator')).rejects.toThrow(/already decided/);
+    await expect(w.approvals.approve(pendingItemRef, 'operator')).rejects.toThrow(
+      /already decided/,
+    );
   });
 
   it('edit_and_approve changes the body then marks it approved', async () => {
@@ -324,7 +332,11 @@ describe('ReplyRouter', () => {
       prospectRef: 'crm-1',
       linkedinUrn: 'urn:1',
     });
-    const outcome = await w.router.route({ targetId: t.id, campaignId: 'camp-1', intent: 'NotInterested' });
+    const outcome = await w.router.route({
+      targetId: t.id,
+      campaignId: 'camp-1',
+      intent: 'NotInterested',
+    });
     expect(outcome.stage).toBe('lost');
     expect(outcome.needsReply).toBe(false);
     expect(w.scheduler.enqueued).toHaveLength(0);

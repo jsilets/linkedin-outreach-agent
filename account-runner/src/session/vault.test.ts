@@ -1,18 +1,18 @@
-import { describe, it, expect } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import type { StorageStateShape } from '../ports.js';
 import {
-  seal,
+  extractSessionCookies,
+  loadStorageState,
   open,
   resolveVaultKey,
   saveStorageState,
-  loadStorageState,
-  extractSessionCookies,
+  seal,
   VaultError,
 } from './vault.js';
-import type { StorageStateShape } from '../ports.js';
 
 const key = randomBytes(32);
 
@@ -104,9 +104,7 @@ describe('storage state persistence', () => {
   });
 
   it('load from a missing file throws', async () => {
-    await expect(loadStorageState('/nope/does/not/exist.enc', key)).rejects.toThrow(
-      VaultError,
-    );
+    await expect(loadStorageState('/nope/does/not/exist.enc', key)).rejects.toThrow(VaultError);
   });
 });
 

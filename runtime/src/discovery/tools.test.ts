@@ -3,9 +3,9 @@
 // on members already in a list; neither makes a live search. Backed by a real
 // InMemoryStore + a DiscoveryAdapter.
 
-import { describe, expect, it } from 'vitest';
-import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
 import type { Ports } from '@loa/mcp';
+import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
+import { describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { DiscoveryAdapter } from './index.js';
 
@@ -24,7 +24,12 @@ const ICP = {
 async function seed(store: InMemoryStore) {
   const list = await store.leadList.createList({ name: 'sourced' });
   await store.leadList.insertMembers([
-    { listId: list.id, linkedinUrn: 'urn:li:P1', name: 'P1', headline: 'Director of Field Operations' },
+    {
+      listId: list.id,
+      linkedinUrn: 'urn:li:P1',
+      name: 'P1',
+      headline: 'Director of Field Operations',
+    },
     { listId: list.id, linkedinUrn: 'urn:li:P2', name: 'P2', headline: 'Barista' },
   ]);
   return list.id;

@@ -1,9 +1,10 @@
 // One shared Drizzle client for the web server. Reads the same DATABASE_URL the
 // rest of the stack uses, and binds against the schema exported by @loa/shared
 // so we never redefine tables here.
+
+import { db as schema } from '@loa/shared';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import { db as schema } from '@loa/shared';
 
 const url = process.env.DATABASE_URL;
 if (!url) {

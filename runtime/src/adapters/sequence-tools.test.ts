@@ -2,8 +2,8 @@
 // (replace) the step template, read it back, and enroll targets. These only use
 // store.sequence, so the orchestrator services are stubbed.
 
-import { describe, expect, it, beforeEach } from 'vitest';
 import { DefaultSafetyGate } from '@loa/safety';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter } from './mcp-ports.js';
 import type { OrchestratorServices } from './orchestrator.js';
@@ -15,7 +15,8 @@ const noServices = {} as unknown as OrchestratorServices;
 
 describe('CampaignAdapter.addTargets mapping', () => {
   it('maps bare refs and search-result people to service inputs', async () => {
-    const recorded: Array<{ prospectRef: string; linkedinUrn: string; externalContext?: unknown }> = [];
+    const recorded: Array<{ prospectRef: string; linkedinUrn: string; externalContext?: unknown }> =
+      [];
     const services = {
       campaigns: {
         async addTargets(_campaignId: string, inputs: typeof recorded) {
@@ -24,7 +25,11 @@ describe('CampaignAdapter.addTargets mapping', () => {
         },
       },
     } as unknown as OrchestratorServices;
-    const adapter = new CampaignAdapter(services, new InMemoryStore(), new DefaultSafetyGate({ allowMissingCounters: true }));
+    const adapter = new CampaignAdapter(
+      services,
+      new InMemoryStore(),
+      new DefaultSafetyGate({ allowMissingCounters: true }),
+    );
 
     await adapter.addTargets(CAMP, [
       'manual-ref',
@@ -59,7 +64,11 @@ describe('CampaignAdapter sequence surface', () => {
 
   beforeEach(() => {
     store = new InMemoryStore();
-    campaign = new CampaignAdapter(noServices, store, new DefaultSafetyGate({ allowMissingCounters: true }));
+    campaign = new CampaignAdapter(
+      noServices,
+      store,
+      new DefaultSafetyGate({ allowMissingCounters: true }),
+    );
   });
 
   it('defines an ordered sequence and reads it back', async () => {

@@ -1,27 +1,23 @@
-import { describe, it, expect } from 'vitest';
-import type {
-  InterceptedResponse,
-  LocatorPort,
-  PagePort,
-} from '@loa/account-runner';
+import type { InterceptedResponse, LocatorPort, PagePort } from '@loa/account-runner';
 import type { ObservePort, PeopleQuery } from '@loa/mcp';
+import { describe, expect, it } from 'vitest';
 import {
-  buildVoyagerSearchUrl,
   buildVoyagerGraphqlPath,
+  buildVoyagerSearchUrl,
   collectGeoUrns,
   DEFAULT_GEO_URNS,
-  normalizeSearchResponse,
-  normalizeInboxResponse,
+  ensureOnLinkedIn,
+  InMemorySearchBudget,
+  LiveConnectionsReader,
+  LiveInboxReader,
+  LiveObserve,
   normalizeConnectionsResponse,
   normalizeConversation,
+  normalizeInboxResponse,
   normalizeProfileResponse,
+  normalizeSearchResponse,
   profileIdFromUrn,
   profileUrnFromEntityUrn,
-  ensureOnLinkedIn,
-  LiveInboxReader,
-  LiveConnectionsReader,
-  LiveObserve,
-  InMemorySearchBudget,
   type SearchBudget,
 } from './observe-live.js';
 
@@ -94,8 +90,20 @@ function clusterPayload(
   };
 }
 
-const alice = { id: 'a1', name: 'Alice Ng', slug: 'alice-ng', headline: 'Head of Eng at Acme', degree: 'DISTANCE_2' };
-const bob = { id: 'b2', name: 'Bob Lee', slug: 'bob-lee', headline: 'Senior Manager at Acme', degree: 'DISTANCE_2' };
+const alice = {
+  id: 'a1',
+  name: 'Alice Ng',
+  slug: 'alice-ng',
+  headline: 'Head of Eng at Acme',
+  degree: 'DISTANCE_2',
+};
+const bob = {
+  id: 'b2',
+  name: 'Bob Lee',
+  slug: 'bob-lee',
+  headline: 'Senior Manager at Acme',
+  degree: 'DISTANCE_2',
+};
 
 function observeWith(page: PagePort, budget: SearchBudget = new InMemorySearchBudget()) {
   return new LiveObserve({ pageFor: async () => page }, budget);
@@ -151,7 +159,11 @@ describe('buildVoyagerSearchUrl (stable parts)', () => {
   });
 
   it('merges the legacy single geoUrn with geoUrns (deduped)', () => {
-    const q: PeopleQuery = { keywords: 'ops', geoUrn: '103644278', geoUrns: ['103644278', '101174742'] };
+    const q: PeopleQuery = {
+      keywords: 'ops',
+      geoUrn: '103644278',
+      geoUrns: ['103644278', '101174742'],
+    };
     const params = new URL(buildVoyagerSearchUrl(q, 0)).searchParams;
     expect(params.get('geoUrn')).toBe('["103644278","101174742"]');
   });
@@ -212,7 +224,12 @@ describe('buildVoyagerGraphqlPath (direct API request)', () => {
 
   it('encodes facets as queryParameters tuples and offsets by start', () => {
     const path = buildVoyagerGraphqlPath(
-      { keywords: 'x', companyUrns: ['439853', '2685826'], geoUrn: '103644278', network: ['S', 'O'] },
+      {
+        keywords: 'x',
+        companyUrns: ['439853', '2685826'],
+        geoUrn: '103644278',
+        network: ['S', 'O'],
+      },
       20,
       10,
     );
@@ -259,7 +276,14 @@ describe('normalizeSearchResponse (response shapes)', () => {
             {
               items: [
                 // a company/promo card: no fsd_profile / :member: urn
-                { item: { entityResult: { entityUrn: 'urn:li:fsd_company:123', title: { text: 'Acme Inc' } } } },
+                {
+                  item: {
+                    entityResult: {
+                      entityUrn: 'urn:li:fsd_company:123',
+                      title: { text: 'Acme Inc' },
+                    },
+                  },
+                },
                 {
                   item: {
                     entityResult: {
@@ -282,7 +306,8 @@ describe('normalizeSearchResponse (response shapes)', () => {
 
   it('sets linkedinUrn to the stable inner profile urn, not the search wrapper', () => {
     // Shape seen live: entityUrn wraps the profile urn + search context.
-    const wrapped = 'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoAAF123,SEARCH_SRP,DEFAULT)';
+    const wrapped =
+      'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoAAF123,SEARCH_SRP,DEFAULT)';
     const payload = {
       data: {
         searchDashClustersByAll: {
@@ -350,7 +375,9 @@ describe('ensureOnLinkedIn (origin navigation resilience)', () => {
 describe('profileUrnFromEntityUrn', () => {
   it('extracts the profile urn from a wrapped entityUrn', () => {
     expect(
-      profileUrnFromEntityUrn('urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoAAF123,SEARCH_SRP,DEFAULT)'),
+      profileUrnFromEntityUrn(
+        'urn:li:fsd_entityResultViewModel:(urn:li:fsd_profile:ACoAAF123,SEARCH_SRP,DEFAULT)',
+      ),
     ).toBe('urn:li:fsd_profile:ACoAAF123');
   });
 
@@ -378,10 +405,7 @@ describe('LiveObserve.searchPeople', () => {
 
   it('paginates and dedups across pages by entityUrn', async () => {
     // page 1: [alice, bob]; page 2: [bob, alice] (all dupes) -> loop stops.
-    const page = new SearchFakePage([
-      clusterPayload([alice, bob]),
-      clusterPayload([bob, alice]),
-    ]);
+    const page = new SearchFakePage([clusterPayload([alice, bob]), clusterPayload([bob, alice])]);
     const results = await observeWith(page).searchPeople('acct', { keywords: 'x' }, 100);
     expect(results.map((r) => r.entityUrn)).toEqual([
       'urn:li:fsd_entityResult:a1',
@@ -452,7 +476,13 @@ function inboxPayload(
 describe('normalizeInboxResponse (messaging shapes)', () => {
   it('reads thread urn, sender urn, profile url, text, and receivedAt', () => {
     const body = inboxPayload([
-      { thread: 't1', sender: 'p1', publicId: 'alice-ng', text: 'happy to chat', at: 1_700_000_000_000 },
+      {
+        thread: 't1',
+        sender: 'p1',
+        publicId: 'alice-ng',
+        text: 'happy to chat',
+        at: 1_700_000_000_000,
+      },
     ]);
     const msgs = normalizeInboxResponse(body);
     expect(msgs).toHaveLength(1);
@@ -465,7 +495,7 @@ describe('normalizeInboxResponse (messaging shapes)', () => {
     expect(msgs[0]!.receivedAt.getTime()).toBe(1_700_000_000_000);
   });
 
-  it('drops the account\'s own outbound events', () => {
+  it("drops the account's own outbound events", () => {
     const body = inboxPayload([
       { thread: 't1', sender: 'me', text: 'my earlier note', at: 1, outbound: true },
       { thread: 't1', sender: 'p1', text: 'their reply', at: 2 },
@@ -501,9 +531,7 @@ describe('LiveInboxReader.readInbox', () => {
 // ---------------------------------------------------------------------------
 
 /** A trimmed but realistic relationships connections payload. */
-function connectionsPayload(
-  people: Array<{ urn: string; publicId?: string; at?: number }>,
-) {
+function connectionsPayload(people: Array<{ urn: string; publicId?: string; at?: number }>) {
   return {
     elements: people.map((p) => ({
       ...(p.at !== undefined ? { createdAt: p.at } : {}),
@@ -523,7 +551,14 @@ function connectionsPayload(
  * stubs and their resolved Profiles. No cookies/tokens are present. Ids are fake.
  */
 function dashConnectionsPayload(
-  people: Array<{ id: string; publicId: string; first: string; last: string; headline: string; at: number }>,
+  people: Array<{
+    id: string;
+    publicId: string;
+    first: string;
+    last: string;
+    headline: string;
+    at: number;
+  }>,
 ) {
   const connUrn = (id: string) => `urn:li:fsd_connection:${id}`;
   const profUrn = (id: string) => `urn:li:fsd_profile:${id}`;
@@ -683,8 +718,17 @@ function experiencePayload(
 describe('normalizeProfileResponse', () => {
   it('reads the experience section into positions + current role/company', () => {
     const body = experiencePayload([
-      { title: 'VP Engineering', subtitle: 'Acme Corp · Full-time', caption: 'Jan 2022 - Present · 2 yrs', location: 'San Francisco' },
-      { title: 'Staff Engineer', subtitle: 'Globex · Full-time', caption: 'Jan 2018 - Dec 2021 · 4 yrs' },
+      {
+        title: 'VP Engineering',
+        subtitle: 'Acme Corp · Full-time',
+        caption: 'Jan 2022 - Present · 2 yrs',
+        location: 'San Francisco',
+      },
+      {
+        title: 'Staff Engineer',
+        subtitle: 'Globex · Full-time',
+        caption: 'Jan 2018 - Dec 2021 · 4 yrs',
+      },
     ]);
     const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:ACoAAF9');
     expect(p).toMatchObject({
@@ -702,9 +746,16 @@ describe('normalizeProfileResponse', () => {
       location: 'San Francisco',
       current: true,
     });
-    expect(p.positions![1]).toMatchObject({ title: 'Staff Engineer', company: 'Globex', current: false });
+    expect(p.positions![1]).toMatchObject({
+      title: 'Staff Engineer',
+      company: 'Globex',
+      current: false,
+    });
     // raw carries the data slice for callers wanting more than the summary.
-    expect((p.raw as { identityDashProfileComponentsBySectionType?: unknown }).identityDashProfileComponentsBySectionType).toBeTruthy();
+    expect(
+      (p.raw as { identityDashProfileComponentsBySectionType?: unknown })
+        .identityDashProfileComponentsBySectionType,
+    ).toBeTruthy();
   });
 
   it('handles a sparse payload (no experience section)', () => {
@@ -781,7 +832,12 @@ describe('normalizeProfileResponse', () => {
     };
     const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:x');
     expect(p.positions).toHaveLength(2);
-    expect(p.positions![0]).toMatchObject({ title: 'Senior PM', company: 'Acme Corp', current: true, location: 'Remote' });
+    expect(p.positions![0]).toMatchObject({
+      title: 'Senior PM',
+      company: 'Acme Corp',
+      current: true,
+      location: 'Remote',
+    });
     expect(p.positions![1]).toMatchObject({ title: 'PM', company: 'Acme Corp', current: false });
     expect(p.currentTitle).toBe('Senior PM');
     expect(p.currentCompany).toBe('Acme Corp');
@@ -822,7 +878,11 @@ describe('normalizeProfileResponse', () => {
     const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:x');
     expect(p.positions).toHaveLength(2);
     expect(p.positions![0]).toMatchObject({ title: 'VP Eng', company: 'Acme Corp', current: true });
-    expect(p.positions![1]).toMatchObject({ title: 'Staff Eng', company: 'Globex', current: false });
+    expect(p.positions![1]).toMatchObject({
+      title: 'Staff Eng',
+      company: 'Globex',
+      current: false,
+    });
     expect(p.currentTitle).toBe('VP Eng');
     expect(p.currentCompany).toBe('Acme Corp');
   });
@@ -831,7 +891,9 @@ describe('normalizeProfileResponse', () => {
 describe('LiveObserve.getProfile', () => {
   it('drives the profile-components graphql endpoint and normalizes the payload', async () => {
     const page = new SearchFakePage([
-      experiencePayload([{ title: 'VP Eng', subtitle: 'Acme · Full-time', caption: 'Jan 2020 - Present' }]),
+      experiencePayload([
+        { title: 'VP Eng', subtitle: 'Acme · Full-time', caption: 'Jan 2020 - Present' },
+      ]),
     ]);
     const p = await observeWith(page).getProfile('acct', 'urn:li:fsd_profile:ACoAAF9');
     expect(p.currentCompany).toBe('Acme');

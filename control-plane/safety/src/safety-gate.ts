@@ -15,8 +15,8 @@ import type {
 } from '@loa/shared';
 import { DEFAULT_SCHEDULE } from '@loa/shared';
 
-import { DEFAULT_CONFIG, type CapTable, type SafetyConfig } from './config.js';
-import { isTerminal, transition, type StateEvent } from './state-machine.js';
+import { type CapTable, DEFAULT_CONFIG, type SafetyConfig } from './config.js';
+import { isTerminal, type StateEvent, transition } from './state-machine.js';
 
 /**
  * Port for reading the rolling 7-day count of invites (connect actions) sent
@@ -272,8 +272,7 @@ export class DefaultSafetyGate implements SafetyGate {
     if (this.recentActions) {
       const last = this.recentActions.lastActionAt(acct.id);
       if (last) {
-        const gap =
-          this.cfg.minActionGapMs + Math.floor(this.rng() * this.cfg.actionGapJitterMs);
+        const gap = this.cfg.minActionGapMs + Math.floor(this.rng() * this.cfg.actionGapJitterMs);
         const readyAt = last.getTime() + gap;
         if (this.clock.now().getTime() < readyAt) {
           return { kind: 'defer', until: new Date(readyAt) };
@@ -285,20 +284,16 @@ export class DefaultSafetyGate implements SafetyGate {
   }
 
   onSignal(acct: Account, sig: Signal): Transition {
-    const noop: Transition = {
-      fromState: acct.state,
-      toState: acct.state,
-      reason: `signal ${sig.kind} noted; no state change`,
-    };
-
     // Hard stop. A ban banner ends the account.
     if (sig.kind === 'ban_banner') {
       this.softStreak.delete(acct.id);
-      return this.applyEvent(acct, 'hard_signal') ?? {
-        fromState: acct.state,
-        toState: acct.state,
-        reason: 'ban banner on terminal/ineligible state; halt and raise human task',
-      };
+      return (
+        this.applyEvent(acct, 'hard_signal') ?? {
+          fromState: acct.state,
+          toState: acct.state,
+          reason: 'ban banner on terminal/ineligible state; halt and raise human task',
+        }
+      );
     }
 
     // A challenge (checkpoint / captcha) is not a ban but must stop activity;
@@ -441,15 +436,7 @@ export function scheduleDefer(now: Date, schedule: AccountSchedule): Date | null
   // Walk forward to the next active day's window start that is still in the
   // future. i=0 covers "active day, before the window opens today".
   for (let i = 0; i <= 7; i++) {
-    const cand = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate() + i,
-      startHour,
-      0,
-      0,
-      0,
-    );
+    const cand = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, startHour, 0, 0, 0);
     if (cand.getTime() > now.getTime() && days.includes(cand.getDay())) return cand;
   }
   // days is empty (no active day): nothing may send. Park a week out; a later

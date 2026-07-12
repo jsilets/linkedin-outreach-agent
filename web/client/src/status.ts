@@ -17,18 +17,6 @@ export const PROGRESS_ORDER = [
   'skipped',
 ] as const;
 
-// Stage order (outcome view): sourced -> ... -> won/lost.
-export const STAGE_ORDER = [
-  'sourced',
-  'queued',
-  'invited',
-  'connected',
-  'in_conversation',
-  'replied',
-  'won',
-  'lost',
-] as const;
-
 type Meta = { label: string; varName: string };
 
 const META: Record<string, Meta> = {
@@ -61,7 +49,7 @@ const META: Record<string, Meta> = {
   done: { label: 'Done', varName: '--st-done' },
 };
 
-export function statusMeta(key: string): Meta {
+function statusMeta(key: string): Meta {
   return META[key] ?? { label: key.replace(/_/g, ' '), varName: '--st-idle' };
 }
 
@@ -120,7 +108,7 @@ export function statusLabel(key: string): string {
 }
 
 // Action-type display labels, shared by the activity feed.
-export const ACTION_LABELS: Record<string, string> = {
+const ACTION_LABELS: Record<string, string> = {
   connect: 'Invite',
   message: 'Message',
   view_profile: 'Profile view',

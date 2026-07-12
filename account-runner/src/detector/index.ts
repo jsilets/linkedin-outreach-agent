@@ -13,10 +13,7 @@ export const LOW_ACCEPTANCE_THRESHOLD = 0.35;
  * Scan the current page for restriction markers and emit any signals found.
  * Returns zero or more signals. Never throws on a missing element.
  */
-export async function scanPage(
-  page: PagePort,
-  now: Date = new Date(),
-): Promise<Signal[]> {
+export async function scanPage(page: PagePort, now: Date = new Date()): Promise<Signal[]> {
   const signals: Signal[] = [];
 
   // Weekly invite-cap popup -> velocity signal.

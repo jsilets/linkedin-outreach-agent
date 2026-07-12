@@ -26,18 +26,18 @@
 //     58db1bd8-9676-4e10-89b8-04035fb39e8d urn:li:fsd_profile:ACoAABdW_WEBzkhpA61qPDWsZzaOE677Nl8ABeQ
 
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolveProxyIdentity, resolveVaultKey } from '@loa/account-runner';
-import { loadConfig } from '../config.js';
-import { LiveSessionProvider } from '../executor/session-provider.js';
 import {
-  LiveObserve,
   InMemorySearchBudget,
+  LiveObserve,
+  normalizeProfileResponse,
   profileComponentsPath,
   profileIdFromUrn,
-  normalizeProfileResponse,
 } from '../adapters/observe-live.js';
+import { loadConfig } from '../config.js';
+import { LiveSessionProvider } from '../executor/session-provider.js';
 
 const LINKEDIN_ORIGIN = 'https://www.linkedin.com/feed/';
 
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   console.log(`[shakeout] queryId=${process.env.LOA_PROFILE_QUERY_ID || '(default)'}`);
   console.log(`[shakeout] request=${path}`);
   console.log(
-    `[shakeout] mode=${identity ? 'proxy ' + identity.server : 'NO PROXY (local check)'}`,
+    `[shakeout] mode=${identity ? `proxy ${identity.server}` : 'NO PROXY (local check)'}`,
   );
 
   const provider = new LiveSessionProvider({

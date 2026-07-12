@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@loa/shared": "*",
-    "patchright": "^1.61.1",
-    "playwright": "^1.61.1"
+    "patchright": "^1.61.1"
   }
 }

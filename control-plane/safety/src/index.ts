@@ -1,28 +1,26 @@
 // @loa/safety — SafetyGate implementation and account state machine.
 
-export { DEFAULT_CONFIG } from './config.js';
 export type { CapTable, SafetyConfig } from './config.js';
-
-export { transition, isTerminal } from './state-machine.js';
-export type { StateEvent, StateStep } from './state-machine.js';
-
-export {
-  DefaultSafetyGate,
-  isoDate,
-  nextDay,
-  activeHoursDefer,
-  scheduleDefer,
-  effectiveSchedule,
-} from './safety-gate.js';
+export { DEFAULT_CONFIG } from './config.js';
 export type {
+  Clock,
+  DailyUsageCounter,
+  PauseState,
+  RecentActionClock,
   SafetyGateOptions,
   WeeklyInviteCounter,
-  DailyUsageCounter,
-  RecentActionClock,
-  PauseState,
-  Clock,
 } from './safety-gate.js';
+export {
+  activeHoursDefer,
+  DefaultSafetyGate,
+  effectiveSchedule,
+  isoDate,
+  nextDay,
+  scheduleDefer,
+} from './safety-gate.js';
+export type { StateEvent, StateStep } from './state-machine.js';
+export { isTerminal, transition } from './state-machine.js';
 
 // Test-only helpers (see test-support.ts) for keeping gate-backed tests off the
 // wall clock. Exported here so consumer packages can import them from @loa/safety.
-export { NO_ACTIVE_HOURS_CONFIG, MID_WINDOW_NOW, midWindowClock } from './test-support.js';
+export { MID_WINDOW_NOW, midWindowClock, NO_ACTIVE_HOURS_CONFIG } from './test-support.js';

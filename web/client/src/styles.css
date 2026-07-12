@@ -1,8 +1,8 @@
 /* Theme token sets: the editorial language in light and dark, each under
    :root[data-theme='NAME']. The bare :root below mirrors the light (base) values
    so the very first paint (before JS sets data-theme) is styled. */
-@import './themes/editorial.css';
-@import './themes/editorial-dark.css';
+@import "./themes/editorial.css";
+@import "./themes/editorial-dark.css";
 
 /* ── Shared tokens (theme-independent) + light (base) first-paint mirror ────── */
 :root {
@@ -53,8 +53,8 @@
   --st-done: #2f8266;
   --st-failed: #b4483f;
   --st-idle: #7c8590;
-  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
-  --font-body: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: ui-serif, Georgia, "Times New Roman", serif;
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, Menlo, monospace;
   --radius-1: 8px;
   --radius-2: 12px;
@@ -63,7 +63,7 @@
   color-scheme: light;
 }
 
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   color-scheme: dark;
 }
 
@@ -160,7 +160,9 @@ nav button {
   border-radius: var(--radius-1) var(--radius-1) 0 0;
   cursor: pointer;
   font: inherit;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
 }
 
 nav button:hover {
@@ -180,7 +182,7 @@ nav button.active {
 
 /* Accent underline indicator, overlapping the nav's bottom rule. */
 nav button.active::after {
-  content: '';
+  content: "";
   position: absolute;
   left: var(--space-3);
   right: var(--space-3);
@@ -202,7 +204,9 @@ nav button.active::after {
   border-radius: var(--radius-1);
   color: var(--ink-2);
   cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease),
     border-color var(--dur) var(--ease);
 }
 
@@ -238,7 +242,9 @@ nav button.active::after {
   align-items: center;
   gap: var(--space-4);
   cursor: pointer;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+  transition:
+    border-color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
 }
 
 .campaign-row:hover {
@@ -417,7 +423,9 @@ textarea {
   font: inherit;
   font-size: var(--text-meta);
   cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease),
     border-color var(--dur) var(--ease);
 }
 
@@ -479,7 +487,9 @@ textarea {
   cursor: pointer;
   font: inherit;
   font-weight: var(--weight-medium);
-  transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+  transition:
+    background var(--dur) var(--ease),
+    opacity var(--dur) var(--ease);
 }
 
 .btn:hover:not(:disabled) {
@@ -611,6 +621,7 @@ table {
 }
 
 th,
+/* biome-ignore lint/style/noDescendingSpecificity: base cell layout; the earlier higher-specificity `tr.row-warn td` only sets a background wash, so source order is intentional. */
 td {
   text-align: left;
   padding: var(--space-2) var(--space-3);
@@ -695,8 +706,8 @@ th {
   color: var(--ink-3);
 }
 
-.dt-th[aria-sort='ascending'] .dt-sort,
-.dt-th[aria-sort='descending'] .dt-sort {
+.dt-th[aria-sort="ascending"] .dt-sort,
+.dt-th[aria-sort="descending"] .dt-sort {
   color: var(--accent);
 }
 
@@ -719,6 +730,7 @@ th {
   flex: 1;
 }
 
+/* biome-ignore lint/style/noDescendingSpecificity: standalone `.dt-range` typography; the earlier higher-specificity rule targets a different property set, so source order is intentional. */
 .dt-range {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -744,7 +756,9 @@ th {
   text-align: left;
   color: inherit;
   font: inherit;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
     opacity var(--dur) var(--ease);
 }
 
@@ -813,7 +827,7 @@ th {
 }
 
 .chip::before {
-  content: '';
+  content: "";
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -837,7 +851,7 @@ th {
 }
 
 .status-badge::before {
-  content: '';
+  content: "";
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1064,7 +1078,9 @@ td.when {
 /* Reduced motion: collapse every transition. */
 @media (prefers-reduced-motion: reduce) {
   * {
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must beat every element's own transition/animation specificity. */
     transition: none !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced-motion override must beat every element's own transition/animation specificity. */
     animation: none !important;
   }
 }

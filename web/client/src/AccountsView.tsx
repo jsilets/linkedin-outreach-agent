@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
   ACTION_TYPES,
-  api,
-  DEFAULT_SCHEDULE,
   type Account,
   type AccountSchedule,
   type ActionType,
+  api,
+  DEFAULT_SCHEDULE,
 } from './api';
 
 // Human-readable labels for the per-action daily caps.
@@ -48,7 +48,10 @@ export function AccountsView() {
   const [success, setSuccess] = useState<string | null>(null);
 
   function loadAccounts() {
-    api.accounts().then(setAccounts).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    api
+      .accounts()
+      .then(setAccounts)
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }
 
   useEffect(() => {
@@ -108,7 +111,7 @@ export function AccountsView() {
             />
           </div>
           <div className="toolbar" style={{ margin: 0 }}>
-            <button className="btn" onClick={connect} disabled={!canSubmit}>
+            <button type="button" className="btn" onClick={connect} disabled={!canSubmit}>
               {saving ? 'Connecting...' : 'Connect account'}
             </button>
             <span className="spacer" />
@@ -123,9 +126,9 @@ export function AccountsView() {
           </span>
           {showHelp && (
             <p className="muted" style={{ marginTop: 8 }}>
-              Open linkedin.com logged in &rarr; DevTools (F12) &rarr; Application tab &rarr; Cookies
-              &rarr; https://www.linkedin.com &rarr; copy the Value of <code>li_at</code> and of{' '}
-              <code>JSESSIONID</code>.
+              Open linkedin.com logged in &rarr; DevTools (F12) &rarr; Application tab &rarr;
+              Cookies &rarr; https://www.linkedin.com &rarr; copy the Value of <code>li_at</code>{' '}
+              and of <code>JSESSIONID</code>.
             </p>
           )}
         </div>
@@ -254,6 +257,7 @@ function AccountCard({ account }: { account: Account }) {
             const on = schedule.days.includes(day);
             return (
               <button
+                // biome-ignore lint/suspicious/noArrayIndexKey: DAY_LABELS is a static, fixed-order list; `day` is the stable day-of-week number.
                 key={day}
                 type="button"
                 className={`day-toggle${on ? ' on' : ''}`}
@@ -293,7 +297,12 @@ function AccountCard({ account }: { account: Account }) {
       </div>
 
       <div className="toolbar" style={{ marginTop: 'var(--space-3)' }}>
-        <button className="btn" onClick={save} disabled={!dirty || !hoursValid || saving}>
+        <button
+          type="button"
+          className="btn"
+          onClick={save}
+          disabled={!dirty || !hoursValid || saving}
+        >
           {saving ? 'Saving...' : 'Save limits'}
         </button>
         <span className="spacer" />

@@ -3,10 +3,7 @@
 // and leak-guard flags (WebRTC/DNS/IPv6). The actual patchright launch is
 // injected as a port so tests assert on the produced config without a browser.
 
-import type {
-  BrowserContextPort,
-  BrowserLauncherPort,
-} from '../ports.js';
+import type { BrowserContextPort, BrowserLauncherPort } from '../ports.js';
 
 /** Coherent identity for a proxy exit: everything that must line up geo-wise. */
 export interface ProxyIdentity {
@@ -131,10 +128,7 @@ export class BrowserContextFactory {
     config: ResolvedLaunchConfig;
   }> {
     const config = buildLaunchConfig(input);
-    const context = await this.launcher.launchPersistentContext(
-      config.userDataDir,
-      config.options,
-    );
+    const context = await this.launcher.launchPersistentContext(config.userDataDir, config.options);
     return { context, config };
   }
 }

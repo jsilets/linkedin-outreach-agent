@@ -8,8 +8,8 @@ import {
   CampaignService,
   EventLog,
   ReplyRouter,
-  SuppressionService,
   type SchedulerLikePort,
+  SuppressionService,
 } from '@loa/orchestrator';
 import type { RuntimeStore } from '../store/index.js';
 

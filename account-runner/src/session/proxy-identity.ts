@@ -72,9 +72,7 @@ export const KNOWN_CITIES: readonly string[] = Object.keys(CITY_TABLE).sort();
 
 /** True when every explicit geo override env var is present. */
 function hasExplicitGeo(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(
-    env.PROXY_TIMEZONE && env.PROXY_LOCALE && env.PROXY_LAT && env.PROXY_LNG,
-  );
+  return Boolean(env.PROXY_TIMEZONE && env.PROXY_LOCALE && env.PROXY_LAT && env.PROXY_LNG);
 }
 
 /** Resolve the geo half from explicit overrides, else the PROXY_CITY table. */

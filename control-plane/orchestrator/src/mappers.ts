@@ -2,7 +2,6 @@
 // types; the domain types in @loa/shared are precise. Narrow at this one
 // boundary so the rest of the orchestrator works in domain terms.
 
-import { db as shared, defaultLimits } from '@loa/shared';
 import type {
   Account,
   AccountHealth,
@@ -14,6 +13,7 @@ import type {
   ProxyBinding,
   Target,
 } from '@loa/shared';
+import { defaultLimits, type db as shared } from '@loa/shared';
 
 export function rowToCampaign(row: shared.CampaignRow): Campaign {
   return {
