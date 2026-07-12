@@ -63,6 +63,16 @@ describe('personalizeBody', () => {
     expect(personalizeBody('Hi {First}', t)).toBe('Hi Kenney');
     expect(personalizeBody('Hi {First}', t)).toBe('Hi Kenney');
   });
+
+  it('is a no-op on an already-personalized body (idempotent second pass)', () => {
+    // The draft is personalized at draft-creation time; the executor re-runs
+    // personalizeBody at send time, which must not double-substitute or change a
+    // body whose tokens are already resolved.
+    const withCo = target({ externalContext: { name: 'Kenney Tran', currentCompany: 'Globex' } });
+    const once = personalizeBody('Hey {First}, how is {Company}?', withCo);
+    expect(personalizeBody(once, withCo)).toBe(once);
+    expect(once).toBe('Hey Kenney, how is Globex?');
+  });
 });
 
 describe('companyFromTarget', () => {

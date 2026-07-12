@@ -11,6 +11,8 @@ import {
   LiveConnectionsReader,
   LiveInboxReader,
   LiveObserve,
+  mailboxUrnFromMe,
+  messengerConversationsPath,
   normalizeConnectionsResponse,
   normalizeConversation,
   normalizeInboxResponse,
@@ -473,6 +475,109 @@ function inboxPayload(
   };
 }
 
+/** A trimmed modern messenger conversations payload (voyagerMessagingGraphQL):
+ * conversations under data.messengerConversationsBySyncToken.elements, each with
+ * a paged `messages.elements[]`. The conversation entityUrn embeds the mailbox
+ * owner (viewer) urn, which is how outbound is told from inbound. */
+function modernInboxPayload(
+  viewer: string,
+  events: Array<{
+    thread: string;
+    sender: string;
+    profileUrl?: string;
+    text: string;
+    at: number;
+  }>,
+) {
+  return {
+    data: {
+      messengerConversationsBySyncToken: {
+        elements: events.map((e) => ({
+          entityUrn: `urn:li:msg_conversation:(urn:li:fsd_profile:${viewer},${e.thread})`,
+          messages: {
+            elements: [
+              {
+                deliveredAt: e.at,
+                body: { text: e.text },
+                sender: {
+                  hostIdentityUrn: `urn:li:fsd_profile:${e.sender}`,
+                  ...(e.profileUrl
+                    ? { participantType: { member: { profileUrl: e.profileUrl } } }
+                    : {}),
+                },
+              },
+            ],
+          },
+        })),
+      },
+    },
+  };
+}
+
+/** A trimmed /voyager/api/me body carrying the viewer's miniProfile urn. */
+function mePayload(viewerId: string) {
+  return {
+    data: { '*miniProfile': `urn:li:fs_miniProfile:${viewerId}` },
+    included: [{ entityUrn: `urn:li:fs_miniProfile:${viewerId}`, publicIdentifier: 'me-handle' }],
+  };
+}
+
+describe('mailboxUrnFromMe', () => {
+  it('resolves the viewer fsd_profile urn from a /me body', () => {
+    expect(mailboxUrnFromMe({ data: { '*miniProfile': 'urn:li:fsd_profile:ACoAAViewer' } })).toBe(
+      'urn:li:fsd_profile:ACoAAViewer',
+    );
+  });
+  it('falls back to an fs_miniProfile urn', () => {
+    expect(mailboxUrnFromMe(mePayload('ACoAAViewer'))).toBe('urn:li:fsd_profile:ACoAAViewer');
+  });
+  it('is undefined when no profile urn is present', () => {
+    expect(mailboxUrnFromMe({ data: {} })).toBeUndefined();
+  });
+});
+
+describe('messengerConversationsPath', () => {
+  it('percent-encodes the mailbox urn value and keeps the grammar literal', () => {
+    const path = messengerConversationsPath('urn:li:fsd_profile:ACoAAViewer', 20);
+    expect(path).toContain('/voyager/api/voyagerMessagingGraphQL/graphql');
+    expect(path).toContain('mailboxUrn:urn%3Ali%3Afsd_profile%3AACoAAViewer');
+    expect(path).toContain('count:20');
+  });
+});
+
+describe('normalizeInboxResponse (modern messenger shape)', () => {
+  it('reads thread urn, sender urn, profile url, and text', () => {
+    const body = modernInboxPayload('ACoAAViewer', [
+      {
+        thread: '2-abc==',
+        sender: 'ACoAAAlice',
+        profileUrl: 'https://www.linkedin.com/in/alice-ng',
+        text: 'happy to chat',
+        at: 1_700_000_000_000,
+      },
+    ]);
+    const msgs = normalizeInboxResponse(body);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toMatchObject({
+      threadUrn: 'urn:li:msg_conversation:(urn:li:fsd_profile:ACoAAViewer,2-abc==)',
+      senderUrn: 'urn:li:fsd_profile:ACoAAAlice',
+      profileUrl: 'https://www.linkedin.com/in/alice-ng/',
+      text: 'happy to chat',
+    });
+    expect(msgs[0]!.receivedAt.getTime()).toBe(1_700_000_000_000);
+  });
+
+  it("drops the viewer's own outbound messages (sender is the mailbox owner)", () => {
+    const body = modernInboxPayload('ACoAAViewer', [
+      { thread: 't1', sender: 'ACoAAViewer', text: 'my earlier note', at: 1 },
+      { thread: 't1', sender: 'ACoAAAlice', text: 'their reply', at: 2 },
+    ]);
+    // Both are in ONE thread; the modern helper builds a separate conversation
+    // per event, but they share the viewer urn, so outbound-by-sender still holds.
+    expect(normalizeInboxResponse(body).map((m) => m.text)).toEqual(['their reply']);
+  });
+});
+
 describe('normalizeInboxResponse (messaging shapes)', () => {
   it('reads thread urn, sender urn, profile url, text, and receivedAt', () => {
     const body = inboxPayload([
@@ -514,15 +619,21 @@ describe('normalizeInboxResponse (messaging shapes)', () => {
 });
 
 describe('LiveInboxReader.readInbox', () => {
-  it('drives voyagerGet and normalizes the messaging payload', async () => {
+  it('resolves the mailbox urn, then reads and normalizes the modern payload', async () => {
     const page = new SearchFakePage([
-      inboxPayload([{ thread: 't1', sender: 'p1', text: 'yes', at: 5 }]),
+      // First voyagerGet: /voyager/api/me -> viewer urn. Second: the messenger read.
+      mePayload('ACoAAViewer'),
+      modernInboxPayload('ACoAAViewer', [
+        { thread: 't1', sender: 'ACoAAAlice', text: 'yes', at: 5 },
+      ]),
     ]);
     const reader = new LiveInboxReader({ pageFor: async () => page });
     const msgs = await reader.readInbox('acct', 20);
     expect(msgs.map((m) => m.text)).toEqual(['yes']);
-    // It hit the messaging conversations endpoint.
-    expect(page.calls[0]).toContain('/voyager/api/messaging/conversations');
+    // It resolved the mailbox owner, then hit the modern messenger endpoint with it.
+    expect(page.calls[0]).toBe('/voyager/api/me');
+    expect(page.calls[1]).toContain('/voyager/api/voyagerMessagingGraphQL/graphql');
+    expect(page.calls[1]).toContain('mailboxUrn:urn%3Ali%3Afsd_profile%3AACoAAViewer');
   });
 });
 
@@ -953,12 +1064,25 @@ describe('normalizeConversation (thread mapping)', () => {
     ]);
     expect(normalizeConversation(body, 'urn:li:msg_conversation:missing')).toBeNull();
   });
+
+  it('maps the modern messenger shape, direction from the mailbox-owner urn', () => {
+    const thread = 'urn:li:msg_conversation:(urn:li:fsd_profile:ACoAAViewer,2-abc==)';
+    const body = modernInboxPayload('ACoAAViewer', [
+      { thread: '2-abc==', sender: 'ACoAAViewer', text: 'my note', at: 10 },
+    ]);
+    const summary = normalizeConversation(body, thread);
+    expect(summary).not.toBeNull();
+    expect(summary!.messages).toEqual([
+      { direction: 'outbound', body: 'my note', at: new Date(10) },
+    ]);
+  });
 });
 
 describe('LiveObserve.getConversation', () => {
   it('maps a found thread (inbound + outbound) via the messaging endpoint', async () => {
     const thread = 'urn:li:msg_conversation:t1';
     const page = new SearchFakePage([
+      mePayload('ACoAAViewer'),
       conversationPayload(thread, [
         { sender: 'me', text: 'hi there', at: 10, outbound: true },
         { sender: 'p1', text: 'hello back', at: 20 },
@@ -969,11 +1093,13 @@ describe('LiveObserve.getConversation', () => {
       'outbound:hi there',
       'inbound:hello back',
     ]);
-    expect(page.calls[0]).toContain('/voyager/api/messaging/conversations');
+    expect(page.calls[0]).toBe('/voyager/api/me');
+    expect(page.calls[1]).toContain('/voyager/api/voyagerMessagingGraphQL/graphql');
   });
 
   it('throws naming the ref when the thread is not in the recent window', async () => {
     const page = new SearchFakePage([
+      mePayload('ACoAAViewer'),
       conversationPayload('urn:li:msg_conversation:other', [{ sender: 'p1', text: 'hi', at: 5 }]),
     ]);
     await expect(
