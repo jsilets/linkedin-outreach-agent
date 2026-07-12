@@ -13,46 +13,13 @@
 // skipped (unique on list_id + linkedin_urn).
 
 import { resolveProxyIdentity, resolveVaultKey } from '@loa/account-runner';
-import type { LeadListPort, ObservePort, PeopleQuery } from '@loa/mcp';
+import type { PeopleQuery } from '@loa/mcp';
+import { sourceToList } from '@loa/mcp';
 import { loadConfig } from '../config.js';
 import { makePostgresStore } from '../store/index.js';
 import { LeadListAdapter } from '../adapters/mcp-ports.js';
 import { LiveSessionProvider } from '../executor/session-provider.js';
 import { LiveObserve, InMemorySearchBudget } from '../adapters/observe-live.js';
-
-/** Result of a source-to-list run: how many were found and how many landed. */
-export interface SourceToListResult {
-  listId: string;
-  found: number;
-  inserted: number;
-  duplicates: number;
-}
-
-/**
- * Core search -> dedup -> write, shared by the CLI entrypoint below and the
- * source_to_list MCP tool. Resolves the target list (creates one when only a
- * name is given), runs a live people search, and writes the matches into the
- * list; the write is idempotent on (listId, linkedinUrn), so re-running is safe.
- * Both deps are the mcp ports, so this stays agnostic to which store/observe
- * backs them.
- */
-export async function sourceToList(
-  deps: { observe: Pick<ObservePort, 'searchPeople'>; lists: LeadListPort },
-  params: { accountId: string; listId?: string; listName?: string; query: PeopleQuery },
-): Promise<SourceToListResult> {
-  const { accountId, listId: listIdArg, listName, query } = params;
-  if (!listIdArg && !listName) {
-    throw new Error('source-to-list: provide either a listId or a listName');
-  }
-
-  const listId = listIdArg ?? (await deps.lists.createList({ name: listName! })).id;
-  const people = await deps.observe.searchPeople(accountId, query, query.limit ?? 25);
-  if (people.length === 0) {
-    return { listId, found: 0, inserted: 0, duplicates: 0 };
-  }
-  const { inserted, duplicates } = await deps.lists.insertMembers(listId, people);
-  return { listId, found: people.length, inserted, duplicates };
-}
 
 function csv(v: string | undefined): string[] {
   return (v ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
@@ -163,8 +130,9 @@ async function main(): Promise<void> {
 }
 
 // Run main() only as a CLI entrypoint. The module is also imported (for
-// sourceToList, reused by the source_to_list MCP tool), and importing it must
-// not kick off a live search or call process.exit.
+// parseArgs in tests), and importing it must not kick off a live search or call
+// process.exit. The search->dedup->write core lives in @loa/mcp (sourceToList),
+// shared with the source_to_list MCP tool.
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((err) => {
     console.error('[source] fatal:', err instanceof Error ? err.message : err);

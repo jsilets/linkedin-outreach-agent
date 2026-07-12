@@ -5,12 +5,11 @@
 // ports.observe and ports.lists are exercised, so the rest of Ports is stubbed.
 
 import { describe, expect, it, beforeEach } from 'vitest';
-import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
+import { AGENT_CONTEXT, TOOLS_BY_NAME, sourceToList } from '@loa/mcp';
 import type { PeopleQuery, PersonSearchResult, Ports } from '@loa/mcp';
 import { DefaultSafetyGate } from '@loa/safety';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter, LeadListAdapter } from './mcp-ports.js';
-import { sourceToList } from '../tools/source-to-list.js';
 
 const ACCT = 'acct-1';
 

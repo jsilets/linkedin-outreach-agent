@@ -15,7 +15,7 @@ import {
   extractCompany,
   readIcpScore,
   canonicalProfileKey,
-  CONTACTED_TARGET_STAGES,
+  planCampaignTargetRemoval,
 } from '@loa/shared';
 import type {
   Account,
@@ -402,21 +402,22 @@ export class CampaignAdapter implements CampaignPort {
       else notFound.push(urn);
     }
 
-    let removed = 0;
-    for (const targetId of toRemove) {
+    // Decide the removal (which targets go 'lost', event payloads) with the
+    // shared policy, then apply it through the store ports. Stop the sequence +
+    // cancel undelivered sends (terminal 'skipped', not 'replied'). A target is
+    // marked 'lost' ONLY if it was already contacted: getMetrics counts 'lost'
+    // in the invited bucket, so using it on a pre-contact target would inflate
+    // invite metrics. The removal is still fully effective without the stage
+    // change: the progress cursor lands terminal 'skipped', unsent messages are
+    // cancelled, and the target_removed event records it.
+    const owned = [...toRemove].map((id) => byId.get(id)!);
+    const plan = planCampaignTargetRemoval(campaignId, owned, reason);
+    const lost = new Set(plan.lostTargetIds);
+    for (let i = 0; i < plan.decisions.length; i += 1) {
+      const targetId = plan.decisions[i]!.targetId;
       const target = byId.get(targetId)!;
-      // Stop the sequence + cancel undelivered sends (terminal 'skipped', not
-      // 'replied'). Mark the target 'lost' ONLY if it was already contacted:
-      // getMetrics counts 'lost' in the invited bucket, so using it on a
-      // pre-contact target ('sourced'/'queued') would inflate invite metrics. The
-      // removal is still fully effective without the stage change: the progress
-      // cursor lands terminal 'skipped', unsent messages are cancelled, and the
-      // target_removed event records it.
-      const wasContacted = CONTACTED_TARGET_STAGES.includes(
-        target.stage as (typeof CONTACTED_TARGET_STAGES)[number],
-      );
-      await this.store.sequence.excludeTargetFromFunnel(targetId, reason);
-      if (wasContacted) await this.store.target.setStage(targetId, 'lost');
+      await this.store.sequence.excludeTargetFromFunnel(targetId, plan.reason);
+      if (lost.has(targetId)) await this.store.target.setStage(targetId, 'lost');
       // Durable removal marker. A never-enrolled target has no progress row, so
       // without this a later launch/enroll would sweep it back into the funnel;
       // both enroll paths skip targets carrying it.
@@ -424,16 +425,10 @@ export class CampaignAdapter implements CampaignPort {
         ...((target.externalContext ?? {}) as Record<string, Json>),
         removed: true,
       });
-      await this.services.eventLog.recordEvent('target_removed', null, {
-        campaignId,
-        targetId,
-        linkedinUrn: target.linkedinUrn,
-        reason,
-        wasContacted,
-      });
-      removed += 1;
+      const ev = plan.events[i]!;
+      await this.services.eventLog.recordEvent(ev.kind, ev.accountId, ev.payload as Json);
     }
-    return { removed, notFound };
+    return { removed: plan.decisions.length, notFound };
   }
 }
 

@@ -5,11 +5,12 @@ import { buildStorageStateFromPastedCookies, saveStorageState } from '@loa/accou
 import {
   ACTION_TYPES,
   ACTIVE_PROGRESS_STATES,
+  CAMPAIGN_TARGET_REMOVAL_REASON,
   CANCELABLE_MESSAGE_STATUSES,
-  CONTACTED_TARGET_STAGES,
   DEFAULT_CAPS,
   defaultLimits,
   extractCompany,
+  planCampaignTargetRemoval,
   readIcpScore,
 } from '@loa/shared';
 import type { AccountLimits, AccountSchedule, ActionType } from '@loa/shared';
@@ -934,12 +935,12 @@ export async function deleteListMembers(listId: string, memberIds: string[]): Pr
 export async function removeCampaignTargets(
   campaignId: string,
   targetIds: string[],
-  reason = 'removed by operator',
+  reason = CAMPAIGN_TARGET_REMOVAL_REASON,
 ): Promise<{ removed: number }> {
   if (targetIds.length === 0) return { removed: 0 };
   return db.transaction(async (tx) => {
     // Only targets that actually belong to this campaign are eligible. Fetch the
-    // stage too so the update below can split contacted from pre-contact targets.
+    // stage too so the shared policy can split contacted from pre-contact targets.
     const owned = await tx
       .select({ id: targets.id, linkedinUrn: targets.linkedinUrn, stage: targets.stage })
       .from(targets)
@@ -947,9 +948,14 @@ export async function removeCampaignTargets(
     const ownedIds = owned.map((t) => t.id);
     if (ownedIds.length === 0) return { removed: 0 };
 
+    // The removal decision (which targets go 'lost', the event payloads) is the
+    // shared policy the runtime's remove path also runs; this transaction just
+    // applies it via Drizzle.
+    const plan = planCampaignTargetRemoval(campaignId, owned, reason);
+
     await tx
       .update(targetProgress)
-      .set({ state: 'skipped', nextStepAt: null, errorMessage: reason, updatedAt: new Date() })
+      .set({ state: 'skipped', nextStepAt: null, errorMessage: plan.reason, updatedAt: new Date() })
       .where(
         and(
           inArray(targetProgress.targetId, ownedIds),
@@ -968,19 +974,16 @@ export async function removeCampaignTargets(
         ),
       );
 
-    // Mark the stage 'lost' ONLY for targets that were already contacted.
-    // getMetrics counts 'lost' in the invited bucket, so using it on a pre-contact
-    // target ('sourced'/'queued') would inflate invite metrics; those targets are
-    // still fully stopped by the terminal 'skipped' cursor and cancelled messages
-    // above, so their stage is left unchanged.
-    const contactedIds = owned
-      .filter((t) => CONTACTED_TARGET_STAGES.includes(t.stage as (typeof CONTACTED_TARGET_STAGES)[number]))
-      .map((t) => t.id);
-    if (contactedIds.length > 0) {
+    // Mark the stage 'lost' ONLY for targets that were already contacted (the
+    // policy filters these). getMetrics counts 'lost' in the invited bucket, so
+    // using it on a pre-contact target would inflate invite metrics; those
+    // targets are still fully stopped by the terminal 'skipped' cursor and
+    // cancelled messages above, so their stage is left unchanged.
+    if (plan.lostTargetIds.length > 0) {
       await tx
         .update(targets)
         .set({ stage: 'lost', updatedAt: new Date() })
-        .where(inArray(targets.id, contactedIds));
+        .where(inArray(targets.id, plan.lostTargetIds));
     }
 
     // Durable removal marker (mirrors the runtime's removeTargets). A never-
@@ -995,18 +998,11 @@ export async function removeCampaignTargets(
       .where(inArray(targets.id, ownedIds));
 
     // Append one audit event per removed target, the same kind the runtime writes.
-    const contacted = new Set(contactedIds);
     await tx.insert(events).values(
-      owned.map((t) => ({
-        kind: 'target_removed',
-        accountId: null,
-        payload: {
-          campaignId,
-          targetId: t.id,
-          linkedinUrn: t.linkedinUrn,
-          reason,
-          wasContacted: contacted.has(t.id),
-        },
+      plan.events.map((ev) => ({
+        kind: ev.kind,
+        accountId: ev.accountId,
+        payload: ev.payload,
       })),
     );
 

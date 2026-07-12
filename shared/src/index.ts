@@ -2,6 +2,7 @@
 // Domain types, enums, the two locked interfaces, and the Drizzle schema.
 
 export * from './enums.js';
+export * from './campaign-removal.js';
 export * from './types.js';
 export * from './interfaces.js';
 export * from './company.js';

@@ -14,6 +14,7 @@ import type { RequestContext } from './context.js';
 import { requirePrivileged } from './capability.js';
 import { gateAct, type GateOutcome } from './gate.js';
 import type { ActRequest, Icp, PeopleQuery, Ports, TargetInput } from './ports.js';
+import { sourceToList } from './source-to-list.js';
 
 export type ToolFamily = 'observe' | 'act' | 'campaign' | 'approval' | 'safety';
 
@@ -616,16 +617,19 @@ const campaignTools: ToolDef[] = [
       listId: z.string().optional(),
       listName: z.string().optional(),
     },
-    handler: async (a, p) => {
-      if (!a.listId && !a.listName) {
-        throw new Error('source_to_list: provide either listId or listName');
-      }
-      // Resolve the target list up front (create it when only a name was given).
-      const listId = a.listId ?? (await p.lists.createList({ name: a.listName! })).id;
-      const people = await p.observe.searchPeople(a.accountId, toPeopleQuery(a), a.limit);
-      const { inserted, duplicates } = await p.lists.insertMembers(listId, people);
-      return { listId, found: people.length, inserted, duplicates };
-    },
+    handler: (a, p) =>
+      // Shared search -> dedup -> write core, the same one the source-to-list CLI
+      // runs. a.limit rides on the query (toPeopleQuery copies it), so the search
+      // uses the same page size as before.
+      sourceToList(
+        { observe: p.observe, lists: p.lists },
+        {
+          accountId: a.accountId,
+          ...(a.listId ? { listId: a.listId } : {}),
+          ...(a.listName ? { listName: a.listName } : {}),
+          query: toPeopleQuery(a),
+        },
+      ),
   },
   {
     name: 'enroll_from_list',

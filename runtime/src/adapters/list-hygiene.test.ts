@@ -183,6 +183,75 @@ describe('ICP list-hygiene tools', () => {
     expect(prog?.state).toBe('skipped');
   });
 
+  it('remove_from_campaign cancels an approved-but-unsent outbound message', async () => {
+    const listId = await seedList('camp-msg');
+    const enroll = (await run(
+      'enroll_from_list',
+      { listId, minScore: 0, goal: 'Book a call', accountId: ACCT },
+      ports,
+    )) as { campaignId: string };
+    const before = await store.listTargetsByCampaign(enroll.campaignId);
+    const target = before.find((t) => t.linkedinUrn === 'urn:li:unfit')!;
+
+    // An approved outbound draft queued for this target must not fire after
+    // removal; it is cancelled along with the funnel stop.
+    const msg = await store.message.create({
+      accountId: ACCT,
+      targetId: target.id,
+      direction: 'outbound',
+      body: 'hi there',
+      threadRef: `pending:${ACCT}:${target.id}`,
+      status: 'approved',
+    });
+
+    const res = (await run(
+      'remove_from_campaign',
+      { campaignId: enroll.campaignId, linkedinUrns: ['urn:li:unfit'], reason: 'off-ICP' },
+      ports,
+    )) as { removed: number };
+    expect(res.removed).toBe(1);
+
+    const after = await store.message.findById(msg.id);
+    expect(after?.status).toBe('cancelled');
+  });
+
+  it('remove_from_campaign is idempotent on re-removal', async () => {
+    const listId = await seedList('camp-idem');
+    const enroll = (await run(
+      'enroll_from_list',
+      { listId, minScore: 0, goal: 'Book a call', accountId: ACCT },
+      ports,
+    )) as { campaignId: string };
+    const before = await store.listTargetsByCampaign(enroll.campaignId);
+    const target = before.find((t) => t.linkedinUrn === 'urn:li:unfit')!;
+    await store.target.setStage(target.id, 'invited');
+
+    const first = (await run(
+      'remove_from_campaign',
+      { campaignId: enroll.campaignId, targetIds: [target.id] },
+      ports,
+    )) as { removed: number };
+    expect(first.removed).toBe(1);
+
+    // Removing the same target again does not change its end state: the cursor
+    // stays terminal 'skipped', the stage stays 'lost', and the removed marker
+    // stays set. (The selector still resolves it, so removed is reported as 1.)
+    const second = (await run(
+      'remove_from_campaign',
+      { campaignId: enroll.campaignId, targetIds: [target.id] },
+      ports,
+    )) as { removed: number };
+    expect(second.removed).toBe(1);
+
+    const after = (await store.listTargetsByCampaign(enroll.campaignId)).find(
+      (t) => t.id === target.id,
+    )!;
+    expect(after.stage).toBe('lost');
+    expect((after.externalContext as { removed?: boolean }).removed).toBe(true);
+    const prog = await store.sequence.getTargetProgressByTarget(target.id);
+    expect(prog?.state).toBe('skipped');
+  });
+
   it('remove_from_campaign terminates every duplicate-urn row', async () => {
     // Two target rows can carry the same urn; removing by urn must terminate both,
     // not just the last one seen. Build them via the store directly, since
