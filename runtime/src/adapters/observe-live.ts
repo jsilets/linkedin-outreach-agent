@@ -31,6 +31,7 @@ import type {
   PeopleQuery,
   PersonSearchResult,
   ProfileSummary,
+  ProfilePosition,
   PostSummary,
   EngagerSummary,
   JobSummary,
@@ -775,23 +776,32 @@ export class LiveObserve implements ObservePort {
   }
 
   /**
-   * A single person's profile, read live over the Voyager identity endpoint
-   * (GET /voyager/api/identity/profiles/{id}/profileView, grounded in
-   * tomquirk/linkedin-api's get_profile). {id} is the fsd_profile urn tail (or a
-   * bare id / public identifier when the caller passes one). A single-profile
-   * read, so it does NOT charge the search budget — but it still ensures the page
-   * is on the LinkedIn origin first, like the other readers.
+   * A single person's profile, read live over the modern Voyager identity DASH
+   * profile-components GraphQL query (the experience section):
+   *   GET /voyager/api/graphql?queryId=voyagerIdentityDashProfileComponents.<hash>
+   *       &variables=(tabIndex:0,sectionType:experience,profileUrn:<urn>,count:50)
+   * This replaces the deprecated /voyager/api/identity/profiles/{id}/profileView,
+   * which now returns HTTP 410 Gone. The request keys on the fsd_profile urn, so
+   * the caller's search-result urn (bare or wrapped) is unwrapped by
+   * profileIdFromUrn and re-wrapped as urn:li:fsd_profile:<id>.
+   *
+   * The USE CASE is ICP enrichment: the experience section carries the person's
+   * CURRENT ROLE + CURRENT COMPANY and recent positions — signal beyond the
+   * headline the search already provided. A single-profile read, so it does NOT
+   * charge the search budget — but it still ensures the page is on the LinkedIn
+   * origin first, like the other readers.
    */
   async getProfile(accountId: string, linkedinUrn: string): Promise<ProfileSummary> {
     const page = await this.pages.pageFor(accountId);
     await ensureOnLinkedIn(page);
-    const { status, body } = await page.voyagerGet(profileViewPath(profileIdFromUrn(linkedinUrn)), {
-      accept: 'application/json',
-    });
+    const { status, body } = await page.voyagerGet(
+      profileComponentsPath(profileIdFromUrn(linkedinUrn)),
+      { accept: 'application/json' },
+    );
     if (status !== 200) {
       throw new Error(
-        `voyager profileView returned HTTP ${status} for ${linkedinUrn}; the session ` +
-          `may be invalid or the profile id unresolvable`,
+        `voyager profile-components returned HTTP ${status} for ${linkedinUrn}; the session ` +
+          `may be invalid or the profile queryId stale (set LOA_PROFILE_QUERY_ID to a current one)`,
       );
     }
     return normalizeProfileResponse(body, linkedinUrn);
@@ -875,35 +885,142 @@ export function profileIdFromUrn(linkedinUrn: string): string {
   return linkedinUrn.match(/urn:li:fsd_profile:([A-Za-z0-9_-]+)/)?.[1] ?? linkedinUrn;
 }
 
-/** Voyager identity profileView endpoint for one profile id/public identifier. */
-function profileViewPath(id: string): string {
-  return `/voyager/api/identity/profiles/${encodeURIComponent(id)}/profileView`;
+/**
+ * The persisted-query id for the profile-components graphql call (the experience
+ * section). Like DEFAULT_SEARCH_QUERY_ID, LinkedIn rotates this hash as it ships
+ * new web builds; a stale hash eventually 400s. Override with LOA_PROFILE_QUERY_ID
+ * once you capture a current one from a live browser's Network tab (the
+ * voyagerIdentityDashProfileComponents.<hash> on a profile-page load). Default is
+ * the current value captured in the maintained StaffSpy client (2025), which is
+ * already cross-verified for people-search in this file.
+ */
+const DEFAULT_PROFILE_QUERY_ID =
+  'voyagerIdentityDashProfileComponents.277ba7d7b9afffb04683953cede751fb';
+
+function profileQueryId(): string {
+  return process.env.LOA_PROFILE_QUERY_ID?.trim() || DEFAULT_PROFILE_QUERY_ID;
 }
 
 /**
- * Walk a Voyager profileView response into a ProfileSummary. Parsed defensively
- * (every field optional) like the other normalizers: reads the top-level
- * `profile` object, falling back to its `miniProfile` for name/occupation. The
- * `raw` field carries the profile slice for a caller that wants more than the
- * summarized fields. Exported for the ops shakeout to run over a captured body.
+ * Build the origin-relative /voyager/api/graphql path for one profile's
+ * experience section. Mirrors buildVoyagerGraphqlPath (search): the outer
+ * variables `(...)` grammar stays literal; only the profileUrn value is
+ * percent-encoded (its colons must survive as %3A, exactly as the live browser
+ * sends them). `id` is the fsd_profile urn tail, re-wrapped as the full urn the
+ * query keys on.
+ */
+export function profileComponentsPath(id: string): string {
+  const profileUrn = encodeURIComponent(`urn:li:fsd_profile:${id}`);
+  const variables =
+    `(tabIndex:0,sectionType:experience,profileUrn:${profileUrn},count:50)`;
+  return (
+    `/voyager/api/graphql?queryId=${profileQueryId()}` +
+    `&queryName=ProfileComponentsBySectionType&variables=${variables}`
+  );
+}
+
+/**
+ * Walk a Voyager profile-components (experience section) response into a
+ * ProfileSummary. Parsed defensively (every field optional) like the other
+ * normalizers. The experience section carries positions but NOT the person's
+ * name — the search result already supplied that — so `name` is left blank and
+ * the summary's value is the structured experience: currentTitle, currentCompany
+ * and the positions[] history. `headline` is synthesized from the current role
+ * ("Title at Company") so a caller expecting one still gets a meaningful line.
+ * The `raw` field carries the response's data slice for a caller that wants more
+ * than the summarized fields. Exported for the ops shakeout to run over a
+ * captured body.
  */
 export function normalizeProfileResponse(body: unknown, linkedinUrn: string): ProfileSummary {
-  const root = body as VoyagerProfileResponse | undefined;
-  const profile = root?.profile ?? root ?? {};
-  const mini = profile.miniProfile;
-  const name = [profile.firstName ?? mini?.firstName, profile.lastName ?? mini?.lastName]
-    .filter(Boolean)
-    .join(' ')
-    .trim();
-  const headline = (profile.headline ?? mini?.occupation ?? '').trim();
-  const publicId = profile.publicIdentifier ?? mini?.publicIdentifier;
+  const root = body as VoyagerProfileComponentsResponse | undefined;
+  const positions = extractPositions(root);
+  // Experiences come back most-recent first; prefer an explicitly ongoing role.
+  const current = positions.find((p) => p.current) ?? positions[0];
+  const currentTitle = current?.title;
+  const currentCompany = current?.company;
+  const headline =
+    currentTitle && currentCompany
+      ? `${currentTitle} at ${currentCompany}`
+      : currentTitle ?? currentCompany ?? '';
   return {
     linkedinUrn,
-    handle: publicId ?? profileIdFromUrn(linkedinUrn),
-    name,
+    handle: profileIdFromUrn(linkedinUrn),
+    name: '',
     headline,
-    raw: profile as unknown as ProfileSummary['raw'],
+    ...(currentTitle ? { currentTitle } : {}),
+    ...(currentCompany ? { currentCompany } : {}),
+    ...(positions.length ? { positions } : {}),
+    raw: (root?.data ?? root ?? {}) as unknown as ProfileSummary['raw'],
   };
+}
+
+/** Walk the profile-components experience tree into positions, most-recent
+ * first. Handles both a single position and the grouped multi-role shape (one
+ * company with several nested roles). */
+function extractPositions(root: VoyagerProfileComponentsResponse | undefined): ProfilePosition[] {
+  const elements =
+    root?.data?.identityDashProfileComponentsBySectionType?.elements?.[0]?.components
+      ?.pagedListComponent?.components?.elements ?? [];
+  const out: ProfilePosition[] = [];
+  for (const el of elements) {
+    const entity = el?.components?.entityComponent;
+    if (!entity) continue;
+
+    // Grouped multi-role: this entity's title is the company, and each role
+    // lives in a nested pagedListComponent. Its subtitle is the employment type.
+    const nested =
+      entity.subComponents?.components?.[0]?.components?.pagedListComponent?.components
+        ?.elements;
+    if (Array.isArray(nested) && nested.length) {
+      const company = componentText(entity.titleV2);
+      for (const sub of nested) {
+        const subEntity = sub?.components?.entityComponent;
+        if (!subEntity) continue;
+        const pos = makePosition(componentText(subEntity.titleV2), company, subEntity);
+        if (pos) out.push(pos);
+      }
+      continue;
+    }
+
+    // Single position: subtitle is "Company · <employment type>".
+    const company = splitCompany(textOf(entity.subtitle));
+    const pos = makePosition(componentText(entity.titleV2), company, entity);
+    if (pos) out.push(pos);
+  }
+  return out;
+}
+
+/** Assemble one ProfilePosition from a resolved title/company plus the entity's
+ * caption (dates) and metadata (location). Null when it carries no title AND no
+ * company (a blank card). */
+function makePosition(
+  title: string | undefined,
+  company: string | undefined,
+  entity: ProfileComponentEntity,
+): ProfilePosition | null {
+  if (!title && !company) return null;
+  const dateRange = textOf(entity.caption);
+  const location = textOf(entity.metadata);
+  return {
+    ...(title ? { title } : {}),
+    ...(company ? { company } : {}),
+    ...(dateRange ? { dateRange } : {}),
+    ...(location ? { location } : {}),
+    current: !!dateRange && /present/i.test(dateRange),
+  };
+}
+
+/** titleV2 nests its text one level deeper than the flat text nodes:
+ * `{ text: { text: "..." } }`. */
+function componentText(node: { text?: TextNode } | undefined): string | undefined {
+  return textOf(node?.text);
+}
+
+/** A subtitle like "Acme Corp · Full-time" carries the company before the
+ * separator; take that, dropping a trailing employment-type token. */
+function splitCompany(subtitle: string | undefined): string | undefined {
+  if (!subtitle) return undefined;
+  return subtitle.split(' · ')[0]?.trim() || undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,29 +1208,41 @@ interface MessagingEvent {
 /** Any entity in the normalized `included[]`; only conversations carry events. */
 type MessagingEntity = Conversation & Record<string, unknown>;
 
-// --- identity profileView response (profile reader) -----------------------
+// --- identity profile-components response (profile reader) ----------------
 
-/** The identity fields we read off a profileView. Every field optional because
- * the payload is large and versioned; a sparse profile still normalizes. */
-interface ProfileEntity {
-  firstName?: string;
-  lastName?: string;
-  headline?: string;
-  publicIdentifier?: string;
-  occupation?: string;
-  /** Older/embedded shape: the same fields nested under miniProfile. */
-  miniProfile?: {
-    firstName?: string;
-    lastName?: string;
-    occupation?: string;
-    publicIdentifier?: string;
+/** One entity card in the experience section. titleV2/subtitle/caption/metadata
+ * are display components; subComponents nests grouped multi-role positions.
+ * Every field optional because the payload is large and versioned. */
+interface ProfileComponentEntity {
+  /** Job title (single) or company name (grouped): `{ text: { text } }`. */
+  titleV2?: { text?: TextNode };
+  /** Company + employment type (single) or employment type (grouped). */
+  subtitle?: TextNode;
+  /** Date/duration line, e.g. "Jan 2022 - Present · 2 yrs". */
+  caption?: TextNode;
+  /** Location line. */
+  metadata?: TextNode;
+  /** Grouped multi-role positions under one company. */
+  subComponents?: {
+    components?: Array<{ components?: { pagedListComponent?: ProfilePagedList } }>;
   };
 }
 
-/** profileView carries the identity under `profile`; some shapes inline the
- * fields at the top level, so ProfileEntity is also spread on the root. */
-interface VoyagerProfileResponse extends ProfileEntity {
-  profile?: ProfileEntity;
+/** A pagedListComponent wrapping a list of entity cards. Reused at the top level
+ * (the section's positions) and nested (a company's grouped roles). */
+interface ProfilePagedList {
+  components?: {
+    elements?: Array<{ components?: { entityComponent?: ProfileComponentEntity } }>;
+  };
+}
+
+/** The graphql envelope for voyagerIdentityDashProfileComponents (experience). */
+interface VoyagerProfileComponentsResponse {
+  data?: {
+    identityDashProfileComponentsBySectionType?: {
+      elements?: Array<{ components?: { pagedListComponent?: ProfilePagedList } }>;
+    };
+  };
 }
 
 // --- relationships connections response (connections reader) --------------
@@ -1189,12 +1318,17 @@ interface ConnectionEntity extends ConnectionElement {
 // this endpoint and the same parseEvent parser, so it inherits the same
 // unverified field names (plus the entityUrn/backendUrn thread-match).
 //
-// The profile reader (getProfile / normalizeProfileResponse) is grounded in
-// tomquirk/linkedin-api's get_profile but UNPROVEN against a live payload: the
-// /voyager/api/identity/profiles/{id}/profileView path and the field names
-// (profile.miniProfile, profile.firstName/lastName/headline/publicIdentifier)
-// all need one real run to confirm. normalizeProfileResponse is exported so the
-// ops shakeout can dump a raw body and adjust the names.
+// The profile reader (getProfile / normalizeProfileResponse) was migrated off
+// the DEPRECATED /voyager/api/identity/profiles/{id}/profileView (now HTTP 410
+// Gone) to the modern voyagerIdentityDashProfileComponents graphql query
+// (sectionType:experience), grounded in the maintained StaffSpy client. UNPROVEN
+// against a live payload from THIS account: the DEFAULT_PROFILE_QUERY_ID hash
+// (a stale hash 400s — capture a fresh voyagerIdentityDashProfileComponents.<hash>
+// and set LOA_PROFILE_QUERY_ID) and the component field names (titleV2.text.text,
+// subtitle/caption/metadata.text, the pagedListComponent nesting, grouped
+// multi-role subComponents). Run the profile shakeout (src/tools/profile-shakeout.ts)
+// to dump a raw body and confirm; normalizeProfileResponse is exported so it can
+// run the real normalizer over the captured payload.
 //
 // The connections reader (readConnections / normalizeConnectionsResponse) is
 // VERIFIED live 2026-07-10 against the seeded account: the legacy

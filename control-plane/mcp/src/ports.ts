@@ -26,11 +26,33 @@ import type {
 // Observe port: read-only LinkedIn / graph reads. Runs open (no gating).
 // ---------------------------------------------------------------------------
 
+/** One position from a profile's experience section, most-recent first. Every
+ * field optional because the source components are sparse and versioned. */
+export interface ProfilePosition {
+  /** Job title, e.g. "VP Engineering". */
+  title?: string;
+  /** Employer name, e.g. "Acme Corp". */
+  company?: string;
+  /** Raw date/duration caption, e.g. "Jan 2022 - Present · 2 yrs". */
+  dateRange?: string;
+  /** Location line, when present. */
+  location?: string;
+  /** True when the caption marks an ongoing role ("Present"). */
+  current?: boolean;
+}
+
 export interface ProfileSummary {
   linkedinUrn: string;
   handle: string;
   name: string;
   headline: string;
+  /** Current job title, when derivable from the experience section. */
+  currentTitle?: string;
+  /** Current employer, when derivable from the experience section. */
+  currentCompany?: string;
+  /** Recent positions, most-recent first, from the experience section. Used for
+   * ICP enrichment (current role + company + history), beyond the search headline. */
+  positions?: ProfilePosition[];
   raw: Json;
 }
 
