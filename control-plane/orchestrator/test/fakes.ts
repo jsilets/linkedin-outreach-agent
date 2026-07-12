@@ -87,6 +87,14 @@ export class InMemTargetRepo implements TargetRepoPort {
     this.rows.set(tid, next);
     return next;
   }
+  async mergeExternalContext(tid: string, patch: Record<string, unknown>): Promise<TargetRow> {
+    const cur = this.rows.get(tid);
+    if (!cur) throw new Error('no target');
+    const base = (cur.externalContext ?? {}) as Record<string, unknown>;
+    const next = { ...cur, externalContext: { ...base, ...patch }, updatedAt: now() };
+    this.rows.set(tid, next);
+    return next;
+  }
   async setStage(tid: string, stage: TargetRow['stage']): Promise<TargetRow> {
     const cur = this.rows.get(tid);
     if (!cur) throw new Error('no target');

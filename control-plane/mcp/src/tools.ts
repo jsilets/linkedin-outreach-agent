@@ -390,7 +390,12 @@ const campaignTools: ToolDef[] = [
   {
     name: 'attach_external_context',
     family: 'campaign',
-    description: 'Attach an enrichment blob to a target.',
+    description:
+      'Merge an enrichment blob (a JSON object) into a campaign target external_context, ' +
+      'keeping the fields already there (profile fields, prior scores). This is the ' +
+      'campaign-stage sibling of score_leads: pass { score, scoreReasons, icp } to ' +
+      'attach a fit judgment to a target without clobbering its profile fields. Right ' +
+      'side wins on key collision.',
     privileged: false,
     inputShape: { targetId: z.string(), context: z.unknown() },
     handler: (a, p) => p.campaign.attachExternalContext(a.targetId, a.context as never),
@@ -554,6 +559,42 @@ const campaignTools: ToolDef[] = [
       linkedinUrns: z.array(z.string()).min(1),
     },
     handler: (a, p) => p.lists.removeMembers(a.listId, a.linkedinUrns),
+  },
+  {
+    name: 'update_list',
+    family: 'campaign',
+    description:
+      "Edit a lead list's name and/or description by id (from list_lists). Pass " +
+      'either field or both; only what you pass changes (omit a field to leave it). ' +
+      'Pass description: null to clear it back to empty. Returns the updated list ' +
+      'summary, or null when no list has that id.',
+    privileged: false,
+    inputShape: {
+      listId: z.string(),
+      name: z.string().min(1).optional(),
+      description: z.string().nullable().optional(),
+    },
+    handler: (a, p) => {
+      if (a.name === undefined && a.description === undefined) {
+        throw new Error('update_list: provide name and/or description to change');
+      }
+      return p.lists.updateList(a.listId, { name: a.name, description: a.description });
+    },
+  },
+  {
+    name: 'delete_list',
+    family: 'campaign',
+    description:
+      'Delete a lead list by id (from list_lists), removing the list and every ' +
+      'member in it — the lead_list_members rows cascade. Use this to drop a ' +
+      'redundant or obsolete list instead of leaving a stale one around. Returns ' +
+      '{ deleted, removedMembers }; deleted is false when no list has that id. ' +
+      'Does NOT touch any campaign: enrolling from a list copies its members into ' +
+      'campaign targets (there is no back-reference), so a running campaign is ' +
+      'unaffected. Use remove_from_campaign to eject people already enrolled.',
+    privileged: false,
+    inputShape: { listId: z.string() },
+    handler: (a, p) => p.lists.deleteList(a.listId),
   },
   {
     name: 'source_to_list',

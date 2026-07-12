@@ -59,6 +59,62 @@ describe('CampaignService', () => {
     await w.campaigns.setAutonomyLevel(camp.id, 'semi_auto');
     expect(await w.campaigns.readAutonomyLevel(camp.id)).toBe('semi_auto');
   });
+
+  it('attachExternalContext merges into existing context instead of replacing it', async () => {
+    const w = wire();
+    const camp = await w.campaigns.createCampaign({
+      goal: 'g',
+      messageStrategy: 'm',
+      owner: 'operator',
+    });
+    const [target] = await w.campaigns.addTargets(camp.id, [
+      {
+        prospectRef: 'crm-1',
+        linkedinUrn: 'urn:1',
+        externalContext: { name: 'Ada', headline: 'VP Ops', note: 'warm' },
+      },
+    ]);
+
+    // Attaching a score must keep the profile fields already on the target.
+    const scored = await w.campaigns.attachExternalContext(target!.id, {
+      score: 80,
+      scoreReasons: ['VP Ops at a target account'],
+    });
+    expect(scored.externalContext).toMatchObject({
+      name: 'Ada',
+      headline: 'VP Ops',
+      note: 'warm',
+      score: 80,
+      scoreReasons: ['VP Ops at a target account'],
+    });
+
+    // A double-encoded (JSON-string) blob is parsed, not stored as a string,
+    // and still merges. Right side wins on key collision.
+    const merged = await w.campaigns.attachExternalContext(
+      target!.id,
+      JSON.stringify({ score: 90, icp: 'network-cpo' }) as never,
+    );
+    expect(merged.externalContext).toMatchObject({
+      name: 'Ada',
+      score: 90,
+      icp: 'network-cpo',
+    });
+  });
+
+  it('attachExternalContext rejects a non-object blob rather than clobbering', async () => {
+    const w = wire();
+    const camp = await w.campaigns.createCampaign({
+      goal: 'g',
+      messageStrategy: 'm',
+      owner: 'operator',
+    });
+    const [target] = await w.campaigns.addTargets(camp.id, [
+      { prospectRef: 'crm-1', linkedinUrn: 'urn:1', externalContext: { name: 'Ada' } },
+    ]);
+    await expect(
+      w.campaigns.attachExternalContext(target!.id, 42 as never),
+    ).rejects.toThrow(/must be a JSON object/);
+  });
 });
 
 describe('ApprovalService', () => {

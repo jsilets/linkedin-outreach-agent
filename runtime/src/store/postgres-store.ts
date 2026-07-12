@@ -304,6 +304,37 @@ class PgLeadListStore implements LeadListStorePort {
     return row!;
   }
 
+  async updateList(
+    id: string,
+    patch: { name?: string; description?: string | null },
+  ): Promise<shared.LeadListRow | undefined> {
+    const set: Partial<shared.LeadListRow> = { updatedAt: new Date() };
+    if (patch.name !== undefined) set.name = patch.name;
+    if (patch.description !== undefined) set.description = patch.description;
+    const [row] = await this.db.handle
+      .update(leadLists)
+      .set(set)
+      .where(eq(leadLists.id, id))
+      .returning();
+    return row;
+  }
+
+  async deleteList(id: string): Promise<{ deleted: boolean; removedMembers: number }> {
+    // Count members first so we can report how many cascaded away. The FK
+    // (lead_list_members.list_id -> lead_lists.id) is ON DELETE CASCADE, so the
+    // members are removed by the single delete below; the count is advisory.
+    const members = await this.db.handle
+      .select({ id: leadListMembers.id })
+      .from(leadListMembers)
+      .where(eq(leadListMembers.listId, id));
+    const deleted = await this.db.handle
+      .delete(leadLists)
+      .where(eq(leadLists.id, id))
+      .returning({ id: leadLists.id });
+    const ok = deleted.length > 0;
+    return { deleted: ok, removedMembers: ok ? members.length : 0 };
+  }
+
   async listWithCounts(): Promise<Array<shared.LeadListRow & { memberCount: number }>> {
     const rows = await this.db.handle
       .select({

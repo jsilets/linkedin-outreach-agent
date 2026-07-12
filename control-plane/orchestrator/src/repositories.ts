@@ -4,7 +4,8 @@
 // deliberately do not encode business rules (that lives in the services).
 
 import { db as shared } from '@loa/shared';
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import type { Json } from '@loa/shared';
 import type { Db } from './db.js';
 
 const {
@@ -130,6 +131,21 @@ export class TargetRepo {
     const [out] = await this.db.handle
       .update(targets)
       .set({ externalContext: blob, updatedAt: new Date() })
+      .where(eq(targets.id, id))
+      .returning();
+    return out!;
+  }
+
+  // Merge a patch into the existing external_context jsonb (|| is jsonb concat,
+  // right side wins) so an enrichment/score attaches without clobbering the
+  // profile fields already on the target. Mirrors the lead-list member merge.
+  async mergeExternalContext(id: string, patch: Record<string, Json>): Promise<TargetRow> {
+    const [out] = await this.db.handle
+      .update(targets)
+      .set({
+        externalContext: sql`${targets.externalContext} || ${JSON.stringify(patch)}::jsonb`,
+        updatedAt: new Date(),
+      })
       .where(eq(targets.id, id))
       .returning();
     return out!;
