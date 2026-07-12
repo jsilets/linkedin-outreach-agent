@@ -32,10 +32,6 @@ const STUCK_THRESHOLD_MINUTES = 30;
 interface Caps {
   caps?: Partial<Record<ActionType, number>>;
 }
-interface Budget {
-  date?: string;
-  used?: Partial<Record<ActionType, number>>;
-}
 
 /** Parse `--hours N` out of argv; default 24, floor 1. */
 function parseHours(argv: string[]): number {
@@ -212,19 +208,35 @@ async function main(): Promise<void> {
     );
 
     // --- 4. Account cap utilization ------------------------------------------
-    // budget.used (today's running tally) against limits.caps (the operator-set
-    // daily cap). budget.date is shown so a stale tally (used from an earlier
-    // day) is obvious. Zero-cap actions are omitted to keep the table legible.
+    // Live successful-action counts over a rolling 24h against limits.caps (the
+    // operator-set daily cap). Deliberately NOT the persisted accounts.budget
+    // jsonb: that row is only a creation-time seed the runtime never updates
+    // (the real enforcement path is StoreBackedDailyUsage over action rows —
+    // see DailyUsageCounter in control-plane/safety), so reading it raw shows a
+    // misleading stale date with all-zero tallies. Rolling 24h matches the
+    // counter's preferred window. Zero-cap actions are omitted for legibility.
     const accountRows = await sql<
-      { id: string; handle: string; state: string; budget: Budget; limits: Caps }[]
-    >`select id, handle, state, budget, limits from accounts order by handle`;
+      { id: string; handle: string; state: string; limits: Caps }[]
+    >`select id, handle, state, limits from accounts order by handle`;
+    const usedRows = await sql<{ account_id: string; type: string; used: number }[]>`
+      select account_id, type, count(*)::int as used
+      from actions
+      where result = 'success'
+        and coalesce(executed_at, scheduled_at) > now() - interval '24 hours'
+      group by account_id, type`;
+    const usedByAccount = new Map<string, Record<string, number>>();
+    for (const r of usedRows) {
+      const entry = usedByAccount.get(r.account_id) ?? {};
+      entry[r.type] = r.used;
+      usedByAccount.set(r.account_id, entry);
+    }
 
-    p(`## Account cap utilization`);
+    p(`## Account cap utilization (rolling 24h)`);
     p();
     const capRows: string[][] = [];
     for (const a of accountRows) {
       const caps = a.limits?.caps ?? {};
-      const used = a.budget?.used ?? {};
+      const used = usedByAccount.get(a.id) ?? {};
       const parts = ACTION_TYPES.map((t) => {
         const cap = caps[t] ?? 0;
         const u = used[t] ?? 0;
@@ -235,11 +247,10 @@ async function main(): Promise<void> {
       capRows.push([
         a.handle,
         a.state,
-        a.budget?.date ?? '(none)',
         parts.length > 0 ? parts.join(', ') : 'all caps 0 / unused',
       ]);
     }
-    p(table(['Account', 'State', 'Budget date', 'Used / cap'], capRows, 'No accounts linked.'));
+    p(table(['Account', 'State', 'Used / cap'], capRows, 'No accounts linked.'));
 
     // --- 5. Pending-approval age ---------------------------------------------
     // Draft outbound messages still carrying a live ActRequest binding

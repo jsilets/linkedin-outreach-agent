@@ -62,3 +62,26 @@ Follow-on from this review, now shipped on `feat/ops-observability`: the
 `npm run ops:report` both surface repeating kinds like `reply_probe_failed` with
 first/last-seen and a stuck-pipeline rollup, which is exactly the signal that was
 missing when this incident happened.
+
+---
+
+## 2026-07-12 — stale `accounts.budget` row was a red herring; ops-report now reads live counts
+
+**Observed:** The first ops-report run showed the `josh` account with budget date
+`2026-07-06` and all-zero tallies, on a day the account had verifiably sent 20
+connects. Flagged as a possible cap-enforcement failure.
+
+**Diagnosis:** Not an enforcement bug. The persisted `accounts.budget` jsonb is
+only a creation-time seed the runtime never updates. Real cap enforcement is
+`StoreBackedDailyUsage` (wired into `DefaultSafetyGate` in
+`runtime/src/compose.ts`), which counts live action rows; the MCP layer's
+`withLiveBudget` (`runtime/src/adapters/mcp-ports.ts`) computes display budgets
+the same way, and its doc comment already warns the raw row "shows a misleading
+all caps 0". The first ops-report read the raw row and reproduced exactly that
+documented trap.
+
+**Action taken:** `scripts/ops-report.ts` cap-utilization section now computes
+used-per-type from successful actions over a rolling 24h (matching the
+enforcement counter's window) against `limits.caps`, and drops the misleading
+budget-date column. Consider a future cleanup: drop or clearly rename the dead
+`accounts.budget` column so the next reader does not fall into the same trap.
