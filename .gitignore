@@ -29,5 +29,11 @@ test-results/
 # local MCP client config (references tokens via env vars, no secrets)
 .mcp.json
 
-# local Claude Code tooling state (launch config, worktrees)
-.claude/
+# local Claude Code tooling state (launch config, worktrees, locally installed
+# skills) — but the repo's own dogfood-review skill is tracked. The carve-out is
+# per-skill on purpose: .claude/skills/ also holds locally installed third-party
+# skills that must stay untracked (and unlinted).
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/dogfood-review/
