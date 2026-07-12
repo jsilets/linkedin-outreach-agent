@@ -59,6 +59,9 @@ export interface Lead {
   errorMessage: string | null;
   lastAction: { type: string; result: string; executedAt: string | null } | null;
   pendingMessageId: string | null;
+  // The operator already approved this lead's message; it's only waiting on the
+  // dispatch pacer / send window. Distinct from "still needs approval".
+  approvedQueued: boolean;
 }
 
 export interface Pending {
@@ -72,6 +75,7 @@ export interface Pending {
   intent: string | null;
   accountId: string;
   createdAt: string;
+  profileUrl: string | null;
 }
 
 export interface ActivityItem {
@@ -83,6 +87,7 @@ export interface ActivityItem {
   targetId: string;
   name: string | null;
   campaignId: string | null;
+  profileUrl: string | null;
 }
 
 export interface BulkApproveResult {
