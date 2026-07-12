@@ -26,6 +26,7 @@
     "clean": "tsc -b --clean",
     "test": "vitest run --passWithNoTests",
     "lint": "biome check .",
+    "format": "biome format --write .",
     "knip": "knip",
     "dev": "node --env-file-if-exists=.env --import tsx runtime/src/main.ts",
     "start": "node --env-file-if-exists=.env --import tsx runtime/src/main.ts",
