@@ -116,6 +116,45 @@ function makeGate(executor: ExecutorPort): GateDeps {
   };
 }
 
+/** A supervised gate: getCampaign returns a supervised campaign so every send
+ * queues to approval (draft creation) instead of executing. */
+function makeSupervisedGate(executor: ExecutorPort): GateDeps {
+  return {
+    executor,
+    safety: {
+      async getAccount(id: string): Promise<Account> {
+        return fakeAccount(id);
+      },
+      async getCampaign(id: string): Promise<Campaign> {
+        return { ...fakeCampaign(id), autonomyLevel: 'supervised' };
+      },
+      async canAct(): Promise<Decision> {
+        throw new Error('canAct should not run: supervised queues before the safety check');
+      },
+    },
+    approval: {
+      async enqueue(req) {
+        return { id: 'pending-1', req, autonomyLevel: 'supervised', createdAt: new Date() };
+      },
+      async listPending() {
+        return [];
+      },
+      async approve() {
+        throw new Error('not used');
+      },
+      async editAndApprove() {
+        throw new Error('not used');
+      },
+      async reject() {
+        /* not used */
+      },
+      async record() {
+        /* not used */
+      },
+    },
+  };
+}
+
 /** A suppression port with a fixed answer, recording the ids it was asked about. */
 class FakeSuppression {
   readonly asked: string[] = [];
@@ -466,7 +505,11 @@ describe('DispatchTick send-safety — sequence step guards', () => {
     expect((await store.sequence.getTargetProgressByTarget(TGT))!.state).toBe('replied');
   });
 
-  it('a message step reply probe that throws holds (reply_probe_failed) and leaves the cursor for retry', async () => {
+  it('a message step reply probe that throws still creates the draft (draft-first, not held)', async () => {
+    // A BROKEN reply lane must not freeze drafting: the probe throw is logged
+    // (reply_probe_failed) but the step PROCEEDS to the gate, which queues the
+    // draft awaiting_approval. The real send is separately fail-closed by the
+    // send-time probe (see 'a throwing reply probe fails closed' above).
     await seedTarget(store, 'connected');
     await store.sequence.upsertCampaignStep({
       campaignId: CAMP,
@@ -476,19 +519,58 @@ describe('DispatchTick send-safety — sequence step guards', () => {
     });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
+    const log = new FakeLog();
     const tick = new DispatchTick({
       sequence: store.sequence,
       targets: store.target,
       messages: store.message,
-      gate: makeGate(executor),
+      gate: makeSupervisedGate(executor),
       replyProbe: new FakeReplyProbe(store, 'throw'),
+      log,
     });
     const res = await tick.runTick(new Date());
 
-    expect(executor.calls).toHaveLength(0);
-    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'reply_probe_failed' });
+    // The throw was surfaced as an event, and the step proceeded to a queued draft.
+    expect(log.events.map((e) => e.kind)).toContain('reply_probe_failed');
+    expect(executor.calls).toHaveLength(0); // supervised: queued, not sent
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'queued' });
     const after = (await store.sequence.getTargetProgressByTarget(TGT))!;
-    expect(after.state).toBe('in_progress'); // untouched
-    expect(after.currentStep).toBe(0);
+    expect(after.state).toBe('awaiting_approval'); // parked as a draft, not left due
+  });
+
+  it('personalizes {First}/{Company} in the queued draft so the operator reads real text', async () => {
+    await store.target.create({
+      id: TGT,
+      campaignId: CAMP,
+      prospectRef: 'p1',
+      linkedinUrn: 'urn:li:person:p1',
+      externalContext: { name: 'Kenney Tran', currentCompany: 'Globex' },
+      stage: 'connected',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'Hi {First}, how is {Company}?',
+    });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    // A supervised gate that captures the draft body handed to approval.enqueue.
+    let capturedDraft: string | undefined;
+    const gate = makeSupervisedGate(executor);
+    gate.approval.enqueue = async (req, level, draftBody) => {
+      capturedDraft = draftBody;
+      return { id: 'pending-1', req, autonomyLevel: level, createdAt: new Date() };
+    };
+
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate,
+    });
+    await tick.runTick(new Date());
+
+    expect(capturedDraft).toBe('Hi Kenney, how is Globex?');
   });
 });

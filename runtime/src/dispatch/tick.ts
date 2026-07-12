@@ -31,6 +31,7 @@ import {
   DEFAULT_SCHEDULE,
   SafetyDeferredError,
 } from '@loa/shared';
+import { personalizeBody } from '../executor/session-provider.js';
 import type { SequenceStorePort } from '../store/index.js';
 import { advanceAfterStep, dueAfterDelay } from './advance.js';
 
@@ -413,6 +414,10 @@ export class DispatchTick {
       return { kind: 'delayed', progressId: progress.id, nextStep: nextIdx };
     }
 
+    // The body carried to the gate for approval. Personalized in place for a
+    // message step below, so the operator reviews the real text, not raw tokens.
+    let draftBody = draftBodyFor(step);
+
     // A message step fires ONLY from a plain 'connected' stage.
     if (step.stepType === 'message') {
       const target = await this.targets.findById(progress.targetId);
@@ -433,13 +438,17 @@ export class DispatchTick {
         await this.sequence.pullTargetFromFunnel(progress.targetId, 'suppressed');
         return { kind: 'held', progressId: progress.id, reason: 'suppressed' };
       }
-      // Send-time reply probe: catch a reply that landed while this step waited on
+      // Draft-time reply probe: catch a reply that landed while this step waited on
       // its delay. True -> the probe routed it (funnel pulled), so hold. Throw ->
-      // fail closed: leave the cursor untouched for retry, never fire on a broken
-      // reply lane.
+      // a BROKEN reply lane must NOT block drafting: log reply_probe_failed and
+      // PROCEED to the gate, which parks the draft awaiting_approval. The actual
+      // SEND is separately fail-closed by the send-time probe in sendApproved
+      // (throw -> no send, retry next tick), so a human still approves a draft that
+      // re-probes before it goes out. We never SEND on a broken lane; drafting is
+      // safe because approval re-probes.
       if (this.replyProbe) {
         const since = progress.lastStepAt ?? progress.createdAt;
-        let replied: boolean;
+        let replied = false;
         try {
           replied = await this.replyProbe.check(progress.accountId, target, since);
         } catch {
@@ -447,7 +456,6 @@ export class DispatchTick {
             progressId: progress.id,
             targetId: progress.targetId,
           });
-          return { kind: 'held', progressId: progress.id, reason: 'reply_probe_failed' };
         }
         if (replied) {
           this.logEvent('step_held_reply', progress.accountId, {
@@ -456,6 +464,17 @@ export class DispatchTick {
           });
           return { kind: 'held', progressId: progress.id, reason: 'replied' };
         }
+      }
+
+      // Personalize the draft NOW (target is a live 'connected' row here), so the
+      // stored draft the operator reads/edits/approves is the real text. The
+      // executor re-runs personalizeBody at send time; that is a no-op once the
+      // tokens are already resolved.
+      if (target) {
+        draftBody = personalizeBody(draftBody ?? '', {
+          ...target,
+          externalContext: target.externalContext as Json,
+        });
       }
     }
 
@@ -504,7 +523,7 @@ export class DispatchTick {
     const req = actRequestFor(step.stepType, step, progress);
     let outcome: GateOutcome;
     try {
-      outcome = await gateAct(this.gate, req, draftBodyFor(step));
+      outcome = await gateAct(this.gate, req, draftBody);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       await this.sequence.advanceTargetProgress(progress.id, {
