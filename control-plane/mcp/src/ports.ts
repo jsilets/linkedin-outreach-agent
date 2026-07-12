@@ -398,6 +398,16 @@ export interface InsertMembersResult {
 export interface LeadListPort {
   /** Create a lead list. Returns its id + name. */
   createList(input: { name: string; description?: string }): Promise<{ id: string; name: string }>;
+  /** Edit a list's name and/or description. Only the provided fields change.
+   * Returns the updated summary, or null when no list has that id. */
+  updateList(
+    listId: string,
+    patch: { name?: string; description?: string | null },
+  ): Promise<ListSummary | null>;
+  /** Delete a lead list by id. The lead_list_members FK is ON DELETE CASCADE, so
+   * its members go with it. Returns whether a row was removed and how many
+   * members were removed alongside it. */
+  deleteList(listId: string): Promise<{ deleted: boolean; removedMembers: number }>;
   /** All lists with per-list member counts. */
   listLists(): Promise<ListSummary[]>;
   /** One list with its members. Null when the list does not exist. */

@@ -75,7 +75,11 @@ export class CampaignService {
 
   /** Store the opaque enrichment blob on a target. */
   async attachExternalContext(targetId: string, blob: Json): Promise<Target> {
-    const row = await this.targets.setExternalContext(targetId, blob as never);
+    // Merge (not replace) so an enrichment/score attaches without clobbering the
+    // profile fields already on the target. Tolerate a JSON-string blob (some
+    // callers double-encode) by parsing it back to an object first.
+    const patch = toContextPatch(blob);
+    const row = await this.targets.mergeExternalContext(targetId, patch);
     await this.log.recordEvent('external_context_attached', null, {
       targetId,
     });
@@ -95,4 +99,23 @@ export class CampaignService {
     const row = await this.campaigns.findById(campaignId);
     return row?.autonomyLevel;
   }
+}
+
+// Coerce an attach blob into a jsonb-mergeable object. A plain object passes
+// through; a JSON string (double-encoded by some callers) is parsed. Anything
+// that is not a JSON object is rejected, since a scalar can't merge into the
+// external_context map without clobbering it.
+function toContextPatch(blob: Json): Record<string, Json> {
+  let value: unknown = blob;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      throw new Error('attachExternalContext: blob is a string that is not valid JSON');
+    }
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('attachExternalContext: context must be a JSON object');
+  }
+  return value as Record<string, Json>;
 }

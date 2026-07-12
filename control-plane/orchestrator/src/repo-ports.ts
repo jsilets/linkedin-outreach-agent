@@ -4,6 +4,7 @@
 // repositories.ts satisfy these structurally.
 
 import { db as shared } from '@loa/shared';
+import type { Json } from '@loa/shared';
 
 type CampaignRow = shared.CampaignRow;
 type NewCampaignRow = shared.NewCampaignRow;
@@ -28,6 +29,7 @@ export interface TargetRepoPort {
   findById(id: string): Promise<TargetRow | undefined>;
   listByCampaign(campaignId: string): Promise<TargetRow[]>;
   setExternalContext(id: string, blob: NewTargetRow['externalContext']): Promise<TargetRow>;
+  mergeExternalContext(id: string, patch: Record<string, Json>): Promise<TargetRow>;
   setStage(id: string, stage: TargetRow['stage']): Promise<TargetRow>;
 }
 

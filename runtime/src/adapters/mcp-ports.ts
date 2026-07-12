@@ -444,6 +444,20 @@ export class LeadListAdapter implements LeadListPort {
     return { id: row.id, name: row.name };
   }
 
+  async updateList(
+    listId: string,
+    patch: { name?: string; description?: string | null },
+  ): Promise<ListSummary | null> {
+    const row = await this.store.leadList.updateList(listId, patch);
+    if (!row) return null;
+    const members = await this.store.leadList.listMembers(listId);
+    return { id: row.id, name: row.name, description: row.description, memberCount: members.length };
+  }
+
+  async deleteList(listId: string): Promise<{ deleted: boolean; removedMembers: number }> {
+    return this.store.leadList.deleteList(listId);
+  }
+
   async listLists(): Promise<ListSummary[]> {
     const rows = await this.store.leadList.listWithCounts();
     return rows.map((r) => ({

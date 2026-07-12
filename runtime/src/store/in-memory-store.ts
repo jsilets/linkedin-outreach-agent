@@ -196,6 +196,14 @@ class InMemTargetRepo implements TargetRepoPort {
     this.rows.set(id, next);
     return next;
   }
+  async mergeExternalContext(id: string, patch: Record<string, Json>): Promise<TargetRow> {
+    const cur = this.rows.get(id);
+    if (!cur) throw new Error(`no target: ${id}`);
+    const base = (cur.externalContext ?? {}) as Record<string, Json>;
+    const next = { ...cur, externalContext: { ...base, ...patch }, updatedAt: new Date() };
+    this.rows.set(id, next);
+    return next;
+  }
   async setStage(id: string, stage: TargetRow['stage']): Promise<TargetRow> {
     const cur = this.rows.get(id);
     if (!cur) throw new Error(`no target: ${id}`);
@@ -528,6 +536,37 @@ class InMemLeadListStore implements LeadListStorePort {
     };
     this.lists.set(full.id, full);
     return full;
+  }
+
+  async updateList(
+    id: string,
+    patch: { name?: string; description?: string | null },
+  ): Promise<LeadListRow | undefined> {
+    const cur = this.lists.get(id);
+    if (!cur) return undefined;
+    const next: LeadListRow = {
+      ...cur,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      updatedAt: new Date(),
+    };
+    this.lists.set(id, next);
+    return next;
+  }
+
+  async deleteList(id: string): Promise<{ deleted: boolean; removedMembers: number }> {
+    if (!this.lists.has(id)) return { deleted: false, removedMembers: 0 };
+    // Cascade the members ourselves (the Postgres FK does this via ON DELETE
+    // CASCADE); count them so the caller can report the removal.
+    let removedMembers = 0;
+    for (const [mid, m] of this.members) {
+      if (m.listId === id) {
+        this.members.delete(mid);
+        removedMembers += 1;
+      }
+    }
+    this.lists.delete(id);
+    return { deleted: true, removedMembers };
   }
 
   async listWithCounts(): Promise<Array<LeadListRow & { memberCount: number }>> {

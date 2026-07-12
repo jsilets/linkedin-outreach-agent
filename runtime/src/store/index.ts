@@ -123,6 +123,15 @@ export interface SequenceStorePort {
  * writes are idempotent on (listId, linkedinUrn). */
 export interface LeadListStorePort {
   createList(input: { name: string; description?: string }): Promise<shared.LeadListRow>;
+  /** Edit a list's name and/or description. Only the provided fields change.
+   * Returns the updated row, or undefined when no list has that id. */
+  updateList(
+    id: string,
+    patch: { name?: string; description?: string | null },
+  ): Promise<shared.LeadListRow | undefined>;
+  /** Delete a list by id; its members cascade (lead_list_members FK is ON DELETE
+   * CASCADE). Returns whether a row was removed and how many members went with it. */
+  deleteList(id: string): Promise<{ deleted: boolean; removedMembers: number }>;
   /** All lists with a per-list member count (empty lists included, count 0). */
   listWithCounts(): Promise<Array<shared.LeadListRow & { memberCount: number }>>;
   findById(id: string): Promise<shared.LeadListRow | undefined>;
