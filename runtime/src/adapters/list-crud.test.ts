@@ -75,6 +75,13 @@ describe('lead-list edit/delete tools', () => {
     expect(row?.description).toBe('keep desc');
   });
 
+  it('update_list can clear the description with null', async () => {
+    const listId = await seedList('has desc', 'to be cleared');
+    await run('update_list', { listId, description: null }, ports);
+    const row = await store.leadList.findById(listId);
+    expect(row?.description ?? null).toBeNull();
+  });
+
   it('update_list with no fields to change throws', async () => {
     const listId = await seedList('unchanged');
     // The handler validates before touching the store, so it throws synchronously.

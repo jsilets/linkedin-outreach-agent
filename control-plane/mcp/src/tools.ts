@@ -565,13 +565,14 @@ const campaignTools: ToolDef[] = [
     family: 'campaign',
     description:
       "Edit a lead list's name and/or description by id (from list_lists). Pass " +
-      'either field or both; only what you pass changes. Returns the updated list ' +
+      'either field or both; only what you pass changes (omit a field to leave it). ' +
+      'Pass description: null to clear it back to empty. Returns the updated list ' +
       'summary, or null when no list has that id.',
     privileged: false,
     inputShape: {
       listId: z.string(),
       name: z.string().min(1).optional(),
-      description: z.string().optional(),
+      description: z.string().nullable().optional(),
     },
     handler: (a, p) => {
       if (a.name === undefined && a.description === undefined) {
