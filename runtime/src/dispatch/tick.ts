@@ -19,7 +19,7 @@
 //   throw    -> executor failure: record errorMessage and mark the cursor failed.
 //
 // Host-agnostic: runTick(now) does one pass; start(intervalMs) wraps it in a
-// setInterval so a Railway process (or any host) can run it. No local/cloud
+// setInterval so any host process can run it. No local/cloud
 // assumptions and no shared mutable tick state, so it is restartable.
 
 import type { AccountSchedule, CampaignStepType, Json } from '@loa/shared';

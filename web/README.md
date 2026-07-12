@@ -66,7 +66,7 @@ DATABASE_URL=... npm start   # serves API + client on PORT (default 4000)
 
 - `DATABASE_URL` (required) - same connection string the rest of the stack uses.
 - `PORT` (default 4000), `HOST` (default 0.0.0.0) - the API bind. Host-agnostic,
-  so it runs the same locally and on Railway.
+  so it runs the same locally and on any host.
 - `API_PORT`, `CLIENT_PORT` - override the dev ports if 4000 or 5173 are taken.
 
 ## API

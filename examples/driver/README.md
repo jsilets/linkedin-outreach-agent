@@ -17,8 +17,8 @@ on a schedule.
 
 ## Setup
 
-1. Deploy the framework (see `infra/RAILWAY.md`) and note the MCP URL, which ends
-   in `/mcp`.
+1. Run the framework locally (see `infra/README.md`) and note the MCP URL, which
+   ends in `/mcp`.
 2. Connect your harness to the MCP server. In Claude Code, add an HTTP MCP server
    for the driver (the non-privileged agent token), and a second one with the
    operator token for approvals:
@@ -28,14 +28,14 @@ on a schedule.
      "mcpServers": {
        "loa": {
          "type": "http",
-         "url": "https://YOUR-APP.up.railway.app/mcp",
+         "url": "http://localhost:8090/mcp",
          "headers": {
            "Authorization": "Bearer YOUR_LOA_MCP_TOKEN"
          }
        },
        "loa-operator": {
          "type": "http",
-         "url": "https://YOUR-APP.up.railway.app/mcp",
+         "url": "http://localhost:8090/mcp",
          "headers": {
            "Authorization": "Bearer YOUR_LOA_OPERATOR_TOKEN",
            "x-loa-operator": "YOUR_NAME"

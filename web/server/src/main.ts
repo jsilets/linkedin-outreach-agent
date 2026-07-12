@@ -1,6 +1,6 @@
 // Thin JSON API for the campaign-management UI. Reads and writes Postgres
 // directly through the shared Drizzle schema. Host-agnostic: binds 0.0.0.0 on
-// PORT (default 4000) so it runs the same locally and on Railway.
+// PORT (default 4000) so it runs the same locally and on any host.
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -47,9 +47,9 @@ app.all('/mcp', createMcpProxy({
 
 app.use(express.json());
 
-// Health check for the platform (Railway healthcheckPath). Served by the web
+// Health check for the platform's health check path. Served by the web
 // process, which is the public face of the single-service deploy. Registered
-// before the auth gate so Railway can probe it without credentials.
+// before the auth gate so the platform can probe it without credentials.
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true, server: '@loa/web' });
 });

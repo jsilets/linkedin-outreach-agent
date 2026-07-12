@@ -5,8 +5,8 @@
 # on MCP_PORT) and the @loa/web server (UI + JSON API, the public face on PORT).
 # They share this container's /data volume, COOKIE_VAULT_KEY and DATABASE_URL, so
 # an account linked through the web UI is sealed into the same vault the executor
-# reads. Keeping them in one service is deliberate: Railway volumes attach to a
-# single service, and the vault must be shared.
+# reads. Keeping them in one service is deliberate: a persistent volume attaches
+# to a single service, and the vault must be shared.
 #
 # RAM expectation: the runtime alone is small (a few hundred MB). Budget ~2GB
 # with LOA_EXECUTOR=real, since one headful Chromium plus the runtime fits
@@ -146,7 +146,7 @@ ENV LOA_PROFILE_DIR=/data/profile
 
 # Ports: the web UI + API (public face) binds PORT; the runtime's MCP server
 # binds MCP_PORT internally. The platform routes its domain to PORT (8080) and
-# health-checks /healthz there. Railway may inject its own PORT at runtime.
+# health-checks /healthz there. The host may inject its own PORT at runtime.
 ENV PORT=8080
 ENV MCP_PORT=8090
 EXPOSE 8080

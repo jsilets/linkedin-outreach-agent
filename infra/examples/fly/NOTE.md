@@ -1,8 +1,8 @@
 # Fly example (unmaintained)
 
 These files are an optional, unmaintained example, kept for reference. They are
-NOT the supported deploy path. The supported paths are `docker compose up`
-locally and Railway for hosting (see `infra/README.md` and `infra/RAILWAY.md`).
+NOT the supported deploy path. The supported path is self-hosting: `docker
+compose up` locally or on any host that runs Docker (see `infra/README.md`).
 
 They also encode a two-image brain/body split (a small always-on control plane
 plus one headful-Chromium body per account). That split is future-phase work:
