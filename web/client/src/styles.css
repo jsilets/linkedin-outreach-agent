@@ -180,6 +180,25 @@ nav button.active {
   font-weight: var(--weight-medium);
 }
 
+/* Count of drafts waiting on a human, in the reserved amber. Small, tabular,
+ * and inline with the tab label — a signal, not a shout. */
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: var(--space-2);
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  background: color-mix(in srgb, var(--st-approval) 16%, var(--surface-1));
+  border: 1px solid color-mix(in srgb, var(--st-approval) 35%, var(--line));
+  color: color-mix(in srgb, var(--st-approval) 30%, black);
+}
+
 /* Accent underline indicator, overlapping the nav's bottom rule. */
 nav button.active::after {
   content: "";
