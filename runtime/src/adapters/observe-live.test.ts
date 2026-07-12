@@ -786,6 +786,46 @@ describe('normalizeProfileResponse', () => {
     expect(p.currentTitle).toBe('Senior PM');
     expect(p.currentCompany).toBe('Acme Corp');
   });
+
+  it('collects positions split across multiple top-level section elements', () => {
+    const oneElement = (title: string, company: string, caption: string) => ({
+      components: {
+        pagedListComponent: {
+          components: {
+            elements: [
+              {
+                components: {
+                  entityComponent: {
+                    titleV2: { text: { text: title } },
+                    subtitle: { text: `${company} · Full-time` },
+                    caption: { text: caption },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    const body = {
+      data: {
+        identityDashProfileComponentsBySectionType: {
+          // Experience split across TWO top-level elements — reading only [0]
+          // would drop the second job.
+          elements: [
+            oneElement('VP Eng', 'Acme Corp', 'Jan 2022 - Present · 2 yrs'),
+            oneElement('Staff Eng', 'Globex', 'Jan 2018 - Dec 2021 · 4 yrs'),
+          ],
+        },
+      },
+    };
+    const p = normalizeProfileResponse(body, 'urn:li:fsd_profile:x');
+    expect(p.positions).toHaveLength(2);
+    expect(p.positions![0]).toMatchObject({ title: 'VP Eng', company: 'Acme Corp', current: true });
+    expect(p.positions![1]).toMatchObject({ title: 'Staff Eng', company: 'Globex', current: false });
+    expect(p.currentTitle).toBe('VP Eng');
+    expect(p.currentCompany).toBe('Acme Corp');
+  });
 });
 
 describe('LiveObserve.getProfile', () => {

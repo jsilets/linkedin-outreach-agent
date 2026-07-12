@@ -958,9 +958,13 @@ export function normalizeProfileResponse(body: unknown, linkedinUrn: string): Pr
  * first. Handles both a single position and the grouped multi-role shape (one
  * company with several nested roles). */
 function extractPositions(root: VoyagerProfileComponentsResponse | undefined): ProfilePosition[] {
-  const elements =
-    root?.data?.identityDashProfileComponentsBySectionType?.elements?.[0]?.components
-      ?.pagedListComponent?.components?.elements ?? [];
+  // Iterate EVERY top-level section element, not just the first: LinkedIn can
+  // split the experience section across more than one element, and reading only
+  // [0] would silently drop the later positions.
+  const sections = root?.data?.identityDashProfileComponentsBySectionType?.elements ?? [];
+  const elements = sections.flatMap(
+    (s) => s?.components?.pagedListComponent?.components?.elements ?? [],
+  );
   const out: ProfilePosition[] = [];
   for (const el of elements) {
     const entity = el?.components?.entityComponent;
