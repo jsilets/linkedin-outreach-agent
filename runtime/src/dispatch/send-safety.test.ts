@@ -538,6 +538,38 @@ describe('DispatchTick send-safety — sequence step guards', () => {
     expect(after.state).toBe('awaiting_approval'); // parked as a draft, not left due
   });
 
+  it('an AUTONOMOUS message step with a throwing probe stays fail-closed (held, no send)', async () => {
+    // Draft-first only applies when a human gate sits between drafting and the
+    // send. Under autonomous autonomy the gate executes immediately and no
+    // send-time re-probe runs, so proceeding on a broken reply lane would send.
+    // The step must hold exactly like the old behavior.
+    await seedTarget(store, 'connected');
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const log = new FakeLog();
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor), // autonomous: direct execute, no queue
+      replyProbe: new FakeReplyProbe(store, 'throw'),
+      log,
+    });
+    const res = await tick.runTick(new Date());
+
+    expect(log.events.map((e) => e.kind)).toContain('reply_probe_failed');
+    expect(executor.calls).toHaveLength(0); // nothing sent on a broken lane
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'reply_probe_failed' });
+    const after = (await store.sequence.getTargetProgressByTarget(TGT))!;
+    expect(after.state).toBe('in_progress'); // cursor left due for a later retry
+  });
+
   it('personalizes {First}/{Company} in the queued draft so the operator reads real text', async () => {
     await store.target.create({
       id: TGT,

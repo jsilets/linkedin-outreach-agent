@@ -22,7 +22,13 @@
 // setInterval so any host process can run it. No local/cloud
 // assumptions and no shared mutable tick state, so it is restartable.
 
-import { type ActRequest, type GateDeps, type GateOutcome, gateAct } from '@loa/mcp';
+import {
+  type ActRequest,
+  type GateDeps,
+  type GateOutcome,
+  gateAct,
+  mayExecuteDirectly,
+} from '@loa/mcp';
 import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
 import type { AccountSchedule, CampaignStepType, Json, db as shared } from '@loa/shared';
 import {
@@ -446,6 +452,12 @@ export class DispatchTick {
       // (throw -> no send, retry next tick), so a human still approves a draft that
       // re-probes before it goes out. We never SEND on a broken lane; drafting is
       // safe because approval re-probes.
+      //
+      // EXCEPT under autonomous autonomy: there the gate executes the message
+      // immediately (mayExecuteDirectly), no human and no send-time re-probe sit
+      // between this point and the send, so proceeding on a broken lane WOULD
+      // send. Autonomous campaigns therefore keep the old fail-closed behavior:
+      // hold and retry next tick.
       if (this.replyProbe) {
         const since = progress.lastStepAt ?? progress.createdAt;
         let replied = false;
@@ -456,6 +468,10 @@ export class DispatchTick {
             progressId: progress.id,
             targetId: progress.targetId,
           });
+          const campaign = await this.gate.safety.getCampaign(progress.campaignId);
+          if (mayExecuteDirectly(campaign.autonomyLevel, 'message')) {
+            return { kind: 'held', progressId: progress.id, reason: 'reply_probe_failed' };
+          }
         }
         if (replied) {
           this.logEvent('step_held_reply', progress.accountId, {
