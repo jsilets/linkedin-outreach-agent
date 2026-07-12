@@ -348,7 +348,8 @@ describe('DispatchTick', () => {
     expect(res.outcomes[0]).toMatchObject({ kind: 'awaiting_connection' });
   });
 
-  it('holds a message step too when the person is contacted in another campaign', async () => {
+  it('ejects the target (no send, no livelock) when the person is already landed in another campaign', async () => {
+    // 'connected' can be a permanent resting state, so holding would livelock.
     await store.target.create({
       id: 'tgt-other',
       campaignId: 'camp-other',
@@ -359,8 +360,47 @@ describe('DispatchTick', () => {
     });
     await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'message', body: 'hi' });
     await store.sequence.enrollTarget(CAMP, TGT, ACCT);
-    // This campaign's target is connected, so the message would otherwise fire.
     await store.target.setStage(TGT, 'connected');
+
+    const executor = new RecordingExecutor();
+    const events: string[] = [];
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+      log: {
+        async recordEvent(kind: string) {
+          events.push(kind);
+          return undefined;
+        },
+      },
+    });
+
+    const res = await tick.runTick(new Date());
+
+    expect(executor.calls).toHaveLength(0);
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'cross_campaign_contacted' });
+    expect(events).toContain('target_skipped_cross_campaign');
+    // Terminally ejected, not held forever: progress is skipped and the target lost.
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.state).toBe('skipped');
+    expect((await store.target.findById(TGT))!.stage).toBe('lost');
+  });
+
+  it('ejects rather than livelocks when the person already replied/won in another campaign', async () => {
+    // The exact terminal case: 'won' never leaves that stage, so a hold would
+    // burn a tick forever. The target must be resolved once and left alone.
+    await store.target.create({
+      id: 'tgt-other',
+      campaignId: 'camp-other',
+      prospectRef: 'p1',
+      linkedinUrn: 'urn:li:person:p1',
+      externalContext: {},
+      stage: 'won',
+    });
+    await store.sequence.upsertCampaignStep({ campaignId: CAMP, stepOrder: 0, stepType: 'connect', note: 'hi' });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
 
     const executor = new RecordingExecutor();
     const tick = new DispatchTick({ sequence: store.sequence, targets: store.target, messages: store.message, gate: makeGate(executor, { kind: 'allow' }) });
@@ -368,7 +408,9 @@ describe('DispatchTick', () => {
     const res = await tick.runTick(new Date());
 
     expect(executor.calls).toHaveLength(0);
-    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'cross_campaign_active' });
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'cross_campaign_contacted' });
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.state).toBe('skipped'); // resolved, will not be re-picked
   });
 
   it('gate deny leaves the cursor in place for a later retry', async () => {

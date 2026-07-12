@@ -60,6 +60,15 @@ const SEQUENCE_STOP_STAGES: ReadonlySet<string> = new Set([
  * shared CONTACTED_TARGET_STAGES used by list/campaign removal. */
 const CROSS_CAMPAIGN_CONTACT_STAGES: ReadonlySet<string> = new Set(CONTACTED_TARGET_STAGES);
 
+/** Of the contacted stages, the only TRANSIENT one: an outstanding invite that
+ * will resolve (accepted -> connected, or withdrawn). While another campaign's
+ * invite to the same person is pending we HOLD this campaign's outbound step, so
+ * we never send two invites at once. Every OTHER contacted stage
+ * (connected / in_conversation / replied / won) can be a permanent resting
+ * state, so holding on it would livelock forever — those cases eject this
+ * target cleanly instead. */
+const CROSS_CAMPAIGN_HOLD_STAGES: ReadonlySet<string> = new Set(['invited']);
+
 /**
  * Send-time reply probe. Returns true if the target has an inbound message newer
  * than `since` (in which case it has ALSO routed that reply — pulling the funnel
@@ -461,22 +470,33 @@ export class DispatchTick {
     }
 
     // Cross-campaign contact lock: never let two campaigns contact the same
-    // person at once. If this canonical profile is already actively contacted
-    // (invited or beyond) in a DIFFERENT campaign, hold this outbound step and
-    // leave the cursor for a later tick — the other campaign might go terminal,
-    // releasing this one. Only connect/message are outbound contact; view/
-    // follow/react are low-touch and not gated here.
+    // person at once. Only connect/message are outbound contact; view/follow/
+    // react are low-touch and not gated here.
     if (step.stepType === 'connect' || step.stepType === 'message') {
       const held = await this.heldByOtherCampaign(progress);
       if (held) {
-        this.logEvent('step_held_cross_campaign', progress.accountId, {
+        const payload = {
           progressId: progress.id,
           targetId: progress.targetId,
           linkedinUrn: held.linkedinUrn,
           otherCampaignId: held.campaignId,
           otherStage: held.stage,
-        });
-        return { kind: 'held', progressId: progress.id, reason: 'cross_campaign_active' };
+        };
+        if (CROSS_CAMPAIGN_HOLD_STAGES.has(held.stage)) {
+          // Another campaign's invite to this person is still pending — hold and
+          // leave the cursor for a later tick; it resolves when that invite is
+          // accepted (-> we then eject) or withdrawn (-> we proceed).
+          this.logEvent('step_held_cross_campaign', progress.accountId, payload);
+          return { kind: 'held', progressId: progress.id, reason: 'cross_campaign_active' };
+        }
+        // The person is already landed/engaged (connected / in_conversation /
+        // replied / won) in another campaign. That stage can rest forever, so
+        // holding would livelock — eject this target cleanly instead, with a
+        // visible reason, rather than silently pile a second touch on them.
+        this.logEvent('target_skipped_cross_campaign', progress.accountId, payload);
+        await this.sequence.excludeTargetFromFunnel(progress.targetId, 'cross_campaign_contacted');
+        await this.targets.setStage(progress.targetId, 'lost');
+        return { kind: 'held', progressId: progress.id, reason: 'cross_campaign_contacted' };
       }
     }
 
