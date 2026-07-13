@@ -141,6 +141,16 @@ async function main(): Promise<void> {
     // update) is more than 30 minutes in the past: they should have advanced and
     // did not. coalesce(next_step_at, updated_at) unifies "overdue" and
     // "null-and-idle" into one reference time. Grouped by campaign.
+    //
+    // EXCLUDE 'awaiting_connection': it is a deliberate park after a connect step,
+    // waiting on the invitee to accept (an external event we do not control), and
+    // its next_step_at is always null. Feeding it through the coalesce fallback
+    // dates it by updated_at (= invite-send time), which is always in the past, so
+    // EVERY pending invite would be reported as ">30m overdue" against a deadline
+    // that does not exist. That inflates the freeze signal (the whole point of
+    // this section) with cursors that are behaving correctly. Pending invites get
+    // their own honest line below.
+    const overdueStates = ACTIVE_PROGRESS_STATES.filter((s) => s !== 'awaiting_connection');
     const stuckRows = await sql<
       { campaign_id: string; goal: string | null; count: number; oldest_ref: Date }[]
     >`
@@ -150,7 +160,7 @@ async function main(): Promise<void> {
              min(coalesce(tp.next_step_at, tp.updated_at)) as oldest_ref
       from target_progress tp
       left join campaigns c on c.id = tp.campaign_id
-      where tp.state::text = any(${sql.array([...ACTIVE_PROGRESS_STATES])})
+      where tp.state::text = any(${sql.array([...overdueStates])})
         and coalesce(tp.next_step_at, tp.updated_at)
             < now() - (${STUCK_THRESHOLD_MINUTES} * interval '1 minute')
       group by tp.campaign_id, c.goal
@@ -170,6 +180,43 @@ async function main(): Promise<void> {
           humanizeAge(now - new Date(r.oldest_ref).getTime()),
         ]),
         'No stuck cursors: every active cursor is due in the future or recently updated.',
+      ),
+    );
+
+    // --- 2b. Awaiting acceptance ---------------------------------------------
+    // Cursors parked in 'awaiting_connection': a connect invite went out and we
+    // are waiting for the person to accept. This is NOT stuck — acceptance is
+    // theirs to give — but a very old, growing pile is still worth seeing: stale
+    // sent invites consume LinkedIn's pending-invitation quota, and a batch that
+    // never releases while its target has already connected would point at a
+    // broken acceptance tick. Shown as an informational rollup, not an alarm.
+    const awaitingRows = await sql<
+      { campaign_id: string; goal: string | null; count: number; oldest_ref: Date }[]
+    >`
+      select tp.campaign_id,
+             c.goal,
+             count(*)::int as count,
+             min(coalesce(tp.next_step_at, tp.updated_at)) as oldest_ref
+      from target_progress tp
+      left join campaigns c on c.id = tp.campaign_id
+      where tp.state::text = 'awaiting_connection'
+      group by tp.campaign_id, c.goal
+      order by count desc
+    `;
+    const awaitingTotal = awaitingRows.reduce((sum, r) => sum + r.count, 0);
+
+    p(`## Awaiting acceptance (${awaitingTotal} invites pending)`);
+    p();
+    p(
+      table(
+        ['Campaign', 'Goal', 'Pending invites', 'Oldest'],
+        awaitingRows.map((r) => [
+          r.campaign_id,
+          r.goal ?? '(unknown)',
+          String(r.count),
+          humanizeAge(now - new Date(r.oldest_ref).getTime()),
+        ]),
+        'No invites awaiting acceptance.',
       ),
     );
 
