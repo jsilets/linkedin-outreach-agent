@@ -54,7 +54,7 @@ export function App() {
   }, []);
   return (
     <>
-      <header className="top">
+      <header className={`top${tab === 'inbox' ? ' inbox-top' : ''}`}>
         <div className="top-inner">
           <span className="brand">
             <LinkedInLogo />
@@ -114,7 +114,7 @@ export function App() {
           <ThemeSwitcher />
         </div>
       </header>
-      <main className="app">
+      <main className={`app${tab === 'inbox' ? ' inbox-page' : ''}`}>
         {tab === 'activity' && <MetricsView onOpenApproval={openApproval} />}
         {tab === 'inbox' && (
           <InboxView focusTargetId={approvalFocus} onFocusHandled={clearApprovalFocus} />

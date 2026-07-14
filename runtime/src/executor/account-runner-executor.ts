@@ -38,7 +38,12 @@ import type {
 } from '../adapters/safety-state.js';
 import { rowToAccount, rowToTarget } from '../mappers.js';
 import type { RuntimeStore } from '../store/index.js';
-import { personalizeBody, type SessionProvider } from './session-provider.js';
+import {
+  memberIdFromTarget,
+  personalizeBody,
+  recipientNameFromTarget,
+  type SessionProvider,
+} from './session-provider.js';
 
 export interface AccountRunnerExecutorDeps {
   store: RuntimeStore;
@@ -190,7 +195,7 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
 
     let outcome: ActionResultOut;
     try {
-      outcome = await this.drive(ctx, type, profileUrl, outboundBody);
+      outcome = await this.drive(ctx, type, profileUrl, outboundBody, target);
     } catch (err) {
       // A throw out of the page drive (crash, navigation timeout) is a failed
       // attempt, not a pending one: persist the failure so the row is not left
@@ -265,12 +270,20 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     type: ActionType,
     profileUrl: string,
     body?: string,
+    target?: Target,
   ): Promise<ActionResultOut> {
     switch (type) {
       case 'connect':
         return runnerConnect(ctx, { profileUrl, note: body });
-      case 'message':
-        return runnerMessage(ctx, { profileUrl, body: body ?? '' });
+      case 'message': {
+        const memberId = target ? memberIdFromTarget(target) : undefined;
+        return runnerMessage(ctx, {
+          profileUrl,
+          body: body ?? '',
+          recipientName: target ? (recipientNameFromTarget(target) ?? '') : '',
+          ...(memberId ? { memberId } : {}),
+        });
+      }
       case 'view_profile':
         return runnerVisitProfile(ctx, profileUrl);
       case 'follow':

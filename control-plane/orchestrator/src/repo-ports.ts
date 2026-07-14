@@ -38,6 +38,8 @@ export interface TargetRepoPort {
 export interface MessageRepoPort {
   create(row: NewMessageRow): Promise<MessageRow>;
   findById(id: string): Promise<MessageRow | undefined>;
+  /** Implementations MUST stamp `sentAt` when (and only when) status is 'sent'.
+   * It is the row's only real send time; `updatedAt` moves on every edit. */
   setStatus(id: string, status: MessageRow['status']): Promise<MessageRow>;
   setBody(id: string, body: string): Promise<MessageRow>;
   listByThread(threadRef: string): Promise<MessageRow[]>;

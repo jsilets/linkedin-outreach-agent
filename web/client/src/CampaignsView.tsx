@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { type Account, api, type CampaignDetail, type CampaignSummary, type Lead } from './api';
 import { FlowEditor } from './FlowEditor';
 import { FunnelBar, MiniFunnel } from './FunnelBar';
@@ -17,13 +17,16 @@ function StatusBadge({ status }: { status: string }) {
 // and message reply rates. Rates guard divide-by-zero with an em dash, so a
 // campaign that hasn't sent yet reads honestly rather than "0%" or "NaN". Coded
 // defensively against `performance` since the server field may not be present.
+// Reply rate divides distinct repliers by distinct messaged targets: dividing by
+// messagesSent would mix a population by a volume and can exceed 100%.
 function PerfStats({ performance }: { performance?: CampaignSummary['performance'] }) {
   const invitesSent = performance?.invitesSent ?? 0;
   const invitesAccepted = performance?.invitesAccepted ?? 0;
   const messagesSent = performance?.messagesSent ?? 0;
+  const messagedTargets = performance?.messagedTargets ?? 0;
   const replies = performance?.replies ?? 0;
   const accepted = invitesSent > 0 ? `${Math.round((invitesAccepted / invitesSent) * 100)}%` : '—';
-  const replied = messagesSent > 0 ? `${Math.round((replies / messagesSent) * 100)}%` : '—';
+  const replied = messagedTargets > 0 ? `${Math.round((replies / messagedTargets) * 100)}%` : '—';
   return (
     <div className="stat-row">
       <span className="stat">
@@ -43,12 +46,18 @@ export function CampaignsView() {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadCampaigns = useCallback(() => {
     api
       .campaigns()
       .then(setList)
       .catch((e) => setError(String(e)));
   }, []);
+
+  useEffect(() => {
+    loadCampaigns();
+    const id = setInterval(loadCampaigns, 60_000);
+    return () => clearInterval(id);
+  }, [loadCampaigns]);
 
   if (selected) {
     return <CampaignDetailView id={selected} onBack={() => setSelected(null)} />;

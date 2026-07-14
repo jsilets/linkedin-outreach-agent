@@ -1,6 +1,7 @@
 // Read queries and the steps write, all against the shared schema via Drizzle.
 import { join } from 'node:path';
 import { buildStorageStateFromPastedCookies, saveStorageState } from '@loa/account-runner';
+import { DEFAULT_CONFIG, effectiveSchedule, nextDay, scheduleDefer } from '@loa/safety';
 import type { AccountLimits, AccountSchedule, ActionType } from '@loa/shared';
 import {
   ACTION_TYPES,
@@ -16,7 +17,7 @@ import {
   readIcpScore,
 } from '@loa/shared';
 import type { SQL } from 'drizzle-orm';
-import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, notInArray, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { type Db, db, schema } from './db.js';
 import { type NormalizedStep, normalizeSteps } from './steps.js';
@@ -68,19 +69,22 @@ export interface CampaignPerformance {
   invitesSent: number;
   /** invite_accepted events attributed to this campaign. */
   invitesAccepted: number;
-  /** message actions that succeeded. */
+  /** message actions that succeeded. Total volume, not people: a 3-step sequence
+   * counts three per target. */
   messagesSent: number;
-  /** targets whose stage reached a replied-or-later stage. */
+  /** distinct targets with at least one successful message action. The reply-rate
+   * denominator, since `replies` counts distinct people: dividing by messagesSent
+   * mixes populations (a 3-step sequence understates the rate 3x), and a target
+   * who replies to an invite note without a message step is in the numerator but
+   * not that denominator, which can push the rate past 100%. */
+  messagedTargets: number;
+  /** distinct targets with a persisted inbound LinkedIn message. */
   replies: number;
 }
 
 function emptyPerformance(): CampaignPerformance {
-  return { invitesSent: 0, invitesAccepted: 0, messagesSent: 0, replies: 0 };
+  return { invitesSent: 0, invitesAccepted: 0, messagesSent: 0, messagedTargets: 0, replies: 0 };
 }
-
-// Target stages that count as a reply having landed (replied and everything past
-// it in the funnel).
-const REPLIED_STAGES = ['replied', 'in_conversation', 'won'] as const;
 
 export interface CampaignSummary {
   id: string;
@@ -97,18 +101,23 @@ export interface CampaignSummary {
 }
 
 // Successful outbound actions grouped by campaign + type, the actions half of the
-// performance rollup (invitesSent = connect, messagesSent = message). Extracted so
-// its SQL shape (result='success' filter, grouped) is assertable without a live DB
-// (see buildVolumeQuery).
-export function buildCampaignPerformanceActionsQuery() {
+// performance rollup (invitesSent = connect, messagesSent = message). Both a raw
+// volume count and a distinct-target count: the two answer different questions and
+// only the latter is comparable with `replies` (see CampaignPerformance). Optional
+// campaignId narrows to one. Extracted so its SQL shape (result='success' filter,
+// grouped) is assertable without a live DB (see buildVolumeQuery).
+export function buildCampaignPerformanceActionsQuery(campaignId?: string) {
+  const conditions = [eq(actions.result, 'success')];
+  if (campaignId) conditions.push(eq(actions.campaignId, campaignId));
   return db
     .select({
       campaignId: actions.campaignId,
       type: actions.type,
       count: sql<number>`count(*)::int`,
+      targetCount: sql<number>`count(distinct ${actions.targetId})::int`,
     })
     .from(actions)
-    .where(eq(actions.result, 'success'))
+    .where(and(...conditions))
     .groupBy(actions.campaignId, actions.type);
 }
 
@@ -152,7 +161,8 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
   // Performance rollup: three more grouped queries, folded in by campaign id the
   // same way the histograms above are. Invites/messages come from successful
   // actions; accepts from the invite_accepted event log (campaign lives in the
-  // jsonb payload); replies from targets that reached a replied-or-later stage.
+  // jsonb payload); replies from distinct targets with a persisted inbound
+  // message. Intent can move a target to `lost`, so stage is not a reply metric.
   const perfActionRows = await buildCampaignPerformanceActionsQuery();
   const acceptedRows = await db
     .select({
@@ -165,10 +175,11 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
   const replyRows = await db
     .select({
       campaignId: targets.campaignId,
-      count: sql<number>`count(*)::int`,
+      count: sql<number>`count(distinct ${messages.targetId})::int`,
     })
-    .from(targets)
-    .where(inArray(targets.stage, [...REPLIED_STAGES]))
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(eq(messages.direction, 'inbound'))
     .groupBy(targets.campaignId);
 
   const stageByCampaign = new Map<string, { total: number; byStage: Record<string, number> }>();
@@ -199,7 +210,10 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
   for (const r of perfActionRows) {
     const p = ensurePerf(r.campaignId);
     if (r.type === 'connect') p.invitesSent = r.count;
-    else if (r.type === 'message') p.messagesSent = r.count;
+    else if (r.type === 'message') {
+      p.messagesSent = r.count;
+      p.messagedTargets = r.targetCount;
+    }
   }
   for (const r of acceptedRows) {
     if (!r.campaignId) continue;
@@ -285,14 +299,13 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
 
   // Same performance rollup as listCampaigns, scoped to this one campaign.
   const performance = emptyPerformance();
-  const perfActionRows = await db
-    .select({ type: actions.type, count: sql<number>`count(*)::int` })
-    .from(actions)
-    .where(and(eq(actions.campaignId, id), eq(actions.result, 'success')))
-    .groupBy(actions.type);
+  const perfActionRows = await buildCampaignPerformanceActionsQuery(id);
   for (const r of perfActionRows) {
     if (r.type === 'connect') performance.invitesSent = r.count;
-    else if (r.type === 'message') performance.messagesSent = r.count;
+    else if (r.type === 'message') {
+      performance.messagesSent = r.count;
+      performance.messagedTargets = r.targetCount;
+    }
   }
   const [accepted] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -300,9 +313,10 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     .where(and(eq(events.kind, 'invite_accepted'), eq(sql`${events.payload}->>'campaignId'`, id)));
   performance.invitesAccepted = accepted?.count ?? 0;
   const [replied] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(targets)
-    .where(and(eq(targets.campaignId, id), inArray(targets.stage, [...REPLIED_STAGES])));
+    .select({ count: sql<number>`count(distinct ${messages.targetId})::int` })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(and(eq(targets.campaignId, id), eq(messages.direction, 'inbound')));
   performance.replies = replied?.count ?? 0;
 
   return {
@@ -741,6 +755,626 @@ export async function getPending(campaignId?: string): Promise<Pending[]> {
   });
 }
 
+/**
+ * What a message's time actually MEANS to an operator, which its status alone
+ * cannot say: a sent message wants "how long ago", a queued one "when will it
+ * go", a draft "is it ready now". Rendering createdAt against the current status
+ * answers none of them (an approved draft reads "approved 18h ago" — the time it
+ * was written, labelled with what happened since).
+ */
+export type MessageTiming =
+  | { kind: 'received'; at: string }
+  | { kind: 'sent'; at: string }
+  /** Approved, window open, cap available: goes out on a coming dispatch tick.
+   * Carries NO timestamp on purpose — see deriveMessageTiming. */
+  | { kind: 'queued_soon' }
+  | { kind: 'queued_window'; at: string }
+  | { kind: 'queued_capped'; at: string }
+  /** The gate denies this account outright, so no tick will ever pick the row up.
+   * Carries NO timestamp: none of these clear on a schedule, they clear when a
+   * human resumes the account or lifts the state. There is no instant to name. */
+  | { kind: 'queued_blocked'; reason: 'paused' | 'restricted' | 'cooldown' }
+  /** readyAt null = eligible to send the moment it is approved. */
+  | { kind: 'awaiting_approval'; readyAt: string | null };
+
+/** One persisted message rendered in the unified inbox. The inbox deliberately
+ * reads only our local audit history: opening the web app must not open a
+ * LinkedIn session or perform a live inbox read. */
+export interface InboxMessage {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  body: string;
+  status: string;
+  intent: string | null;
+  createdAt: string;
+  /** Present only for a draft the operator can approve or reject. */
+  pendingMessageId: string | null;
+  /** When this follow-up becomes eligible to enter the send queue. Null means
+   * it is eligible now. This is intentionally not a promise that it will send
+   * at that exact moment: approval and send-window pacing still apply. */
+  eligibleAt: string | null;
+  /** The operator-meaningful reading of this row's clock. */
+  timing: MessageTiming;
+}
+
+export interface InboxThread {
+  /** Account + target, not threadRef: outbound drafts start with a local
+   * pending:<account>:<target> ref before LinkedIn assigns a thread urn. */
+  id: string;
+  accountId: string;
+  targetId: string;
+  name: string | null;
+  company: string | null;
+  headline: string | null;
+  profileUrl: string | null;
+  campaignGoal: string | null;
+  latestAt: string;
+  latestPreview: string;
+  hasInbound: boolean;
+  needsApproval: boolean;
+  messages: InboxMessage[];
+}
+
+type InboxRow = {
+  messageId: string;
+  accountId: string;
+  targetId: string;
+  externalContext: unknown;
+  campaignGoal: string | null;
+  direction: 'inbound' | 'outbound';
+  body: string;
+  status: string;
+  intent: string | null;
+  pendingReq: unknown;
+  nextStepAt?: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  sentAt: Date | null;
+};
+
+/** Per-account daily caps and working window. */
+export interface AccountGateConfig {
+  caps: Record<string, number>;
+  schedule: AccountSchedule;
+}
+
+/**
+ * Resolve an account's `limits` blob the way the SafetyGate resolves it: the
+ * account's own caps/schedule when set, else the gate's own defaults. Reused by
+ * the send forecast and the inbox timing so a change to the gate's fallback
+ * cannot leave either read model predicting a window dispatch will not honor.
+ */
+export function accountGateConfig(limits: unknown): AccountGateConfig {
+  const lim = (limits ?? {}) as Partial<AccountLimits>;
+  const resolved: AccountLimits = { caps: lim.caps ?? DEFAULT_CAPS, schedule: lim.schedule };
+  return { caps: resolved.caps, schedule: effectiveSchedule({ limits: resolved }, DEFAULT_CONFIG) };
+}
+
+const DEFAULT_GATE_CONFIG = accountGateConfig(null);
+
+// Operator pause is not a column on accounts: it lives only in the event trail.
+// Kinds restated from PAUSE_EVENT_KIND / RESUME_EVENT_KIND in
+// runtime/src/adapters/safety-state.ts, which the web workspace does not depend
+// on. That file's PauseRegistry owns the rule; derivePausedAccountIds below is
+// its read-model twin and must move with it.
+const PAUSE_EVENT_KIND = 'account_paused';
+const RESUME_EVENT_KIND = 'account_resumed';
+const PAUSE_EVENT_KINDS = [PAUSE_EVENT_KIND, RESUME_EVENT_KIND] as const;
+
+export type PauseEventRow = { accountId: string | null; kind: string; ts: Date };
+
+/**
+ * PauseRegistry's rule, reproduced over rows instead of a store: an account is
+ * paused when its newest account_paused event is newer than its newest
+ * account_resumed one (an unmatched pause counts; an unmatched resume does not).
+ * Pure so it is assertable against that source of truth without a database.
+ */
+export function derivePausedAccountIds(rows: PauseEventRow[]): Set<string> {
+  const lastPaused = new Map<string, number>();
+  const lastResumed = new Map<string, number>();
+  for (const row of rows) {
+    if (!row.accountId) continue;
+    const into =
+      row.kind === PAUSE_EVENT_KIND
+        ? lastPaused
+        : row.kind === RESUME_EVENT_KIND
+          ? lastResumed
+          : null;
+    if (!into) continue;
+    const ts = row.ts.getTime();
+    if (ts > (into.get(row.accountId) ?? Number.NEGATIVE_INFINITY)) into.set(row.accountId, ts);
+  }
+  const paused = new Set<string>();
+  for (const [id, pausedAt] of lastPaused) {
+    const resumedAt = lastResumed.get(id);
+    if (resumedAt === undefined || pausedAt > resumedAt) paused.add(id);
+  }
+  return paused;
+}
+
+// Newest pause/resume event per (account, kind), unwindowed via distinct-on. A
+// pause never expires, so any LIMIT over the shared event stream could evict the
+// one row proving an account is stopped and make a frozen queue read as sending.
+export function buildPauseEventsQuery(accountIds: string[]) {
+  return db
+    .selectDistinctOn([events.accountId, events.kind], {
+      accountId: events.accountId,
+      kind: events.kind,
+      ts: events.ts,
+    })
+    .from(events)
+    .where(and(inArray(events.kind, [...PAUSE_EVENT_KINDS]), inArray(events.accountId, accountIds)))
+    .orderBy(events.accountId, events.kind, desc(events.ts));
+}
+
+/**
+ * The safety inputs a send prediction needs: each account's resolved gate config
+ * and state, whether an operator has it paused, plus its successful action count
+ * since local midnight keyed `${accountId}:${type}` (the same day boundary and
+ * success-only rule the gate's daily counter uses). Shared by the scheduled-send
+ * forecast and the inbox timing.
+ */
+async function loadGateInputs(
+  accountIds: string[],
+  now = new Date(),
+): Promise<{
+  configById: Map<string, AccountGateConfig>;
+  stateById: Map<string, string>;
+  pausedAccountIds: Set<string>;
+  usedToday: Map<string, number>;
+}> {
+  const configById = new Map<string, AccountGateConfig>();
+  const stateById = new Map<string, string>();
+  const usedToday = new Map<string, number>();
+  if (accountIds.length === 0)
+    return { configById, stateById, pausedAccountIds: new Set(), usedToday };
+
+  const acctRows = await db
+    .select({ id: accounts.id, limits: accounts.limits, state: accounts.state })
+    .from(accounts)
+    .where(inArray(accounts.id, accountIds));
+  for (const a of acctRows) {
+    configById.set(a.id, accountGateConfig(a.limits));
+    stateById.set(a.id, a.state);
+  }
+
+  const pausedAccountIds = derivePausedAccountIds(await buildPauseEventsQuery(accountIds));
+
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const usedRows = await db
+    .select({
+      accountId: actions.accountId,
+      type: actions.type,
+      n: sql<number>`cast(count(*) as int)`,
+    })
+    .from(actions)
+    .where(
+      and(
+        eq(actions.result, 'success'),
+        gte(actions.executedAt, midnight),
+        inArray(actions.accountId, accountIds),
+      ),
+    )
+    .groupBy(actions.accountId, actions.type);
+  for (const u of usedRows) usedToday.set(`${u.accountId}:${u.type}`, u.n);
+  return { configById, stateById, pausedAccountIds, usedToday };
+}
+
+/**
+ * accounts.state values SafetyGate.canAct denies outright, mapped to the reason
+ * shown. Every other state ('Active', 'Throttled', and the dead 'Cold'/'Warming')
+ * reaches the cap and window checks. Source of truth: canAct in
+ * control-plane/safety/src/safety-gate.ts.
+ */
+const BLOCKED_ACCOUNT_STATES: Record<string, 'restricted' | 'cooldown'> = {
+  Restricted: 'restricted',
+  Cooldown: 'cooldown',
+};
+
+export interface MessageTimingInputs {
+  now: Date;
+  /** Gate config per account id. A missing entry falls back to the gate defaults. */
+  configById: Map<string, AccountGateConfig>;
+  /** accounts.state per account id. A missing entry is read as unblocked. */
+  stateById: Map<string, string>;
+  /** Accounts an operator has paused (see derivePausedAccountIds). */
+  pausedAccountIds: ReadonlySet<string>;
+  /** Successful 'message' actions per account id since local midnight. */
+  messagesUsedToday: Map<string, number>;
+}
+
+export type TimingRow = {
+  direction: 'inbound' | 'outbound';
+  status: string;
+  accountId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  sentAt: Date | null;
+  /** The approval-eligibility instant already derived for this row; null = now. */
+  eligibleAt: string | null;
+};
+
+/**
+ * The operator-meaningful clock reading for one message. Pure: every gate input
+ * arrives via `inputs`, so each branch is assertable without a database.
+ *
+ * The approved branch mirrors SafetyGate.canAct's order exactly: operator pause,
+ * Restricted, Cooldown, daily cap, working window. Order is the whole point. The
+ * first three are a hard deny that sendApproved swallows, leaving the row
+ * 'approved' forever, so testing cap or window first would quote a send time for
+ * a message no tick will ever pick up. Cap before window for the same reason it
+ * is in the gate: a capped account waits until tomorrow, not until the window
+ * reopens today.
+ */
+export function deriveMessageTiming(row: TimingRow, inputs: MessageTimingInputs): MessageTiming {
+  // Reply detection persists LinkedIn's own source event time as createdAt, so
+  // an inbound row's createdAt is when they actually sent it, not when we saw it.
+  if (row.direction === 'inbound') return { kind: 'received', at: row.createdAt.toISOString() };
+
+  if (row.status === 'sent') {
+    // sentAt is null on rows sent before the column existed; updatedAt is the
+    // closest surviving proxy there (a sent row is terminal, so nothing bumps it
+    // afterwards). New rows always carry a real sentAt. SQL twin: getInbox.
+    return { kind: 'sent', at: (row.sentAt ?? row.updatedAt).toISOString() };
+  }
+
+  if (row.status === 'approved') {
+    if (inputs.pausedAccountIds.has(row.accountId)) {
+      return { kind: 'queued_blocked', reason: 'paused' };
+    }
+    const blocked = BLOCKED_ACCOUNT_STATES[inputs.stateById.get(row.accountId) ?? ''];
+    if (blocked) return { kind: 'queued_blocked', reason: blocked };
+
+    const cfg = inputs.configById.get(row.accountId) ?? DEFAULT_GATE_CONFIG;
+    const cap = cfg.caps.message ?? DEFAULT_CAPS.message;
+    const used = inputs.messagesUsedToday.get(row.accountId) ?? 0;
+    if (used >= cap) return { kind: 'queued_capped', at: nextDay(inputs.now).toISOString() };
+
+    const windowDefer = scheduleDefer(inputs.now, cfg.schedule);
+    if (windowDefer) return { kind: 'queued_window', at: windowDefer.toISOString() };
+
+    // Deliberately no ETA. What remains between here and the wire is the gate's
+    // anti-burst pacer: minActionGapMs + rand(0, actionGapJitterMs), re-rolled on
+    // EVERY tick against the account's last action. It is not knowable in advance
+    // and it is not stable between two reads of this endpoint. Rendering a
+    // countdown here would be inventing a promise the sender cannot keep, so the
+    // contract omits the field entirely. Do not add one.
+    return { kind: 'queued_soon' };
+  }
+
+  // Remaining outbound status is 'draft' (rejected/cancelled never reach the
+  // inbox; see DISCARDED_MESSAGE_STATUSES). A draft with no live pendingReq
+  // predates that column and can no longer be dispatched from the UI, but it is
+  // still an unapproved draft, so it reads the same with no ready time.
+  return { kind: 'awaiting_approval', readyAt: row.eligibleAt };
+}
+
+// The message statuses that are terminal-without-sending (see messageStatusEnum):
+// 'rejected' is the operator declining a draft, 'cancelled' the system killing one.
+// Neither reached LinkedIn, so neither belongs in a conversation transcript. Shared
+// by groupInboxRows and getInbox so the SQL filter and the grouping can't drift.
+const DISCARDED_MESSAGE_STATUSES = ['cancelled', 'rejected'] as const;
+
+/** Group an ordered audit stream into people-centric conversations. Exported so
+ * the key invariant stays unit-testable without a database: never split a
+ * conversation just because LinkedIn has not assigned the outbound a thread
+ * urn yet. */
+export function groupInboxRows(rows: InboxRow[], timing: MessageTimingInputs): InboxThread[] {
+  const threads = new Map<string, InboxThread>();
+  for (const row of rows) {
+    // Discarded drafts are audit records, not conversation events. Showing them
+    // in the operator inbox makes a discarded message look like it was sent.
+    if ((DISCARDED_MESSAGE_STATUSES as readonly string[]).includes(row.status)) continue;
+    const id = `${row.accountId}:${row.targetId}`;
+    let thread = threads.get(id);
+    if (!thread) {
+      const ctx = readLeadContext(row.externalContext);
+      thread = {
+        id,
+        accountId: row.accountId,
+        targetId: row.targetId,
+        name: ctx.name,
+        company: ctx.company,
+        headline: ctx.headline,
+        profileUrl: ctx.profileUrl,
+        campaignGoal: row.campaignGoal,
+        latestAt: row.createdAt.toISOString(),
+        latestPreview: row.body,
+        hasInbound: false,
+        needsApproval: false,
+        messages: [],
+      };
+      threads.set(id, thread);
+    }
+    const canApprove =
+      row.direction === 'outbound' && row.status === 'draft' && row.pendingReq != null;
+    const eligibleAt = canApprove && row.nextStepAt ? row.nextStepAt.toISOString() : null;
+    thread.messages.push({
+      id: row.messageId,
+      direction: row.direction,
+      body: row.body,
+      status: row.status,
+      intent: row.intent,
+      createdAt: row.createdAt.toISOString(),
+      pendingMessageId: canApprove ? row.messageId : null,
+      eligibleAt,
+      timing: deriveMessageTiming({ ...row, eligibleAt }, timing),
+    });
+    thread.hasInbound ||= row.direction === 'inbound';
+    thread.needsApproval ||= canApprove;
+    if (row.createdAt.getTime() >= new Date(thread.latestAt).getTime()) {
+      thread.latestAt = row.createdAt.toISOString();
+      thread.latestPreview = row.body;
+    }
+  }
+  for (const thread of threads.values()) {
+    thread.messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  return [...threads.values()].sort((a, b) => b.latestAt.localeCompare(a.latestAt));
+}
+
+/** Every locally known conversation, newest first. This is intentionally a
+ * read-only projection over the message audit trail. Inbound messages enter the
+ * same trail when reply detection observes them. Rejected and cancelled drafts
+ * remain in the audit log but are deliberately excluded from this operator-facing
+ * inbox (see DISCARDED_MESSAGE_STATUSES). */
+export async function getInbox(now = new Date()): Promise<InboxThread[]> {
+  const rows = await db
+    .select({
+      messageId: messages.id,
+      accountId: messages.accountId,
+      targetId: messages.targetId,
+      externalContext: targets.externalContext,
+      campaignGoal: campaigns.goal,
+      direction: messages.direction,
+      body: messages.body,
+      status: messages.status,
+      intent: messages.intent,
+      pendingReq: messages.pendingReq,
+      nextStepAt: targetProgress.nextStepAt,
+      createdAt: messages.createdAt,
+      updatedAt: messages.updatedAt,
+      sentAt: messages.sentAt,
+    })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .innerJoin(campaigns, eq(targets.campaignId, campaigns.id))
+    .leftJoin(targetProgress, eq(targetProgress.targetId, targets.id))
+    .where(notInArray(messages.status, [...DISCARDED_MESSAGE_STATUSES]))
+    .orderBy(asc(messages.createdAt));
+
+  // Gate inputs only matter for accounts holding an approved-but-unsent message;
+  // every other row's timing reads off the row itself.
+  const queuedAccountIds = [
+    ...new Set(
+      rows
+        .filter((r) => r.direction === 'outbound' && r.status === 'approved')
+        .map((r) => r.accountId),
+    ),
+  ];
+  const { configById, stateById, pausedAccountIds, usedToday } = await loadGateInputs(
+    queuedAccountIds,
+    now,
+  );
+  const messagesUsedToday = new Map(
+    queuedAccountIds.map((id) => [id, usedToday.get(`${id}:message`) ?? 0]),
+  );
+  return groupInboxRows(rows, { now, configById, stateById, pausedAccountIds, messagesUsedToday });
+}
+
+// --- Reply detector health --------------------------------------------------
+
+export type ReplyDetectorStatus = 'healthy' | 'failing' | 'stale' | 'disabled' | 'never_run';
+
+export interface ReplyDetectorHealth {
+  status: ReplyDetectorStatus;
+  /** The newest completed observation pass, not an estimate. */
+  lastSuccessfulScanAt: string | null;
+  /** A recent detector failure, if it has not since been followed by success. */
+  error: { at: string; phase: string; message: string } | null;
+  /** Current scan coverage from the newest successful pass. */
+  coverage: {
+    accounts: number;
+    listedThreads: number;
+    mappedThreads: number;
+    unmatchedThreads: number;
+    unmatchedInboundMessages: number;
+  } | null;
+}
+
+type ReplyDetectorEventRow = { kind: string; ts: Date; payload: unknown };
+
+const REPLY_DETECTOR_EVENTS = [
+  'reply_detector_started',
+  'reply_detector_idle',
+  'reply_scan_succeeded',
+  'reply_scan_failed',
+] as const;
+
+// The per-boot lifecycle events, read separately from the per-tick scan trail
+// below. `reply_detector_started` carries the configured intervalMs, and is written
+// once per boot while `reply_scan_succeeded` lands every tick, so a single shared
+// window evicts it after enough ticks and the interval silently reverts to the 1h
+// default — marking a detector on a >30m interval permanently stale mid-run.
+const REPLY_DETECTOR_BOOT_EVENTS = ['reply_detector_started', 'reply_detector_idle'] as const;
+const REPLY_SCAN_EVENTS = ['reply_scan_succeeded', 'reply_scan_failed'] as const;
+
+function eventObject(payload: unknown): Record<string, unknown> {
+  return payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
+}
+
+function eventNumber(payload: Record<string, unknown>, key: string): number {
+  const value = payload[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function scanCoverage(payload: Record<string, unknown> | null): ReplyDetectorHealth['coverage'] {
+  return payload
+    ? {
+        accounts: eventNumber(payload, 'accounts'),
+        listedThreads: eventNumber(payload, 'listedThreads'),
+        mappedThreads: eventNumber(payload, 'mappedThreads'),
+        unmatchedThreads: eventNumber(payload, 'unmatchedThreads'),
+        unmatchedInboundMessages: eventNumber(payload, 'unmatchedInboundMessages'),
+      }
+    : null;
+}
+
+/** Read the detector's append-only health trail. The dashboard deliberately
+ * does not infer health from the inbox count: zero replies can be healthy, an
+ * unrun detector, or a failed LinkedIn read. */
+export function deriveReplyDetectorHealth(
+  rows: ReplyDetectorEventRow[],
+  now = new Date(),
+): ReplyDetectorHealth {
+  const newest = (kind: (typeof REPLY_DETECTOR_EVENTS)[number]) =>
+    rows.find((row) => row.kind === kind);
+  const success = newest('reply_scan_succeeded');
+  const failure = newest('reply_scan_failed');
+  const started = newest('reply_detector_started');
+  const idle = newest('reply_detector_idle');
+  const successPayload = success ? eventObject(success.payload) : null;
+  const failedAfterSuccess = !!failure && (!success || failure.ts.getTime() > success.ts.getTime());
+
+  // `reply_detector_idle` outranks every older event, including a successful scan:
+  // the process booted and declined to start the tick, so the newest scan is a
+  // record of the PREVIOUS boot. Without this, a detector that ran for a week and
+  // came back up with LOA_REPLY_POLL_INTERVAL_MS unset reads 'healthy' off that
+  // last scan until it ages past staleAfterMs.
+  const idleAt = idle?.ts.getTime() ?? -1;
+  const idleIsNewest =
+    !!idle && ![started, success, failure].some((row) => !!row && row.ts.getTime() >= idleAt);
+
+  if (!success && !failure) {
+    return {
+      status: idleIsNewest ? 'disabled' : 'never_run',
+      lastSuccessfulScanAt: null,
+      error: null,
+      coverage: null,
+    };
+  }
+
+  if (failedAfterSuccess && failure) {
+    const payload = eventObject(failure.payload);
+    return {
+      status: 'failing',
+      lastSuccessfulScanAt: success?.ts.toISOString() ?? null,
+      error: {
+        at: failure.ts.toISOString(),
+        phase: typeof payload.phase === 'string' ? payload.phase : 'unknown',
+        message: typeof payload.error === 'string' ? payload.error : 'Unknown detector error',
+      },
+      coverage: scanCoverage(successPayload),
+    };
+  }
+
+  if (idleIsNewest) {
+    return {
+      status: 'disabled',
+      lastSuccessfulScanAt: success?.ts.toISOString() ?? null,
+      error: null,
+      coverage: scanCoverage(successPayload),
+    };
+  }
+
+  const intervalMs = started ? eventNumber(eventObject(started.payload), 'intervalMs') : 0;
+  const staleAfterMs = intervalMs > 0 ? intervalMs * 2 : 60 * 60 * 1000;
+  return {
+    status: success && now.getTime() - success.ts.getTime() > staleAfterMs ? 'stale' : 'healthy',
+    lastSuccessfulScanAt: success?.ts.toISOString() ?? null,
+    error: null,
+    coverage: scanCoverage(successPayload),
+  };
+}
+
+// Newest boot event of EACH kind, unwindowed via distinct-on, so neither the
+// configured interval nor an idle boot can be evicted by tick volume. Extracted so
+// its SQL shape is assertable without a live DB (see buildVolumeQuery).
+export function buildReplyDetectorBootEventsQuery() {
+  return db
+    .selectDistinctOn([events.kind], { kind: events.kind, ts: events.ts, payload: events.payload })
+    .from(events)
+    .where(inArray(events.kind, [...REPLY_DETECTOR_BOOT_EVENTS]))
+    .orderBy(events.kind, desc(events.ts));
+}
+
+// The recent per-tick scan trail. Only the newest success/failure is read, so a
+// small window suffices.
+export function buildReplyDetectorScanEventsQuery() {
+  return db
+    .select({ kind: events.kind, ts: events.ts, payload: events.payload })
+    .from(events)
+    .where(inArray(events.kind, [...REPLY_SCAN_EVENTS]))
+    .orderBy(desc(events.ts))
+    .limit(32);
+}
+
+export async function getReplyDetectorHealth(now = new Date()): Promise<ReplyDetectorHealth> {
+  const [bootRows, scanRows] = await Promise.all([
+    buildReplyDetectorBootEventsQuery(),
+    buildReplyDetectorScanEventsQuery(),
+  ]);
+  return deriveReplyDetectorHealth([...bootRows, ...scanRows], now);
+}
+
+// --- Dispatch health --------------------------------------------------------
+
+/** 'disabled' means the runtime booted without LOA_DISPATCH_INTERVAL_MS: the MCP
+ * surface is up but nothing self-paces, so approved messages queue forever. */
+export type DispatchStatus = 'running' | 'disabled' | 'never_run';
+
+export interface DispatchHealth {
+  status: DispatchStatus;
+  /** The configured tick interval when running; null otherwise. */
+  intervalMs: number | null;
+  lastStartedAt: string | null;
+}
+
+const DISPATCH_BOOT_EVENTS = ['dispatch_tick_started', 'dispatch_tick_idle'] as const;
+
+/** Dispatch writes one lifecycle event per boot and nothing per tick, so the
+ * newer of the two IS the current state — no staleness window to reason about. */
+export function deriveDispatchHealth(rows: ReplyDetectorEventRow[]): DispatchHealth {
+  const started = rows.find((row) => row.kind === 'dispatch_tick_started');
+  const idle = rows.find((row) => row.kind === 'dispatch_tick_idle');
+  if (!started && !idle) return { status: 'never_run', intervalMs: null, lastStartedAt: null };
+
+  const startedIsNewest = !!started && (!idle || started.ts.getTime() >= idle.ts.getTime());
+  if (!startedIsNewest) {
+    // A previous boot's start does not survive a later idle boot, but its time is
+    // still the honest answer to "when did this last actually run".
+    return {
+      status: 'disabled',
+      intervalMs: null,
+      lastStartedAt: started?.ts.toISOString() ?? null,
+    };
+  }
+  const intervalMs = eventNumber(eventObject(started.payload), 'intervalMs');
+  return {
+    status: 'running',
+    intervalMs: intervalMs > 0 ? intervalMs : null,
+    lastStartedAt: started.ts.toISOString(),
+  };
+}
+
+// Newest event of EACH kind, unwindowed via distinct-on. These are per-boot rows
+// competing with the whole event stream for recency, so any windowed read would
+// eventually evict them and silently downgrade a running tick to 'never_run'.
+export function buildDispatchBootEventsQuery() {
+  return db
+    .selectDistinctOn([events.kind], { kind: events.kind, ts: events.ts, payload: events.payload })
+    .from(events)
+    .where(inArray(events.kind, [...DISPATCH_BOOT_EVENTS]))
+    .orderBy(events.kind, desc(events.ts));
+}
+
+export async function getDispatchHealth(): Promise<DispatchHealth> {
+  return deriveDispatchHealth(await buildDispatchBootEventsQuery());
+}
+
 export interface ActivityItem {
   actionId: string;
   type: string;
@@ -792,11 +1426,36 @@ export function buildActivityActionsQuery(opts: { campaignId?: string; limit: nu
     .limit(opts.limit);
 }
 
+/** Received LinkedIn messages are activity in their own right, rather than an
+ * inferred side effect of a funnel stage. Keep each message in the timeline,
+ * while campaign performance separately counts distinct replying targets. */
+export function buildReplyActivityQuery(opts: { campaignId?: string; limit: number }) {
+  return db
+    .select({
+      id: messages.id,
+      createdAt: messages.createdAt,
+      targetId: messages.targetId,
+      campaignId: targets.campaignId,
+      name: sql<string | null>`${targets.externalContext}->>'name'`,
+      profileUrl: sql<string | null>`${targets.externalContext}->>'profileUrl'`,
+    })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(
+      and(
+        eq(messages.direction, 'inbound'),
+        ...(opts.campaignId ? [eq(targets.campaignId, opts.campaignId)] : []),
+      ),
+    )
+    .orderBy(desc(messages.createdAt))
+    .limit(opts.limit);
+}
+
 /**
  * Reverse-chron feed of what happened, newest first: outbound actions AND
- * inbound invite_accepted events, so an acceptance shows up alongside the sends
- * ("X accepted your invite"). An acceptance is not an action row, so it is
- * unioned in from the event log. Optional campaignId narrows both. limit is
+ * inbound milestones: invite accepts and received replies show up alongside
+ * sends. Neither is an action row, so they are projected from their durable
+ * event/message records. Optional campaignId narrows every source. limit is
  * clamped by the caller (default 50, max 200).
  */
 export async function getActivity(opts: {
@@ -804,6 +1463,7 @@ export async function getActivity(opts: {
   limit: number;
 }): Promise<ActivityItem[]> {
   const actionRows = await buildActivityActionsQuery(opts);
+  const replyRows = await buildReplyActivityQuery(opts);
 
   // Acceptance events carry targetId/campaignId/name/profileUrl in their jsonb
   // payload — but older events were written without profileUrl, so fall back to
@@ -855,6 +1515,18 @@ export async function getActivity(opts: {
       targetId: r.targetId ?? '',
       name: r.name,
       profileUrl: r.profileUrl ?? null,
+      campaignId: r.campaignId,
+      failureDetail: null,
+    })),
+    ...replyRows.map((r) => ({
+      actionId: r.id,
+      type: 'reply_received',
+      result: 'success',
+      executedAt: r.createdAt.toISOString(),
+      scheduledAt: r.createdAt.toISOString(),
+      targetId: r.targetId,
+      name: r.name,
+      profileUrl: r.profileUrl,
       campaignId: r.campaignId,
       failureDetail: null,
     })),
@@ -1082,39 +1754,7 @@ export async function getScheduled(limit: number): Promise<ScheduledItem[]> {
   // Forecast inputs: per-account caps + schedule, and how much each type has
   // already sent today (which eats into today's budget before the backlog does).
   const accountIds = [...new Set(rows.map((r) => r.accountId).filter((a): a is string => !!a))];
-  const configById = new Map<string, { caps: Record<string, number>; schedule: AccountSchedule }>();
-  const usedToday = new Map<string, number>();
-  if (accountIds.length > 0) {
-    const acctRows = await db
-      .select({ id: accounts.id, limits: accounts.limits })
-      .from(accounts)
-      .where(inArray(accounts.id, accountIds));
-    for (const a of acctRows) {
-      const lim = (a.limits ?? {}) as Partial<AccountLimits>;
-      configById.set(a.id, {
-        caps: lim.caps ?? DEFAULT_CAPS,
-        schedule: lim.schedule ?? DEFAULT_SCHEDULE,
-      });
-    }
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    const usedRows = await db
-      .select({
-        accountId: actions.accountId,
-        type: actions.type,
-        n: sql<number>`cast(count(*) as int)`,
-      })
-      .from(actions)
-      .where(
-        and(
-          eq(actions.result, 'success'),
-          gte(actions.executedAt, midnight),
-          inArray(actions.accountId, accountIds),
-        ),
-      )
-      .groupBy(actions.accountId, actions.type);
-    for (const u of usedRows) usedToday.set(`${u.accountId}:${u.type}`, u.n);
-  }
+  const { configById, usedToday } = await loadGateInputs(accountIds);
 
   const projected = projectScheduledSends(
     rows.map((r) => ({

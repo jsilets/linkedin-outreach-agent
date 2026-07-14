@@ -105,6 +105,27 @@ export function firstNameFromTarget(target: Target): string | undefined {
   return first || undefined;
 }
 
+/** The recipient's full display name (externalContext.name), used to address the
+ * message composer's recipient typeahead. Undefined when no name was captured —
+ * the send then refuses, since the composer cannot be addressed by name. */
+export function recipientNameFromTarget(target: Target): string | undefined {
+  const ext = target.externalContext as { name?: unknown } | null | undefined;
+  const name = typeof ext?.name === 'string' ? ext.name.trim() : '';
+  return name || undefined;
+}
+
+/** The opaque LinkedIn member id (fsd_profile / person id) from the target's
+ * urn, used as a second identity anchor when verifying the opened message thread
+ * links to THIS recipient (LinkedIn sometimes renders /in/<memberId> instead of
+ * the vanity). Undefined when the urn carries no extractable id. */
+export function memberIdFromTarget(target: Target): string | undefined {
+  const ref = target.linkedinUrn?.trim() ?? '';
+  const fsd = ref.match(/fsd_profile:([A-Za-z0-9_-]+)/);
+  if (fsd?.[1]) return fsd[1];
+  const person = ref.match(/urn:li:person:([A-Za-z0-9_-]+)/);
+  return person?.[1] ?? undefined;
+}
+
 /** The target's current company (externalContext.currentCompany), or undefined
  * when none was captured/classified. Exported for unit tests. */
 export function companyFromTarget(target: Target): string | undefined {

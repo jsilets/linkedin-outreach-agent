@@ -45,6 +45,7 @@ function parseArgs(argv: string[]): {
   profileArg: string;
   note?: string;
   body?: string;
+  name?: string;
   send: boolean;
 } {
   const positional: string[] = [];
@@ -67,6 +68,7 @@ function parseArgs(argv: string[]): {
     profileArg: positional[2] ?? '',
     ...(flags.has('note') ? { note: flags.get('note') } : {}),
     ...(flags.has('body') ? { body: flags.get('body') } : {}),
+    ...(flags.has('name') ? { name: flags.get('name') } : {}),
     send,
   };
 }
@@ -80,16 +82,20 @@ function toProfileUrl(arg: string): string {
 }
 
 async function main(): Promise<void> {
-  const { accountId, action, profileArg, note, body, send } = parseArgs(process.argv.slice(2));
+  const { accountId, action, profileArg, note, body, name, send } = parseArgs(
+    process.argv.slice(2),
+  );
   if (!accountId || !SUPPORTED.has(action) || !profileArg) {
     console.error(
       'usage: act-shakeout <accountId> <connect|message|view_profile> <profileUrlOrUrn> ' +
-        '[--note "..."] [--body "..."] [--send]',
+        '[--note "..."] [--body "..."] [--name "Full Name"] [--send]',
     );
     process.exit(2);
   }
-  if (action === 'message' && send && !body) {
-    console.error('message --send requires --body "..."');
+  if (action === 'message' && send && (!body || !name)) {
+    console.error(
+      'message --send requires --body "..." and --name "Full Name" (composer recipient)',
+    );
     process.exit(2);
   }
 
@@ -184,7 +190,15 @@ async function main(): Promise<void> {
       if (action === 'connect') {
         outcome = await connect(ctx, { profileUrl, ...(note ? { note } : {}) });
       } else if (action === 'message') {
-        outcome = await message(ctx, { profileUrl, body: body ?? '' });
+        const memberId = profileArg.includes(':')
+          ? toProfileUrl(profileArg).match(/\/in\/([^/?#]+)/)?.[1]
+          : undefined;
+        outcome = await message(ctx, {
+          profileUrl,
+          body: body ?? '',
+          recipientName: name ?? '',
+          ...(memberId ? { memberId } : {}),
+        });
       } else {
         await visitProfile(ctx, profileUrl);
         outcome = { ok: true, detail: 'profile viewed' };

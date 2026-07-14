@@ -11,9 +11,17 @@
 //      / profile url against the target's linkedinUrn (see matchesTarget).
 //   4. skip messages already handled on a prior tick (an in-memory seen-set,
 //      keyed by thread+timestamp+text — see the dedupe note below).
-//   5. classify each NEW inbound via LLMProvider.classifyReply, then route it
-//      through ReplyRouter.route, which pulls the target from the funnel
-//      (terminal 'replied' progress state) and does per-intent follow-up.
+//   5. persist every NEW inbound to the local transcript, then classify the
+//      NEWEST one per thread via LLMProvider.classifyReply and route it through
+//      ReplyRouter.route, which pulls the target from the funnel (terminal
+//      'replied' progress state) and does per-intent follow-up.
+//
+// ROUTING IS NEWEST-ONLY: ReplyRouter.route acts per intent with no notion of a
+// thread — it sets the stage and, for NotNow/OutOfOffice, unconditionally
+// enqueues a paced follow-up. Routing every unseen message in a history read
+// would therefore let an older "ping me in Q3" schedule a follow-up to someone
+// whose newer message says they are interested. Older messages are still
+// persisted: they are real conversation the operator must see in the Inbox.
 //
 // Mirrors DispatchTick: runTick(now) does one pass; start(intervalMs) wraps it
 // in a self-skipping setInterval so a host runs it unattended. Host-agnostic and
@@ -27,9 +35,9 @@
 // paced follow-up. Persisting a processed-marker (e.g. a messages-row insert
 // keyed by the LinkedIn message urn) is the durable fix; deferred here.
 
-import type { ReplyRouter, TargetRepoPort } from '@loa/orchestrator';
+import type { MessageRepoPort, ReplyRouter, TargetRepoPort } from '@loa/orchestrator';
 import type { Intent, LLMProvider, Message, db as shared } from '@loa/shared';
-import type { InboundMessage, InboxReaderPort } from '../adapters/observe-live.js';
+import type { InboundMessage, InboxReaderPort, InboxThread } from '../adapters/observe-live.js';
 import { matchesIdentity } from './match-target.js';
 
 type TargetProgressRow = shared.TargetProgressRow;
@@ -46,6 +54,7 @@ const INBOX_CACHE_TTL_MS = 60_000;
 /** How one inbound message resolved in a tick. Returned for observability + tests. */
 export type ReplyOutcome =
   | { kind: 'routed'; targetId: string; threadUrn: string; intent: Intent }
+  | { kind: 'recorded'; targetId: string; threadUrn: string } // transcript only; a newer message routes
   | { kind: 'unmatched'; threadUrn: string } // sender not an enrolled target
   | { kind: 'seen'; threadUrn: string }; // already processed on a prior tick
 
@@ -54,6 +63,34 @@ export interface ReplyTickResult {
   accounts: number;
   outcomes: ReplyOutcome[];
 }
+
+/** A durable operational outcome for one detector pass. These are intentionally
+ * about observation, not delivery: a paused account may have a healthy detector. */
+export type ReplyScan =
+  | {
+      kind: 'succeeded';
+      at: Date;
+      durationMs: number;
+      accounts: number;
+      enrollments: number;
+      listedThreads: number;
+      mappedThreads: number;
+      unmatchedThreads: number;
+      historyReads: number;
+      inboundMessages: number;
+      routed: number;
+      recorded: number;
+      seen: number;
+      unmatchedInboundMessages: number;
+    }
+  | {
+      kind: 'failed';
+      at: Date;
+      durationMs: number;
+      phase: 'active_enrollments' | 'thread_list' | 'thread_history' | 'inbox_list' | 'route';
+      accountId?: string;
+      error: string;
+    };
 
 /**
  * Enumerate the active enrollment cursors to scan for replies. Kept as a port so
@@ -74,11 +111,18 @@ export interface ReplyTickDeps {
   targets: TargetLookup;
   router: ReplyRouter;
   llm: LLMProvider;
+  /** Durable local inbox history. When supplied, every newly observed inbound
+   * reply is written before it is routed so the web inbox can show exactly what
+   * caused automation to stop. Optional for focused offline tests. */
+  messages?: Pick<MessageRepoPort, 'create' | 'listByThread'>;
   now?: () => Date;
   /** How many threads to read per account per tick. */
   inboxLimit?: number;
   /** Optional sink for per-outcome logging (audit / metrics). */
   onOutcome?: (o: ReplyOutcome) => void;
+  /** Durable health sink. Failures here are reported to stderr but never alter
+   * the detector result: the scan result is the source of truth. */
+  onScan?: (scan: ReplyScan) => void | Promise<void>;
 }
 
 /**
@@ -88,6 +132,13 @@ export interface ReplyTickDeps {
  */
 function matchesTarget(msg: InboundMessage, target: TargetRow): boolean {
   return matchesIdentity(msg.senderUrn, msg.profileUrl, target);
+}
+
+/** readThreadHistory returns newest-first and its callers keep that contract.
+ * Sorting here gives both a chronological transcript and a last element that is
+ * the newest message — the only one allowed to route. */
+function oldestFirst(history: InboundMessage[]): InboundMessage[] {
+  return [...history].sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime());
 }
 
 /** Stable identity for a single inbound message, for the seen-set. */
@@ -119,13 +170,18 @@ export class ReplyTick {
   private readonly targets: TargetLookup;
   private readonly router: ReplyRouter;
   private readonly llm: LLMProvider;
+  private readonly messages?: Pick<MessageRepoPort, 'create' | 'listByThread'>;
   private readonly now: () => Date;
   private readonly inboxLimit: number;
   private readonly onOutcome?: (o: ReplyOutcome) => void;
+  private readonly onScan?: (scan: ReplyScan) => void | Promise<void>;
   /** Messages already routed; keeps a reply from re-routing each tick. */
   private readonly seen = new Set<string>();
   /** Per-account inbox read cache (short TTL), shared by runTick + probeTarget. */
   private readonly inboxCache = new Map<string, { at: number; messages: InboundMessage[] }>();
+  /** Conversation identities are cached with the same short TTL as snippets so
+   * a burst of pre-send probes shares one mailbox-list read. */
+  private readonly threadCache = new Map<string, { at: number; threads: InboxThread[] }>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
 
@@ -135,33 +191,142 @@ export class ReplyTick {
     this.targets = deps.targets;
     this.router = deps.router;
     this.llm = deps.llm;
+    this.messages = deps.messages;
     this.now = deps.now ?? (() => new Date());
     this.inboxLimit = deps.inboxLimit ?? DEFAULT_INBOX_LIMIT;
     this.onOutcome = deps.onOutcome;
+    this.onScan = deps.onScan;
   }
 
   /** One pass: read every active account's inbox and route new replies. */
   async runTick(): Promise<ReplyTickResult> {
-    // Group active enrollments by account, so each inbox is read once and a
-    // reply maps only against that account's own enrolled prospects.
-    const active = await this.enrollments.activeEnrollments();
-    const byAccount = new Map<string, TargetProgressRow[]>();
-    for (const p of active) {
-      const list = byAccount.get(p.accountId);
-      if (list) list.push(p);
-      else byAccount.set(p.accountId, [p]);
-    }
-
-    const outcomes: ReplyOutcome[] = [];
-    for (const [accountId, enrolled] of byAccount) {
-      const inbound = await this.readInboxCached(accountId);
-      for (const msg of inbound) {
-        const outcome = await this.handle(accountId, enrolled, msg);
-        outcomes.push(outcome);
-        this.onOutcome?.(outcome);
+    const startedAt = this.now();
+    // Keep phase/account local to this pass so an error tells the operator what
+    // actually failed rather than masquerading as an empty inbox.
+    let failurePhase: Extract<ReplyScan, { kind: 'failed' }>['phase'] = 'active_enrollments';
+    let failureAccountId: string | undefined;
+    let listedThreads = 0;
+    let mappedThreads = 0;
+    let unmatchedThreads = 0;
+    let historyReads = 0;
+    let inboundMessages = 0;
+    try {
+      // Group active enrollments by account, so each inbox is read once and a
+      // reply maps only against that account's own enrolled prospects.
+      failurePhase = 'active_enrollments';
+      const active = await this.enrollments.activeEnrollments();
+      const byAccount = new Map<string, TargetProgressRow[]>();
+      for (const p of active) {
+        const list = byAccount.get(p.accountId);
+        if (list) list.push(p);
+        else byAccount.set(p.accountId, [p]);
       }
+
+      const outcomes: ReplyOutcome[] = [];
+      for (const [accountId, enrolled] of byAccount) {
+        failureAccountId = accountId;
+        if (this.inbox.readThreads && this.inbox.readThreadHistory) {
+          // History path: list rows map targets by participant, then each matched
+          // thread is read in full. An outbound latest snippet can no longer hide
+          // an earlier inbound reply.
+          failurePhase = 'thread_list';
+          const threads = await this.readThreadsCached(accountId);
+          listedThreads += threads.length;
+          const threadUrnsMappedThisAccount = new Set<string>();
+          for (const progress of enrolled) {
+            const target = await this.targets.findById(progress.targetId);
+            if (!target) continue;
+            const thread = threads.find((candidate) =>
+              matchesIdentity(candidate.participantUrn, candidate.profileUrl, target),
+            );
+            if (!thread) continue;
+            if (!threadUrnsMappedThisAccount.has(thread.threadUrn)) {
+              mappedThreads += 1;
+              threadUrnsMappedThisAccount.add(thread.threadUrn);
+            }
+            failurePhase = 'thread_history';
+            const history = await this.inbox.readThreadHistory(accountId, thread.threadUrn);
+            historyReads += 1;
+            inboundMessages += history.length;
+            failurePhase = 'route';
+            const chronological = oldestFirst(history);
+            for (const [index, msg] of chronological.entries()) {
+              const outcome = await this.handle(
+                accountId,
+                [progress],
+                msg,
+                index === chronological.length - 1,
+              );
+              outcomes.push(outcome);
+              this.onOutcome?.(outcome);
+            }
+          }
+          unmatchedThreads += threads.filter(
+            (thread) => !threadUrnsMappedThisAccount.has(thread.threadUrn),
+          ).length;
+          // Retain the lightweight list pass as a compatibility safety net for a
+          // future Voyager shape that omits participant data. The seen-set keeps
+          // any history result from routing twice; the history path remains the
+          // authoritative answer for mapped threads.
+          failurePhase = 'inbox_list';
+          const inbox = await this.readInboxCached(accountId);
+          inboundMessages += inbox.length;
+          failurePhase = 'route';
+          for (const msg of inbox) {
+            const outcome = await this.handle(accountId, enrolled, msg);
+            outcomes.push(outcome);
+            this.onOutcome?.(outcome);
+          }
+        } else {
+          // Compatibility fallback for test doubles and older reader adapters.
+          failurePhase = 'inbox_list';
+          const inbound = await this.readInboxCached(accountId);
+          inboundMessages += inbound.length;
+          failurePhase = 'route';
+          for (const msg of inbound) {
+            const outcome = await this.handle(accountId, enrolled, msg);
+            outcomes.push(outcome);
+            this.onOutcome?.(outcome);
+          }
+        }
+      }
+      const result = { accounts: byAccount.size, outcomes };
+      await this.emitScan({
+        kind: 'succeeded',
+        at: this.now(),
+        durationMs: Math.max(0, this.now().getTime() - startedAt.getTime()),
+        accounts: result.accounts,
+        enrollments: active.length,
+        listedThreads,
+        mappedThreads,
+        unmatchedThreads,
+        historyReads,
+        inboundMessages,
+        routed: outcomes.filter((outcome) => outcome.kind === 'routed').length,
+        recorded: outcomes.filter((outcome) => outcome.kind === 'recorded').length,
+        seen: outcomes.filter((outcome) => outcome.kind === 'seen').length,
+        unmatchedInboundMessages: outcomes.filter((outcome) => outcome.kind === 'unmatched').length,
+      });
+      return result;
+    } catch (error) {
+      await this.emitScan({
+        kind: 'failed',
+        at: this.now(),
+        durationMs: Math.max(0, this.now().getTime() - startedAt.getTime()),
+        phase: failurePhase,
+        ...(failureAccountId ? { accountId: failureAccountId } : {}),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
-    return { accounts: byAccount.size, outcomes };
+  }
+
+  private async emitScan(scan: ReplyScan): Promise<void> {
+    try {
+      await this.onScan?.(scan);
+    } catch (error) {
+      console.error('[@loa/runtime] reply detector could not record scan health:', error);
+    }
   }
 
   /** Read an account's inbox, reusing a recent read within the TTL. */
@@ -174,6 +339,16 @@ export class ReplyTick {
     return messages;
   }
 
+  private async readThreadsCached(accountId: string): Promise<InboxThread[]> {
+    const cached = this.threadCache.get(accountId);
+    const now = Date.now();
+    if (cached && now - cached.at < INBOX_CACHE_TTL_MS) return cached.threads;
+    // The caller checks readThreads exists before entering the history path.
+    const threads = await this.inbox.readThreads!(accountId, this.inboxLimit);
+    this.threadCache.set(accountId, { at: now, threads });
+    return threads;
+  }
+
   /**
    * Send-time reply probe for the dispatch tick: has this target sent an inbound
    * message newer than `since`? Reads the same (cached) inbox as runTick, routes
@@ -183,6 +358,33 @@ export class ReplyTick {
    * no extra lookup is needed. A throw propagates so the caller can fail closed.
    */
   async probeTarget(accountId: string, target: TargetRow, since: Date | null): Promise<boolean> {
+    if (this.inbox.readThreads && this.inbox.readThreadHistory) {
+      const thread = (await this.readThreadsCached(accountId)).find((candidate) =>
+        matchesIdentity(candidate.participantUrn, candidate.profileUrl, target),
+      );
+      if (!thread) {
+        // A participant-less list shape cannot safely use history yet; preserve
+        // the existing current-reply guard while the list parser is updated.
+      } else {
+        // Deliberately ignore `since`: the safety question is not "did they reply
+        // after our last scheduled send?" but "has this person replied at all?".
+        // A human may have replied after them, leaving the prospect's message
+        // behind a later outbound. Any inbound in this mapped thread ends the
+        // automated funnel and blocks the send.
+        const matches = await this.inbox.readThreadHistory(accountId, thread.threadUrn);
+        if (matches.length === 0) return false;
+        const chronological = oldestFirst(matches);
+        for (const [index, msg] of chronological.entries()) {
+          const key = messageKey(msg);
+          if (this.seen.has(key)) continue;
+          this.seen.add(key);
+          if (index === chronological.length - 1)
+            await this.classifyAndRoute(accountId, target, target.campaignId, msg);
+          else await this.record(accountId, target, msg);
+        }
+        return true;
+      }
+    }
     const inbound = await this.readInboxCached(accountId);
     const matches = inbound.filter(
       (m) =>
@@ -193,16 +395,18 @@ export class ReplyTick {
       const key = messageKey(msg);
       if (this.seen.has(key)) continue;
       this.seen.add(key);
-      await this.classifyAndRoute(target, target.campaignId, msg);
+      await this.classifyAndRoute(accountId, target, target.campaignId, msg);
     }
     return true;
   }
 
-  /** Map, dedupe, classify, and route one inbound message. */
+  /** Map, dedupe, and persist one inbound message, routing it only when it is the
+   * newest in its thread (see the newest-only note in the header). */
   private async handle(
     _accountId: string,
     enrolled: TargetProgressRow[],
     msg: InboundMessage,
+    route = true,
   ): Promise<ReplyOutcome> {
     // Map the sender to one of this account's enrolled targets. Load each
     // target row (the linkedinUrn is the match key) and take the first hit.
@@ -225,14 +429,55 @@ export class ReplyTick {
     // above covers the restart case).
     this.seen.add(key);
 
-    const intent = await this.classifyAndRoute(target, progress.campaignId, msg);
+    if (!route) {
+      await this.record(_accountId, target, msg);
+      return { kind: 'recorded', targetId: target.id, threadUrn: msg.threadUrn };
+    }
+    const intent = await this.classifyAndRoute(_accountId, target, progress.campaignId, msg);
     return { kind: 'routed', targetId: target.id, threadUrn: msg.threadUrn, intent };
   }
 
-  /** Classify one inbound message and route it (pulling the funnel + cancelling
-   * outstanding messages via the router). Shared by handle() and probeTarget().
-   * Returns the classified intent. */
+  /** Persist one observed inbound in the local transcript. This is an
+   * observation, never a send: it belongs in the same local audit trail as
+   * outbound messages so the unified inbox has the actual incoming text rather
+   * than merely a lifecycle state. The caller's seen-set ensures a running
+   * process records a given message once. */
+  private async record(accountId: string, target: TargetRow, msg: InboundMessage): Promise<void> {
+    const recorded = this.messages ? await this.messages.listByThread(msg.threadUrn) : [];
+    // LinkedIn does not expose a stable event id in every response shape. This
+    // conservative local key prevents a runtime restart from duplicating the
+    // same observed body in the unified inbox; the in-memory seen-set still
+    // handles the normal, same-process case precisely.
+    if (recorded.some((row) => row.direction === 'inbound' && row.body === msg.text)) return;
+    await this.messages?.create({
+      accountId,
+      targetId: target.id,
+      direction: 'inbound',
+      body: msg.text,
+      threadRef: msg.threadUrn,
+      intent: null,
+      status: 'sent',
+      // The Inbox is a transcript. Preserve LinkedIn's event time rather than
+      // the detector's scan time, otherwise a newest-first history read renders
+      // in reverse after rows are persisted.
+      createdAt: msg.receivedAt,
+    });
+  }
+
+  /** Persist one inbound message, then classify and route it (pulling the funnel
+   * + cancelling outstanding messages via the router). Shared by handle() and
+   * probeTarget(). Returns the classified intent. */
   private async classifyAndRoute(
+    accountId: string,
+    target: TargetRow,
+    campaignId: string,
+    msg: InboundMessage,
+  ): Promise<Intent> {
+    await this.record(accountId, target, msg);
+    return this.classifyAndRouteOnly(target, campaignId, msg);
+  }
+
+  private async classifyAndRouteOnly(
     target: TargetRow,
     campaignId: string,
     msg: InboundMessage,
@@ -254,9 +499,10 @@ export class ReplyTick {
       if (this.running) return; // skip if the previous tick is still in flight
       this.running = true;
       void this.runTick()
-        .catch(() => {
-          // A tick must never crash the loop; swallow so the interval keeps
-          // running. A failed inbox read just retries next tick.
+        .catch((error) => {
+          // Keep the interval alive, but never make a failed read indistinguishable
+          // from no replies. runTick already emitted a durable failure event.
+          console.error('[@loa/runtime] reply detector scan failed:', error);
         })
         .finally(() => {
           this.running = false;

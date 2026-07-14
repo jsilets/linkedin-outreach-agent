@@ -280,6 +280,11 @@ export const messages = pgTable('messages', {
   pendingReq: jsonb('pending_req'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  // When this outbound actually reached LinkedIn. Stamped only on the transition
+  // to 'sent'; `updatedAt` cannot answer this because every body/intent edit
+  // bumps it too. Null for inbound rows, for anything never sent, and for sent
+  // rows written before this column existed (readers coalesce to updatedAt).
+  sentAt: timestamp('sent_at', { withTimezone: true }),
 });
 
 export const approvals = pgTable('approvals', {

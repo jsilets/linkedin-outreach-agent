@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@loa/account-runner": "*",
+    "@loa/safety": "*",
     "@loa/shared": "*",
     "drizzle-orm": "^0.45.2",
     "express": "^5.1.0",

@@ -121,6 +121,7 @@ export class InMemMessageRepo implements MessageRepoPort {
       status: row.status ?? 'draft',
       createdAt: now(),
       updatedAt: now(),
+      sentAt: null,
     };
     this.rows.set(full.id, full);
     return full;
@@ -131,7 +132,12 @@ export class InMemMessageRepo implements MessageRepoPort {
   async setStatus(mid: string, status: MessageRow['status']): Promise<MessageRow> {
     const cur = this.rows.get(mid);
     if (!cur) throw new Error('no message');
-    const next = { ...cur, status, updatedAt: now() };
+    const next = {
+      ...cur,
+      status,
+      updatedAt: now(),
+      ...(status === 'sent' ? { sentAt: now() } : {}),
+    };
     this.rows.set(mid, next);
     return next;
   }

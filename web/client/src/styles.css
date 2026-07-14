@@ -76,6 +76,12 @@
   box-sizing: border-box;
 }
 
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
 body {
   margin: 0;
   background: var(--surface-0);
@@ -124,11 +130,34 @@ a:hover {
   border-radius: var(--radius-1);
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ── Page shell ───────────────────────────────────────────────────────────── */
 .app {
-  max-width: 1040px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1240px;
+  min-height: 0;
   margin: 0 auto;
   padding: var(--space-6) var(--space-5) var(--space-16);
+}
+
+/* Inbox is a work surface rather than a reading column. It earns a wider rail
+   so the transcript stays legible and the contact inspector remains optional. */
+.app.inbox-page {
+  padding-bottom: var(--space-6);
 }
 
 /* Full-width sticky header. z-scale: sticky header 30 < floating tooltip 60. The
@@ -145,7 +174,8 @@ header.top {
 
 /* Inner rail matches the .app content width so the header aligns with the page. */
 .top-inner {
-  max-width: 1040px;
+  width: 100%;
+  max-width: 1240px;
   margin: 0 auto;
   display: flex;
   align-items: center;
@@ -154,6 +184,8 @@ header.top {
   padding: var(--space-2) var(--space-5);
 }
 
+/* The inbox deliberately uses a wider work surface, so its header content
+   aligns to the same rail instead of looking detached from the workspace. */
 .brand {
   display: inline-flex;
   align-items: center;
@@ -1129,145 +1161,558 @@ textarea.draft {
   color: var(--ink-2);
 }
 
-/* ── Inbox: two-pane approval workspace ───────────────────────────────────── */
-/* One card holding a fixed-width queue and a detail pane. Fills the viewport
-   height (less the header + page padding) so each pane scrolls on its own. */
-.inbox {
+/* ── Inbox: local message workspace ───────────────────────────────────────── */
+/* The three-pane shape mirrors a real inbox: people, the conversation, then
+   context. It is deliberately quiet so the approval state, not chrome, wins. */
+.inbox-workspace {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  height: calc(100vh - 140px);
-  min-height: 480px;
+  flex: 1;
+  grid-template-columns: minmax(268px, 304px) minmax(0, 1fr) minmax(240px, 280px);
+  min-height: 0;
   padding: 0;
   overflow: hidden;
 }
 
-.inbox-list {
+.inbox-workspace.contact-closed {
+  grid-template-columns: minmax(268px, 304px) minmax(0, 1fr);
+}
+
+.inbox-workspace.contact-closed .inbox-contact {
+  display: none;
+}
+
+.inbox-threads,
+.inbox-transcript,
+.inbox-contact {
+  min-height: 0;
+  min-width: 0;
+}
+
+.inbox-workspace h2,
+.inbox-workspace h3,
+.inbox-workspace .btn {
+  font-family: var(--font-body);
+}
+
+.inbox-threads {
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.inbox-list-head {
+  padding: var(--space-4) var(--space-4) var(--space-3);
+}
+
+.inbox-search {
+  display: block;
+  margin-top: var(--space-3);
+}
+
+.inbox-search input {
+  width: 100%;
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  background: var(--surface-0);
+  color: var(--ink-1);
+  font: inherit;
+  font-size: var(--text-meta);
+}
+
+.inbox-search input::placeholder {
+  color: var(--ink-3);
+}
+
+.inbox-list-head h2,
+.transcript-head h2 {
+  margin: 0;
+  font-size: var(--text-sub);
+}
+
+.inbox-list-head p,
+.transcript-head p {
+  margin: 2px 0 0;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+
+/* Small but explicit operational state: an empty reply list is only reassuring
+ * after a completed scan. This sits with the Inbox heading rather than taking
+ * attention from the conversation list. */
+.inbox-list-head .inbox-health-note {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: var(--space-2);
+  color: var(--ink-2);
+  font-size: var(--text-caption);
+  line-height: 1.35;
+}
+
+.inbox-health-note > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--st-idle);
+}
+
+.inbox-health-note.healthy > span {
+  background: var(--st-done);
+}
+.inbox-health-note.failing,
+.inbox-health-note.stale {
+  color: color-mix(in srgb, var(--st-failed) 78%, var(--ink-1));
+}
+.inbox-health-note.failing > span,
+.inbox-health-note.stale > span {
+  background: var(--st-failed);
+}
+.inbox-health-note.disabled > span,
+.inbox-health-note.never_run > span {
+  background: var(--st-approval);
+}
+
+.inbox-health-note small {
+  width: 100%;
+  margin-left: 12px;
+  color: var(--ink-3);
+  font-size: inherit;
+}
+
+.inbox-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-1);
+  padding: 0 var(--space-3) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.inbox-filters button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 36px;
+  border: none;
+  border-radius: var(--radius-1);
+  padding: 5px 4px;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--text-caption);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.inbox-filters button:hover,
+.inbox-filters button.active {
+  background: var(--surface-2);
+  color: var(--ink-1);
+}
+
+.inbox-filters button.active {
+  font-weight: var(--weight-medium);
+}
+
+.filter-count {
+  margin-left: 4px;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.thread-list {
   overflow-y: auto;
 }
 
-/* Sticky so "Approve all" stays reachable while the queue scrolls. */
-.inbox-list-head {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--line);
-  background: var(--surface-1);
-}
-
-.inbox-list-head .spacer {
-  flex: 1;
-}
-
-/* One queue row: three stacked lines, divided by a hairline. Selection is
-   carried by the raised surface and the accent name — no border-left stripe. */
-.inbox-item {
+.thread-row {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   width: 100%;
-  padding: var(--space-3);
+  padding: 14px var(--space-4);
   text-align: left;
   background: transparent;
-  border: none;
-  border-top: 1px solid var(--line);
+  border: 0;
+  border-bottom: 1px solid var(--line);
   color: inherit;
   font: inherit;
   cursor: pointer;
-  transition: background var(--dur) var(--ease);
 }
 
-.inbox-item:hover {
-  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
-}
-
-.inbox-item.selected {
+.thread-row:hover,
+.thread-row.selected {
   background: var(--surface-2);
 }
 
-.ii-line1 {
+.thread-row-top,
+.thread-signals,
+.message-bubble footer,
+.approval-composer-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-2);
 }
 
-.ii-name {
-  min-width: 0;
-  font-weight: var(--weight-medium);
-  color: var(--ink-1);
-  white-space: nowrap;
+.thread-name,
+.thread-preview {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-/* Selected row tints the name with the selection accent. Placed after the base
-   .ii-name so specificity ascends in source order. */
-.inbox-item.selected .ii-name {
+.thread-name {
+  min-width: 0;
+  color: var(--ink-1);
+  font-weight: var(--weight-medium);
+}
+
+.thread-row.selected .thread-name {
   color: var(--accent);
 }
 
-.ii-wait {
+.thread-when,
+.msg-timing {
   margin-left: auto;
-  flex: none;
-  font-family: var(--font-mono);
+  color: var(--ink-3);
   font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
-  color: var(--ink-3);
 }
 
-.ii-line2 {
-  font-size: var(--text-meta);
+.thread-when {
+  flex: none;
+  font-family: var(--font-mono);
+}
+
+.thread-preview {
   color: var(--ink-2);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.ii-body {
   font-size: var(--text-meta);
-  color: var(--ink-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.inbox-detail {
+.thread-signals {
+  min-height: 17px;
+}
+
+.inbox-list-empty,
+.inbox-load-error {
+  padding: var(--space-4) var(--space-3);
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+
+.inbox-transcript {
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  padding: var(--space-4);
+  overflow: hidden;
 }
 
-.inbox-detail-head {
+.transcript-head {
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 68px;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
 }
 
-.inbox-detail-head .name {
+.mobile-inbox-back {
+  display: none;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--text-meta);
+  cursor: pointer;
+}
+
+.transcript-person {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  column-gap: var(--space-2);
+  align-items: center;
+}
+
+.transcript-person .contact-avatar {
+  grid-row: span 2;
+}
+
+.transcript-person p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-name-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.profile-name-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.transcript-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.details-toggle {
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  background: var(--surface-1);
+  color: var(--ink-2);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-caption);
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.details-toggle:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+  color: var(--ink-1);
+}
+
+.message-stream {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-5) clamp(var(--space-4), 7%, var(--space-8));
+}
+
+.automation-notice {
+  align-self: center;
+  max-width: 420px;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--st-replied) 26%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--st-replied) 7%, var(--surface-1));
+  color: color-mix(in srgb, var(--st-replied) 78%, var(--ink-1));
+  font-size: var(--text-caption);
+  text-align: center;
+}
+
+.message-bubble {
+  align-self: flex-start;
+  max-width: min(82%, 540px);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: 14px 14px 14px 4px;
+  background: var(--surface-1);
+}
+
+.message-bubble.outbound {
+  align-self: flex-end;
+  border-radius: 14px 14px 4px;
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface-1));
+}
+
+.message-bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.message-bubble footer {
+  margin-top: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.msg-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 17px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-2);
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  line-height: 1.2;
+}
+
+.msg-tag.approval {
+  border-color: color-mix(in srgb, var(--st-approval) 38%, var(--line));
+  background: color-mix(in srgb, var(--st-approval) 13%, var(--surface-1));
+  color: var(--st-approval-ink);
+}
+
+.msg-tag.inbound {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-1));
+  color: var(--accent);
+}
+
+.msg-tag.outbound {
+  color: var(--ink-2);
+}
+
+.approval-composer {
+  margin: 0 clamp(var(--space-4), 7%, var(--space-8)) var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--st-approval) 32%, var(--line));
+  border-radius: var(--radius-2);
+  background: color-mix(in srgb, var(--st-approval) 5%, var(--surface-1));
+}
+
+.approval-composer-head {
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-meta);
+}
+
+.approval-composer-head strong {
+  color: var(--ink-1);
+}
+
+.approval-composer-head p {
+  max-width: 62ch;
+  margin: 3px 0 0;
+  color: var(--ink-2);
+  font-size: var(--text-caption);
+  line-height: 1.4;
+}
+
+.approval-schedule span {
+  display: block;
+}
+
+.approval-schedule span:first-child {
+  color: var(--ink-1);
   font-weight: var(--weight-medium);
 }
 
-.inbox-detail-head .wait {
-  margin-left: auto;
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: var(--text-meta);
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-2);
+.approval-composer textarea {
+  width: 100%;
+  min-height: 136px;
+  resize: vertical;
+  box-sizing: border-box;
+  background: var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  padding: var(--space-3);
+  color: var(--ink-1);
+  font: inherit;
+  line-height: 1.5;
 }
 
-/* The draft grows to fill the pane between the header and the action row. */
-.inbox-detail textarea.draft {
-  flex: 1;
-  min-height: 180px;
-  resize: none;
+.thread-empty-state {
+  align-self: center;
+  max-width: 300px;
+  margin: auto;
+  text-align: center;
+}
+
+.thread-empty-state span {
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+  font-weight: var(--weight-medium);
+}
+
+.thread-empty-state p {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+  line-height: 1.5;
+}
+
+.inbox-contact {
+  padding: var(--space-5) var(--space-4);
+  border-left: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+.contact-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: var(--space-3);
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-family: var(--font-display);
+  font-size: var(--text-sub);
+  font-weight: var(--weight-semibold);
+}
+
+.contact-avatar.compact {
+  width: 36px;
+  height: 36px;
+  margin: 0;
+  font-size: var(--text-meta);
+}
+
+.inbox-contact h3 {
+  margin: 0;
+  color: var(--ink-1);
+  font-size: var(--text-sub);
+}
+
+.contact-headline,
+.contact-company {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+  line-height: 1.45;
+}
+
+.contact-company {
+  color: var(--ink-1);
+  font-weight: var(--weight-medium);
+}
+
+.inbox-contact > a {
+  display: inline-block;
+  margin-top: var(--space-4);
+  font-size: var(--text-meta);
+}
+
+.contact-meta {
+  display: grid;
+  gap: var(--space-4);
+  margin: var(--space-6) 0 0;
+}
+
+.contact-meta div {
+  display: grid;
+  gap: 3px;
+}
+
+.contact-meta dt {
+  color: var(--ink-3);
+  font-size: var(--text-caption);
+}
+
+.contact-meta dd {
+  display: -webkit-box;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink-1);
+  font-size: var(--text-meta);
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .inbox-actions {
@@ -1276,6 +1721,21 @@ textarea.draft {
   align-items: center;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+
+.approval-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.approval-confirm > span {
+  width: 100%;
+  color: var(--ink-1);
+  font-size: var(--text-meta);
+  font-weight: var(--weight-medium);
 }
 
 .inbox-reject {
@@ -1293,10 +1753,6 @@ textarea.draft {
 }
 
 /* The mobile-only "back to the list" control; hidden where both panes show. */
-.inbox-back {
-  display: none;
-}
-
 /* Inbox zero: one centered, quiet block — no nested card. */
 .inbox-empty {
   display: flex;
@@ -1319,32 +1775,58 @@ textarea.draft {
   font-size: var(--text-meta);
 }
 
-/* Under 760px the panes stack: the list is the default view, and selecting a
-   draft swaps in the detail with a back control. */
-@media (max-width: 759px) {
-  .inbox {
+@media (max-width: 1000px) {
+  .inbox-workspace {
+    grid-template-columns: minmax(245px, 300px) minmax(0, 1fr);
+  }
+
+  .inbox-contact {
+    display: none;
+  }
+
+  .details-toggle {
+    display: none;
+  }
+}
+
+@media (max-width: 700px) {
+  .inbox-workspace {
     grid-template-columns: minmax(0, 1fr);
-    height: calc(100vh - 120px);
+    min-height: 0;
   }
 
-  .inbox-list {
-    border-right: none;
-  }
-
-  .inbox-detail {
+  .inbox-transcript {
     display: none;
   }
 
-  .inbox.show-detail .inbox-list {
+  .inbox-workspace.show-thread .inbox-threads {
     display: none;
   }
 
-  .inbox.show-detail .inbox-detail {
+  .inbox-workspace.show-thread .inbox-transcript {
     display: flex;
   }
 
-  .inbox-back {
-    display: inline-block;
+  .mobile-inbox-back {
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 0;
+    margin-right: var(--space-2);
+  }
+
+  .message-stream {
+    padding: var(--space-3);
+  }
+
+  .message-bubble {
+    max-width: 94%;
+  }
+
+  .transcript-head,
+  .approval-composer {
+    margin-left: var(--space-2);
+    margin-right: var(--space-2);
   }
 }
 

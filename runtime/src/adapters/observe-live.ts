@@ -282,6 +282,22 @@ export interface InboundMessage {
 /** The slice of the inbox the reply-detection loop drives per account. */
 export interface InboxReaderPort {
   readInbox(accountId: string, limit: number): Promise<InboundMessage[]>;
+  /** Conversation identities from the mailbox list. Unlike readInbox, this is
+   * useful even when the latest visible event was sent by the account owner. */
+  readThreads?(accountId: string, limit: number): Promise<InboxThread[]>;
+  /** Full event history for exactly one known thread. This is the reply-gate
+   * safety path: list snippets alone can hide an earlier prospect reply after a
+   * human sends a later message. */
+  readThreadHistory?(accountId: string, threadUrn: string): Promise<InboundMessage[]>;
+}
+
+/** A mailbox row mapped to its counterparty, independent of who sent its latest
+ * message. This is the bridge from an active target to the one thread whose
+ * complete history must be checked. */
+export interface InboxThread {
+  threadUrn: string;
+  participantUrn: string;
+  profileUrl?: string;
 }
 
 /**
@@ -294,9 +310,17 @@ export interface InboxReaderPort {
  * verified against the real payload). Re-run the shakeout if reads start 400ing.
  */
 const DEFAULT_INBOX_QUERY_ID = 'messengerConversations.0d5e6781bbee71c3e51c8843c6519f48';
+/** Captured read-only from the paused account on 2026-07-14 by opening an
+ * existing /messaging/thread/:id page. LinkedIn rotates this hash, so retain an
+ * environment escape hatch exactly like the conversation-list query. */
+const DEFAULT_INBOX_MESSAGES_QUERY_ID = 'messengerMessages.5846eeb71c981f11e0134cb6626cc314';
 
 function inboxQueryId(): string {
   return process.env.LOA_INBOX_QUERY_ID?.trim() || DEFAULT_INBOX_QUERY_ID;
+}
+
+function inboxMessagesQueryId(): string {
+  return process.env.LOA_INBOX_MESSAGES_QUERY_ID?.trim() || DEFAULT_INBOX_MESSAGES_QUERY_ID;
 }
 
 /**
@@ -315,6 +339,22 @@ export function messengerConversationsPath(mailboxUrn: string, count: number): s
   return (
     `/voyager/api/voyagerMessagingGraphQL/graphql?queryId=${inboxQueryId()}` +
     `&queryName=MessengerConversationsBySyncToken&variables=${variables}`
+  );
+}
+
+/** Detail read for ONE conversation's complete event history. The conversation
+ * list endpoint intentionally returns compact snippets, so it is never used as
+ * evidence that a prospect has not replied. Captured from the thread page's own
+ * GraphQL request, this query accepts the full conversation urn as a value. */
+export function messengerConversationEventsPath(threadUrn: string): string {
+  // encodeURIComponent intentionally leaves parentheses literal, but the live
+  // messengerMessages request percent-encodes the nested conversation urn's
+  // delimiters. LinkedIn rejects the literal form with HTTP 400.
+  const encoded = encodeURIComponent(threadUrn).replace(/\(/g, '%28').replace(/\)/g, '%29');
+  const variables = `(conversationUrn:${encoded})`;
+  return (
+    `/voyager/api/voyagerMessagingGraphQL/graphql?queryId=${inboxMessagesQueryId()}` +
+    `&variables=${variables}`
   );
 }
 
@@ -386,6 +426,30 @@ export class LiveInboxReader implements InboxReaderPort {
   constructor(private readonly pages: PageProvider) {}
 
   async readInbox(accountId: string, limit: number): Promise<InboundMessage[]> {
+    const body = await this.readConversationList(accountId, limit);
+    return normalizeInboxResponse(body).slice(0, limit);
+  }
+
+  async readThreads(accountId: string, limit: number): Promise<InboxThread[]> {
+    const body = await this.readConversationList(accountId, limit);
+    return normalizeInboxThreads(body).slice(0, limit);
+  }
+
+  async readThreadHistory(accountId: string, threadUrn: string): Promise<InboundMessage[]> {
+    const page = await this.pages.pageFor(accountId);
+    await ensureOnLinkedIn(page);
+    const { status, body } = await page.voyagerGet(messengerConversationEventsPath(threadUrn), {
+      accept: 'application/json',
+    });
+    if (status !== 200) {
+      throw new Error(
+        `voyager conversation history returned HTTP ${status}; refusing to treat a thread as reply-free`,
+      );
+    }
+    return normalizeThreadHistoryResponse(body, threadUrn);
+  }
+
+  private async readConversationList(accountId: string, limit: number): Promise<unknown> {
     const page = await this.pages.pageFor(accountId);
     await ensureOnLinkedIn(page);
     const mailboxUrn = await readMailboxUrn(page);
@@ -398,7 +462,7 @@ export class LiveInboxReader implements InboxReaderPort {
           `queryId stale (set LOA_INBOX_QUERY_ID to a current one)`,
       );
     }
-    return normalizeInboxResponse(body).slice(0, limit);
+    return body;
   }
 }
 
@@ -428,6 +492,53 @@ export function normalizeInboxResponse(body: unknown): InboundMessage[] {
   // Most recent first, so a per-thread dedupe upstream keeps the latest reply.
   out.sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
   return out;
+}
+
+/** Map a conversations-list payload to counterparty identities. Participant
+ * data lives on the conversation, not the latest event, which is essential
+ * when the account owner has replied after the prospect. */
+export function normalizeInboxThreads(body: unknown): InboxThread[] {
+  const root = body as VoyagerMessagingResponse | undefined;
+  const out: InboxThread[] = [];
+  for (const conv of collectConversations(root)) {
+    const threadUrn = conv.entityUrn ?? conv.backendUrn;
+    if (!threadUrn) continue;
+    const viewerUrn = viewerUrnFromConversation(conv);
+    const participant = participantFromConversation(conv, viewerUrn);
+    if (!participant?.entityUrn) continue;
+    out.push({
+      threadUrn,
+      participantUrn: participant.entityUrn,
+      ...(participant.publicIdentifier
+        ? { profileUrl: `https://www.linkedin.com/in/${participant.publicIdentifier}/` }
+        : {}),
+    });
+  }
+  return [...new Map(out.map((thread) => [thread.threadUrn, thread])).values()];
+}
+
+/** Normalize the dedicated events response. Some Voyager versions wrap events
+ * inside a conversation; others return a flat elements array, so support both
+ * without silently dropping a reply. */
+export function normalizeThreadHistoryResponse(body: unknown, threadUrn: string): InboundMessage[] {
+  const nested = normalizeInboxResponse(body).filter((message) => message.threadUrn === threadUrn);
+  if (nested.length) return nested;
+  const viewerUrn = threadUrn.match(/urn:li:fsd_profile:[A-Za-z0-9_-]+/)?.[0];
+  const root = body as { elements?: MessagingEvent[]; data?: Record<string, unknown> };
+  const events = [
+    ...(root?.elements ?? []),
+    ...(Array.isArray(root?.data?.elements) ? (root.data.elements as MessagingEvent[]) : []),
+    ...Object.values(root?.data ?? {}).flatMap((value) => {
+      const elements = (value as { elements?: unknown } | null | undefined)?.elements;
+      return Array.isArray(elements) ? (elements as MessagingEvent[]) : [];
+    }),
+  ];
+  const out: InboundMessage[] = [];
+  for (const event of events) {
+    const message = normalizeEvent(threadUrn, event, viewerUrn);
+    if (message) out.push(message);
+  }
+  return out.sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
 }
 
 /**
@@ -472,6 +583,44 @@ function eventsOf(conv: Conversation | undefined): MessagingEvent[] {
  */
 function viewerUrnFromConversation(conv: Conversation | undefined): string | undefined {
   return conv?.entityUrn?.match(/urn:li:fsd_profile:[A-Za-z0-9_-]+/)?.[0];
+}
+
+/** Counterparty identity from the conversation's participant collection. The
+ * modern and legacy payloads name this collection differently, so the small
+ * structural type below exposes all known spellings. Fall back to any
+ * counterparty event only for legacy responses that do not inline participants. */
+function participantFromConversation(
+  conv: Conversation,
+  viewerUrn?: string,
+): MessagingMiniProfile | undefined {
+  const members = [
+    ...(conv.participants ?? []),
+    ...(conv.conversationParticipants ?? []),
+    ...(conv.messagingMembers ?? []),
+    ...(conv.participant ? [conv.participant] : []),
+  ];
+  const direct = members
+    .map((member) => member.miniProfile ?? member)
+    .map((member) => ({ ...member, entityUrn: profileUrnFromParticipant(member.entityUrn) }))
+    .find((member) => member.entityUrn && member.entityUrn !== viewerUrn);
+  if (direct?.entityUrn) return direct;
+  for (const event of eventsOf(conv)) {
+    const parsed = parseEvent(event, viewerUrn);
+    if (parsed && !parsed.outbound) {
+      return { entityUrn: parsed.senderUrn, publicIdentifier: parsed.publicId };
+    }
+  }
+  return undefined;
+}
+
+/** The current messenger GraphQL list wraps a profile identity as
+ * `urn:li:msg_messagingParticipant:urn:li:fsd_profile:<id>`. Normalize only
+ * that wrapper, preserving legacy direct profile/member urns unchanged. */
+function profileUrnFromParticipant(entityUrn: string | undefined): string | undefined {
+  if (!entityUrn) return undefined;
+  return (
+    entityUrn.match(/urn:li:(?:fsd_profile|fs_miniProfile|member):[A-Za-z0-9_-]+/)?.[0] ?? entityUrn
+  );
 }
 
 /** Pull EVENT/CONVERSATION entities out of a normalized `included[]` list (either
@@ -1317,6 +1466,13 @@ interface VoyagerMessagingResponse {
 interface Conversation {
   entityUrn?: string;
   backendUrn?: string;
+  /** Counterparty members carried on list rows, even where events contain only
+   * the latest outbound snippet. The exact wrapper differs across Voyager
+   * builds, hence the three optional spellings. */
+  participants?: MessagingMember[];
+  conversationParticipants?: MessagingMember[];
+  messagingMembers?: MessagingMember[];
+  participant?: MessagingMember;
   /** Legacy shape: events inlined on the conversation. */
   events?: MessagingEvent[];
   /** Modern messenger shape: messages under a paged list. */
@@ -1326,6 +1482,10 @@ interface Conversation {
 interface MessagingMiniProfile {
   entityUrn?: string;
   publicIdentifier?: string;
+}
+
+interface MessagingMember extends MessagingMiniProfile {
+  miniProfile?: MessagingMiniProfile;
 }
 
 interface MessagingEvent {

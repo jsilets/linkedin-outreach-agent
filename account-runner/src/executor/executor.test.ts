@@ -105,7 +105,11 @@ describe('executor refuses without an allow', () => {
     const action = makeAction({ type: 'message' });
     const expired: AllowToken = { ...validToken(action), expiresAt: NOW - 1 };
     await expect(
-      message(ctx(page, action, expired), { profileUrl: 'https://x', body: 'hi' }),
+      message(ctx(page, action, expired), {
+        profileUrl: 'https://x',
+        recipientName: 'Jane Doe',
+        body: 'hi',
+      }),
     ).rejects.toBeInstanceOf(NotAllowedError);
     expect(page.gotos).toHaveLength(0);
   });
@@ -274,38 +278,67 @@ describe('executor acts when allowed', () => {
     expect(page.clicked(SELECTORS.connectInMenu)).toBe(false);
   });
 
-  it('message enters the body into the recipient conversation and sends', async () => {
-    const page = new FakePage();
+  // Composer path: message() addresses the dedicated new-message composer, picks
+  // the matching typeahead card, verifies the opened thread links to THIS
+  // recipient, then types + sends. A card whose text contains the recipient name
+  // is the pick; the opened-thread /in/ anchor is the wrong-recipient gate.
+  const RECIPIENT_ANCHOR = 'a[href*="/in/jane/"], a[href$="/in/jane"]';
+
+  it('addresses the composer typeahead, verifies the recipient thread, and sends', async () => {
+    const page = new FakePage({
+      texts: { [SELECTORS.composerResultCard]: 'Status is reachable Jane Doe • 1st Head of EV' },
+    });
     const action = makeAction({ type: 'message' });
     const res = await message(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/jane/',
+      recipientName: 'Jane Doe',
       body: 'Thanks for connecting!',
     });
     expect(res.ok).toBe(true);
+    // Opened the dedicated composer, NOT the profile page.
+    expect(page.gotos).toContain('https://www.linkedin.com/messaging/thread/new/');
+    // Typed the recipient name into the typeahead (per-key, to fire suggestions).
+    expect(page.typedInto(SELECTORS.composerRecipientField)).toContain('Jane Doe');
     expect(page.composed).toContain('Thanks for connecting!');
     // Send is activated via focus + Enter (the button is off-viewport), not click.
     expect(page.keysPressed).toContain('Enter');
-    // The scoped-conversation bubble is waited on (bounded) before the gate, so a
-    // slow-hydrating overlay is not mistaken for an absent recipient.
-    const convo =
-      `${SELECTORS.messageConversationBubble}` + ':has(a[href*="/in/jane/"], a[href$="/in/jane"])';
-    expect(page.locators.get(convo)?.waits ?? 0).toBeGreaterThan(0);
+    // The recipient anchor is waited on (bounded) before the send gate.
+    expect(page.locators.get(RECIPIENT_ANCHOR)?.waits ?? 0).toBeGreaterThan(0);
   });
 
-  it('REFUSES to send when the recipient conversation is not open (wrong-recipient guard)', async () => {
-    // No conversation bubble links to /in/jane/, so the recipient can't be
-    // verified — the runner must not type or send anywhere.
-    const convo = '.msg-overlay-conversation-bubble:has(a[href*="/in/jane/"], a[href$="/in/jane"])';
-    const page = new FakePage({ counts: { [convo]: 0 } });
+  it('REFUSES to send when the opened thread does not link to the recipient (wrong-recipient guard)', async () => {
+    // The typeahead card matches by name, but the opened thread carries no /in/
+    // link to jane — the recipient can't be verified, so the runner must not
+    // type or send anywhere.
+    const page = new FakePage({
+      counts: { [RECIPIENT_ANCHOR]: 0 },
+      texts: { [SELECTORS.composerResultCard]: 'Jane Doe • 1st' },
+    });
     const action = makeAction({ type: 'message' });
     const res = await message(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/jane/',
+      recipientName: 'Jane Doe',
       body: 'Thanks for connecting!',
     });
     expect(res.ok).toBe(false);
-    expect(res.detail).toMatch(/refus/i);
+    expect(res.detail).toMatch(/refus|wrong recipient/i);
     expect(page.composed).toBe(''); // nothing typed
     expect(page.keysPressed).not.toContain('Enter'); // nothing sent
+  });
+
+  it('refuses when no typeahead card matches the recipient name', async () => {
+    const page = new FakePage({
+      texts: { [SELECTORS.composerResultCard]: 'Someone Else • 1st' },
+    });
+    const action = makeAction({ type: 'message' });
+    const res = await message(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/jane/',
+      recipientName: 'Jane Doe',
+      body: 'Hi',
+    });
+    expect(res.ok).toBe(false);
+    expect(page.composed).toBe('');
+    expect(page.keysPressed).not.toContain('Enter');
   });
 
   it('refuses to send when the profile URL has no /in/ id', async () => {
@@ -313,17 +346,32 @@ describe('executor acts when allowed', () => {
     const action = makeAction({ type: 'message' });
     const res = await message(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/feed/',
+      recipientName: 'Jane Doe',
       body: 'Hello',
     });
     expect(res.ok).toBe(false);
     expect(page.composed).toBe('');
   });
 
-  it('preserves paragraph breaks with Shift+Enter (not plain Enter, which sends)', async () => {
+  it('refuses to send when no recipient name is available (cannot address the composer)', async () => {
     const page = new FakePage();
+    const action = makeAction({ type: 'message' });
+    const res = await message(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/jane/',
+      recipientName: '',
+      body: 'Hello',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toMatch(/name/i);
+    expect(page.gotos).not.toContain('https://www.linkedin.com/messaging/thread/new/');
+  });
+
+  it('preserves paragraph breaks with Shift+Enter (not plain Enter, which sends)', async () => {
+    const page = new FakePage({ texts: { [SELECTORS.composerResultCard]: 'Jane Doe • 1st' } });
     const action = makeAction({ type: 'message' });
     await message(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/jane/',
+      recipientName: 'Jane Doe',
       body: 'Line one.\n\nLine two.',
     });
     // Composed text carries the blank line between paragraphs.
