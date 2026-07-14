@@ -242,7 +242,7 @@ class InMemMessageRepo implements MessageRepoPort {
       intent: row.intent ?? null,
       status: row.status ?? 'draft',
       pendingReq: row.pendingReq ?? null,
-      createdAt: now,
+      createdAt: row.createdAt ?? now,
       updatedAt: now,
     };
     this.rows.set(full.id, full);

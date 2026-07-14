@@ -12,12 +12,15 @@ import {
   LiveInboxReader,
   LiveObserve,
   mailboxUrnFromMe,
+  messengerConversationEventsPath,
   messengerConversationsPath,
   normalizeConnectionsResponse,
   normalizeConversation,
   normalizeInboxResponse,
+  normalizeInboxThreads,
   normalizeProfileResponse,
   normalizeSearchResponse,
+  normalizeThreadHistoryResponse,
   profileIdFromUrn,
   profileUrnFromEntityUrn,
   type SearchBudget,
@@ -1075,6 +1078,133 @@ describe('normalizeConversation (thread mapping)', () => {
     expect(summary!.messages).toEqual([
       { direction: 'outbound', body: 'my note', at: new Date(10) },
     ]);
+  });
+});
+
+describe('reply-gate conversation history', () => {
+  it('maps a thread from its participant even when its latest snippet is outbound', () => {
+    const thread = 'urn:li:msg_conversation:(urn:li:fsd_profile:viewer,thread-1)';
+    const body = {
+      elements: [
+        {
+          entityUrn: thread,
+          participants: [
+            { miniProfile: { entityUrn: 'urn:li:fsd_profile:prospect', publicIdentifier: 'ada' } },
+          ],
+          events: [
+            {
+              outbound: true,
+              deliveredAt: 30,
+              from: { miniProfile: { entityUrn: 'urn:li:fsd_profile:viewer' } },
+              eventContent: { attributedBody: { text: 'Thanks, Ada.' } },
+            },
+          ],
+        },
+      ],
+    };
+    expect(normalizeInboxResponse(body)).toEqual([]);
+    expect(normalizeInboxThreads(body)).toEqual([
+      {
+        threadUrn: thread,
+        participantUrn: 'urn:li:fsd_profile:prospect',
+        profileUrl: 'https://www.linkedin.com/in/ada/',
+      },
+    ]);
+  });
+
+  it('maps the live conversationParticipants wrapper to the counterparty profile urn', () => {
+    const thread = 'urn:li:msg_conversation:(urn:li:fsd_profile:viewer,thread-1)';
+    const body = {
+      data: {
+        messengerConversationsBySyncToken: {
+          elements: [
+            {
+              entityUrn: thread,
+              conversationParticipants: [
+                {
+                  entityUrn: 'urn:li:msg_messagingParticipant:urn:li:fsd_profile:prospect',
+                },
+                {
+                  entityUrn: 'urn:li:msg_messagingParticipant:urn:li:fsd_profile:viewer',
+                },
+              ],
+              messages: { elements: [] },
+            },
+          ],
+        },
+      },
+    };
+    expect(normalizeInboxThreads(body)).toEqual([
+      { threadUrn: thread, participantUrn: 'urn:li:fsd_profile:prospect' },
+    ]);
+  });
+
+  it('normalizes an older inbound from the dedicated thread-events response', () => {
+    const thread = 'urn:li:msg_conversation:thread-1';
+    const body = {
+      elements: [
+        {
+          deliveredAt: 10,
+          from: { miniProfile: { entityUrn: 'urn:li:fsd_profile:prospect' } },
+          eventContent: { attributedBody: { text: 'Yes, let us talk.' } },
+        },
+        {
+          outbound: true,
+          deliveredAt: 30,
+          from: { miniProfile: { entityUrn: 'urn:li:fsd_profile:viewer' } },
+          eventContent: { attributedBody: { text: 'Great, thanks.' } },
+        },
+      ],
+    };
+    expect(normalizeThreadHistoryResponse(body, thread)).toEqual([
+      {
+        threadUrn: thread,
+        senderUrn: 'urn:li:fsd_profile:prospect',
+        text: 'Yes, let us talk.',
+        receivedAt: new Date(10),
+      },
+    ]);
+  });
+
+  it('normalizes the live messengerMessages GraphQL response shape', () => {
+    const thread = 'urn:li:msg_conversation:(urn:li:fsd_profile:viewer,thread-1)';
+    const body = {
+      data: {
+        messengerMessages: {
+          elements: [
+            {
+              deliveredAt: 10,
+              body: { text: 'Yes, let us talk.' },
+              sender: { hostIdentityUrn: 'urn:li:fsd_profile:prospect' },
+            },
+            {
+              deliveredAt: 30,
+              body: { text: 'Great, thanks.' },
+              sender: { hostIdentityUrn: 'urn:li:fsd_profile:viewer' },
+            },
+          ],
+        },
+      },
+    };
+    expect(normalizeThreadHistoryResponse(body, thread)).toEqual([
+      {
+        threadUrn: thread,
+        senderUrn: 'urn:li:fsd_profile:prospect',
+        text: 'Yes, let us talk.',
+        receivedAt: new Date(10),
+      },
+    ]);
+  });
+
+  it('builds a distinct per-conversation events path', () => {
+    const path = messengerConversationEventsPath(
+      'urn:li:msg_conversation:(urn:li:fsd_profile:viewer,thread-1)',
+    );
+    expect(path).toContain('/voyager/api/voyagerMessagingGraphQL/graphql');
+    expect(path).toContain('queryId=messengerMessages.');
+    expect(path).toContain('conversationUrn:urn%3Ali%3Amsg_conversation%3A%28');
+    expect(path).toContain('%2Cthread-1%29');
+    expect(path).not.toContain('MessengerConversationsBySyncToken');
   });
 });
 

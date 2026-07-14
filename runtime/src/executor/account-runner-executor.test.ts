@@ -6,7 +6,7 @@
 // persisted an executed Action + audit event. The runner SafetyPort is the real
 // gate-backed one, so the minted allow token really authorizes the action.
 
-import type { LocatorPort, PagePort } from '@loa/account-runner';
+import { type LocatorPort, type PagePort, SELECTORS } from '@loa/account-runner';
 import type { ActRequest } from '@loa/mcp';
 import { DefaultSafetyGate, NO_ACTIVE_HOURS_CONFIG } from '@loa/safety';
 import type { Account, Action, ActionType, Decision, Target } from '@loa/shared';
@@ -30,13 +30,13 @@ const noSleep = async (): Promise<void> => {};
 // runner actions probe resolves to `count` elements; clicks/typing are no-ops.
 // With count 1 the actions find their buttons and drive the page happy-path
 // without a browser (the returned ActionResultOut is ignored by the executor).
-function stubLocator(count: number): LocatorPort {
+function stubLocator(count: number, text: string | null = null): LocatorPort {
   const loc: LocatorPort = {
     async click() {},
     async type() {},
     async fill() {},
     async textContent() {
-      return null;
+      return text;
     },
     async count() {
       return count;
@@ -62,8 +62,11 @@ class StubPage implements PagePort {
     this.gotos.push(url);
     return null;
   }
-  locator(): LocatorPort {
-    return stubLocator(this.locatorCount);
+  locator(selector: string): LocatorPort {
+    // The message composer picks the typeahead card whose text matches the
+    // recipient name, so hand back a matching card for that selector only.
+    const text = selector === SELECTORS.composerResultCard ? 'Jane Doe • 1st EV' : null;
+    return stubLocator(this.locatorCount, text);
   }
   async $$count() {
     return 0;
@@ -125,7 +128,7 @@ async function seedTarget(store: InMemoryStore): Promise<void> {
     campaignId: CAMP,
     prospectRef: 'p1',
     linkedinUrn: 'urn:li:person:p1',
-    externalContext: {},
+    externalContext: { name: 'Jane Doe' },
     stage: 'sourced',
   });
 }
@@ -196,9 +199,10 @@ describe('AccountRunnerExecutor real path', () => {
     expect(session.page.gotos).toContain(PROFILE);
   });
 
-  it('passes the message body through to the injected page', async () => {
+  it('drives a message through the composer against the injected page', async () => {
     await executor.execute(actRequest('message', 'hello there'));
-    expect(session.page.gotos).toContain(PROFILE);
+    // Messages send through the dedicated composer, not the profile page.
+    expect(session.page.gotos.some((u) => u.includes('messaging/thread/new'))).toBe(true);
   });
 
   it('persists result=failed on the row when the action returns ok:false', async () => {

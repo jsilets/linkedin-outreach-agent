@@ -15,9 +15,12 @@ let buildApprovedQueuedCountsQuery: typeof import('./queries.js').buildApprovedQ
 let splitApprovedQueued: typeof import('./queries.js').splitApprovedQueued;
 let leadFunnelBucket: typeof import('./queries.js').leadFunnelBucket;
 let buildActivityActionsQuery: typeof import('./queries.js').buildActivityActionsQuery;
+let buildReplyActivityQuery: typeof import('./queries.js').buildReplyActivityQuery;
 let buildCampaignPerformanceActionsQuery: typeof import('./queries.js').buildCampaignPerformanceActionsQuery;
 let deriveApprovedQueued: typeof import('./queries.js').deriveApprovedQueued;
 let readLeadContext: typeof import('./queries.js').readLeadContext;
+let groupInboxRows: typeof import('./queries.js').groupInboxRows;
+let deriveReplyDetectorHealth: typeof import('./queries.js').deriveReplyDetectorHealth;
 let projectScheduledSends: typeof import('./queries.js').projectScheduledSends;
 let db: typeof import('./db.js').db;
 
@@ -32,9 +35,12 @@ beforeAll(async () => {
     splitApprovedQueued,
     leadFunnelBucket,
     buildActivityActionsQuery,
+    buildReplyActivityQuery,
     buildCampaignPerformanceActionsQuery,
     deriveApprovedQueued,
     readLeadContext,
+    groupInboxRows,
+    deriveReplyDetectorHealth,
     projectScheduledSends,
   } = await import('./queries.js'));
   ({ db } = await import('./db.js'));
@@ -65,6 +71,161 @@ describe('buildVolumeQuery', () => {
   it('honors the days window in the interval expression', () => {
     const { params } = buildVolumeQuery({ days: 90 }).toSQL();
     expect(params).toContain(90);
+  });
+});
+
+describe('groupInboxRows', () => {
+  const at = (value: string) => new Date(value);
+
+  it('joins local pending and LinkedIn thread refs into one person-centric conversation', () => {
+    const rows = [
+      {
+        messageId: 'draft',
+        accountId: 'acct-1',
+        targetId: 'target-1',
+        externalContext: { name: 'Ada Lovelace', company: 'Analytical Engines' },
+        campaignGoal: 'Intro meetings',
+        direction: 'outbound' as const,
+        body: 'Hi Ada',
+        status: 'draft',
+        intent: null,
+        pendingReq: { type: 'message' },
+        createdAt: at('2026-07-14T10:00:00.000Z'),
+      },
+      {
+        messageId: 'reply',
+        accountId: 'acct-1',
+        targetId: 'target-1',
+        externalContext: { name: 'Ada Lovelace', company: 'Analytical Engines' },
+        campaignGoal: 'Intro meetings',
+        direction: 'inbound' as const,
+        body: 'Happy to chat.',
+        status: 'sent',
+        intent: 'Interested',
+        pendingReq: null,
+        createdAt: at('2026-07-14T11:00:00.000Z'),
+      },
+    ];
+    const inbox = groupInboxRows(rows);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]).toMatchObject({
+      id: 'acct-1:target-1',
+      name: 'Ada Lovelace',
+      needsApproval: true,
+      hasInbound: true,
+      latestPreview: 'Happy to chat.',
+    });
+    expect(inbox[0]?.messages.map((message) => message.id)).toEqual(['draft', 'reply']);
+  });
+
+  it('omits cancelled drafts from the operator inbox entirely', () => {
+    const inbox = groupInboxRows([
+      {
+        messageId: 'cancelled',
+        accountId: 'acct-1',
+        targetId: 'target-1',
+        externalContext: {},
+        campaignGoal: null,
+        direction: 'outbound' as const,
+        body: 'Never send this',
+        status: 'cancelled',
+        intent: null,
+        pendingReq: { type: 'message' },
+        createdAt: at('2026-07-14T10:00:00.000Z'),
+      },
+    ]);
+    expect(inbox).toEqual([]);
+  });
+
+  it('carries a pending follow-up eligibility time into the inbox', () => {
+    const inbox = groupInboxRows([
+      {
+        messageId: 'draft',
+        accountId: 'acct-1',
+        targetId: 'target-1',
+        externalContext: {},
+        campaignGoal: null,
+        direction: 'outbound' as const,
+        body: 'Follow up',
+        status: 'draft',
+        intent: null,
+        pendingReq: { type: 'message' },
+        nextStepAt: at('2026-07-15T10:00:00.000Z'),
+        createdAt: at('2026-07-14T10:00:00.000Z'),
+      },
+    ]);
+    expect(inbox[0]?.messages[0]?.eligibleAt).toBe('2026-07-15T10:00:00.000Z');
+  });
+});
+
+describe('deriveReplyDetectorHealth', () => {
+  const now = new Date('2026-07-14T20:00:00.000Z');
+
+  it('reports a completed scan and its unmatched-thread coverage', () => {
+    const health = deriveReplyDetectorHealth(
+      [
+        {
+          kind: 'reply_detector_started',
+          ts: new Date('2026-07-14T19:00:00.000Z'),
+          payload: { intervalMs: 1_800_000 },
+        },
+        {
+          kind: 'reply_scan_succeeded',
+          ts: new Date('2026-07-14T19:45:00.000Z'),
+          payload: {
+            accounts: 1,
+            listedThreads: 20,
+            mappedThreads: 3,
+            unmatchedThreads: 17,
+            unmatchedInboundMessages: 2,
+          },
+        },
+      ],
+      now,
+    );
+    expect(health).toMatchObject({
+      status: 'healthy',
+      lastSuccessfulScanAt: '2026-07-14T19:45:00.000Z',
+      coverage: { unmatchedThreads: 17, unmatchedInboundMessages: 2 },
+    });
+  });
+
+  it('makes a failed LinkedIn read visible even if no inbound messages were persisted', () => {
+    const health = deriveReplyDetectorHealth(
+      [
+        {
+          kind: 'reply_scan_failed',
+          ts: new Date('2026-07-14T19:55:00.000Z'),
+          payload: { phase: 'thread_history', error: 'HTTP 404' },
+        },
+      ],
+      now,
+    );
+    expect(health).toEqual({
+      status: 'failing',
+      lastSuccessfulScanAt: null,
+      error: { at: '2026-07-14T19:55:00.000Z', phase: 'thread_history', message: 'HTTP 404' },
+      coverage: null,
+    });
+  });
+
+  it('marks a once-working detector stale after two configured intervals', () => {
+    const health = deriveReplyDetectorHealth(
+      [
+        {
+          kind: 'reply_detector_started',
+          ts: new Date('2026-07-14T18:00:00.000Z'),
+          payload: { intervalMs: 1_000 },
+        },
+        {
+          kind: 'reply_scan_succeeded',
+          ts: new Date('2026-07-14T18:00:00.000Z'),
+          payload: {},
+        },
+      ],
+      now,
+    );
+    expect(health.status).toBe('stale');
   });
 });
 
@@ -283,6 +444,22 @@ describe('buildActivityActionsQuery', () => {
     expect(sql).toContain("->>'detail'");
     expect(sql).toContain("->>'actionId'");
     expect(sql).toContain('action_failed%');
+  });
+});
+
+describe('buildReplyActivityQuery', () => {
+  it('projects persisted inbound messages into the activity timeline', () => {
+    const { sql, params } = buildReplyActivityQuery({ limit: 50 }).toSQL();
+    expect(sql).toContain('"messages"');
+    expect(sql).toContain('"targets"');
+    expect(params).toContain('inbound');
+  });
+
+  it('scopes reply activity to one campaign when requested', () => {
+    const campaignId = '33333333-3333-3333-3333-333333333333';
+    const { params } = buildReplyActivityQuery({ campaignId, limit: 10 }).toSQL();
+    expect(params).toContain(campaignId);
+    expect(params).toContain('inbound');
   });
 });
 

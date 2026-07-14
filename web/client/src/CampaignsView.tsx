@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { type Account, api, type CampaignDetail, type CampaignSummary, type Lead } from './api';
 import { FlowEditor } from './FlowEditor';
 import { FunnelBar, MiniFunnel } from './FunnelBar';
@@ -43,12 +43,18 @@ export function CampaignsView() {
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadCampaigns = useCallback(() => {
     api
       .campaigns()
       .then(setList)
       .catch((e) => setError(String(e)));
   }, []);
+
+  useEffect(() => {
+    loadCampaigns();
+    const id = setInterval(loadCampaigns, 60_000);
+    return () => clearInterval(id);
+  }, [loadCampaigns]);
 
   if (selected) {
     return <CampaignDetailView id={selected} onBack={() => setSelected(null)} />;

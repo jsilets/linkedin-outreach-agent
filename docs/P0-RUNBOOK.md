@@ -139,6 +139,49 @@ Now run a real cycle, supervised, approving every send by hand.
 Only after this one-account supervised loop is clean should you consider raising
 autonomy, adding targets in bulk, or standing up a second account.
 
+## Reply detector: verify before relying on it
+
+The Inbox only shows replies that the local reply detector has successfully
+observed and persisted. A zero reply count is not proof that LinkedIn has no
+replies.
+
+1. Keep the account paused while verifying. Pause blocks outbound work but still
+   permits the detector's read-only inbox checks.
+2. On runtime startup, confirm the log includes `reply detector initial scan
+   complete`. It must scan once before its periodic interval begins.
+3. In the Inbox, read the status immediately under the conversation count:
+   - `Reply detection checked …` means the most recent scan completed.
+   - `could not check LinkedIn` means no safety conclusion can be drawn. The
+     status includes the failing phase: enrollment query, thread list, thread
+     history, inbox list, or routing.
+   - `stale`, `not running`, or `has not completed a scan` means investigate
+     before resuming an account.
+4. A healthy scan also reports how many recent conversation rows did not map to
+   active enrollments. This is a coverage signal, not an error: personal or
+   completed conversations are expected to be unmatched.
+5. For a live change to LinkedIn's messaging endpoint or parser, run the
+   read-only `npm run inbox-shakeout -- <accountId>` while the runtime is
+   stopped so it can exclusively open the account profile. It verifies the
+   conversation-list response only. The per-thread history endpoint still
+   requires an explicit read-only live check before we can claim that full
+   history detection is verified. Do not resume or send as part of either check.
+
+### Current live verification status (2026-07-14)
+
+The current mailbox-list query was verified against the paused account. Its
+20-row response uses `conversationParticipants` and wraps each profile identity
+inside `urn:li:msg_messagingParticipant:…`; the parser has a regression test for
+that shape. The existing guessed per-thread `/events` URL returned HTTP 400 in a
+read-only scan. We then captured the real `messengerMessages` GraphQL request
+from an existing conversation page and added its parser test. The final
+read-only detector scan must complete successfully before treating reply
+detection as ready to protect a resumed account.
+
+The append-only event log records `reply_detector_started`, `reply_scan_succeeded`,
+and `reply_scan_failed`. A scan failure is visible in the Inbox and stderr; it
+is never treated as an empty inbox. At send time, a reply-probe failure holds
+the send rather than sending through uncertainty.
+
 ## What to watch
 
 - The DOM selectors are best-effort and will drift with LinkedIn's markup. Step 5

@@ -309,6 +309,17 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       targets: store.target,
       router: orchestrator.replyRouter,
       llm,
+      messages: store.message,
+      // The detector must leave a durable, operator-visible trail. An empty
+      // inbox is only meaningful when the most recent scan says it completed.
+      onScan: async (scan) => {
+        const { at, kind, ...payload } = scan;
+        await orchestrator.eventLog.recordEvent(
+          kind === 'succeeded' ? 'reply_scan_succeeded' : 'reply_scan_failed',
+          null,
+          { ...payload, scannedAt: at.toISOString() },
+        );
+      },
     });
     // Late-bind the dispatch send-time probe to this instance (see above).
     replyTickRef = replyTick;

@@ -137,6 +137,8 @@ const ACTION_LABELS: Record<string, string> = {
   withdraw_invite: 'Withdraw',
   // Inbound (from the event log), not an outbound action — the prospect accepted.
   invite_accepted: 'Invite accepted',
+  // Inbound (from the durable message history), never an automated send.
+  reply_received: 'Reply received',
 };
 
 export function actionLabel(type: string): string {

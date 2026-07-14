@@ -123,6 +123,24 @@ export const SELECTORS = {
     'main button[aria-label^="Message"], ' +
     'main a[aria-label^="Message"], ' +
     'main button:has(span:text-is("Message"))',
+  // --- Compose via the dedicated new-message composer (thread/new) -----------
+  // Messages are sent through https://www.linkedin.com/messaging/thread/new/,
+  // NOT the profile page. The profile-page Message button lives on the heaviest,
+  // most-A/B'd surface on LinkedIn and its action bar hydrates AFTER
+  // domcontentloaded, so an immediate click races the render (misses the button
+  // -> timeout, or a half-hydrated overlay -> false wrong-recipient refusal).
+  // The composer is a stable, lightweight surface with a single recipient field.
+  // The recipient typeahead field on thread/new. Type a name per-key to trigger
+  // suggestions; a paste-like insert does not fire the typeahead.
+  composerRecipientField:
+    'input.msg-connections-typeahead__search-field, ' +
+    'input[placeholder*="Type a name" i][role="combobox"]',
+  // A connection suggestion card in the recipient typeahead. Cards carry NO
+  // stable id (no href/urn), so the pick is by visible name and the real gate is
+  // the post-select recipient-anchor identity check (messageRecipientAnchor).
+  composerResultCard:
+    '[role="option"][data-view-name="messaging-type-ahead-card"], ' +
+    '.msg-connections-typeahead__search-result[data-view-name="messaging-type-ahead-card"]',
   // The chat overlay bubble for ONE conversation. LinkedIn keeps several open at
   // once and they live in a shadow subtree; the runner scopes the compose box +
   // Send to the bubble that provably links to the intended recipient
@@ -130,6 +148,12 @@ export const SELECTORS = {
   // matching the anchor with or without a trailing slash) so a message can never
   // land in a different open conversation. Verified live 2026-07-10.
   messageConversationBubble: '.msg-overlay-conversation-bubble',
+  // The open thread/composer container that holds ONE recipient's compose box +
+  // send. Scoped via :has(recipientAnchor) so a stray minimized overlay bubble
+  // can never receive the send. Covers both the full-page thread pane and the
+  // floating overlay bubble. verify-live: container class confirmed 2026-07-14.
+  messageThreadContainer:
+    '[class*="msg-convo-wrapper"], [class*="msg-thread"], .msg-overlay-conversation-bubble, main',
   messageComposeBox:
     'div[contenteditable="true"][aria-label*="message" i], ' +
     'div.msg-form__contenteditable[contenteditable="true"]',

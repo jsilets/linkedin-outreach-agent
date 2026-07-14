@@ -84,6 +84,14 @@ export function MetricsView({
     loadOps();
   }, [loadOps]);
 
+  // Reply detection runs independently of this view. Refresh the operational
+  // projections so a newly detected reply arrives in Activity and campaign
+  // metrics without requiring the operator to change tabs or reload.
+  useEffect(() => {
+    const id = setInterval(loadOps, 60_000);
+    return () => clearInterval(id);
+  }, [loadOps]);
+
   // A stored account filter may point at an account that's since been unlinked —
   // fall back to "All accounts" once the live list is in, so it isn't a ghost.
   useEffect(() => {
@@ -238,21 +246,30 @@ function ActivityFeed({ items }: { items: ActivityItem[] }) {
     {
       key: 'result',
       header: 'Result',
-      // An invite_accepted row is inbound, not a send: show "Accepted" in the
-      // lead-milestone vocabulary. Every other row is an ACTION result, which has
-      // its own labels — an in-flight 'pending' reads "Running", not "Not started".
-      sortValue: (a) => (a.type === 'invite_accepted' ? 'Accepted' : actionResultLabel(a.result)),
+      // Inbound milestones are not sends: show their business state rather than
+      // borrowing an outbound action result label.
+      sortValue: (a) =>
+        a.type === 'invite_accepted'
+          ? 'Accepted'
+          : a.type === 'reply_received'
+            ? 'Replied'
+            : actionResultLabel(a.result),
       cell: (a) => {
         const isAccept = a.type === 'invite_accepted';
-        const color = isAccept ? statusVar('connected') : actionResultVar(a.result);
-        const label = isAccept ? 'Accepted' : actionResultLabel(a.result);
+        const isReply = a.type === 'reply_received';
+        const color = isAccept
+          ? statusVar('connected')
+          : isReply
+            ? statusVar('replied')
+            : actionResultVar(a.result);
+        const label = isAccept ? 'Accepted' : isReply ? 'Replied' : actionResultLabel(a.result);
         // A failed row carries the executor's reason (e.g. "needs recipient email
         // to connect"); surface it in a real hover popover so "why" is legible on
         // hover instead of buried in the events table (a bare title attribute only
         // gave a help cursor with no visible text). The dotted underline signals
         // there's more to read; the popover renders on hover/focus.
         const reason = a.failureDetail;
-        if (isAccept || !reason) {
+        if (isAccept || isReply || !reason) {
           return (
             <span className="chip" style={{ ['--c' as string]: color }}>
               {label}

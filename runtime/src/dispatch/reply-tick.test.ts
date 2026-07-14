@@ -10,10 +10,10 @@
 import type { SchedulerLikePort } from '@loa/orchestrator';
 import type { Intent, LLMProvider, Message } from '@loa/shared';
 import { describe, expect, it } from 'vitest';
-import type { InboundMessage, InboxReaderPort } from '../adapters/observe-live.js';
+import type { InboundMessage, InboxReaderPort, InboxThread } from '../adapters/observe-live.js';
 import { makeOrchestratorServices } from '../adapters/orchestrator.js';
 import { InMemoryStore } from '../store/in-memory-store.js';
-import { ReplyTick } from './reply-tick.js';
+import { type ReplyScan, ReplyTick } from './reply-tick.js';
 
 const CAMP = 'camp-1';
 const ACCT = 'acct-1';
@@ -35,6 +35,23 @@ class FakeInbox implements InboxReaderPort {
   async readInbox(accountId: string): Promise<InboundMessage[]> {
     this.calls.push(accountId);
     return this.messages;
+  }
+}
+
+/** Represents the real history lane: the mailbox row's newest event is ours,
+ * but the conversation detail still contains the prospect's older reply. */
+class HistoryInbox implements InboxReaderPort {
+  readonly historyCalls: string[] = [];
+  constructor(private readonly history: InboundMessage[]) {}
+  async readInbox(): Promise<InboundMessage[]> {
+    return [];
+  }
+  async readThreads(): Promise<InboxThread[]> {
+    return [{ threadUrn: 'urn:li:msg_conversation:t1', participantUrn: 'urn:li:person:p1' }];
+  }
+  async readThreadHistory(_accountId: string, threadUrn: string): Promise<InboundMessage[]> {
+    this.historyCalls.push(threadUrn);
+    return this.history;
   }
 }
 
@@ -91,6 +108,7 @@ describe('ReplyTick', () => {
       targets: store.target,
       router: orchestrator.replyRouter,
       llm: fakeLlm as unknown as LLMProvider,
+      messages: store.message,
     });
 
     const res = await tick.runTick();
@@ -100,6 +118,12 @@ describe('ReplyTick', () => {
     expect(res.outcomes[0]).toMatchObject({ kind: 'routed', targetId: TGT, intent: 'Interested' });
     // The classifier saw the inbound body.
     expect(fakeLlm.seen.map((m) => m.body)).toEqual(['sure, happy to chat']);
+    // The exact observed inbound is retained in the local message history for
+    // the unified inbox, independently of the funnel state change.
+    const recorded = await store.message.listByThread('urn:li:msg_conversation:t1');
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({ direction: 'inbound', body: 'sure, happy to chat' });
+    expect(recorded[0]!.createdAt).toEqual(new Date('2026-07-06T12:00:00Z'));
     // The target was pulled out of the funnel (terminal 'replied' progress).
     const [after] = await store.sequence.listTargetProgress(CAMP);
     expect(after.state).toBe('replied');
@@ -189,6 +213,44 @@ describe('ReplyTick', () => {
     expect((await store2.sequence.getTargetProgressByTarget(TGT))!.state).toBe('in_progress');
   });
 
+  it('uses mapped thread history when a later outbound hides the prospect reply in the inbox list', async () => {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    const orchestrator = makeOrchestratorServices(store, noopScheduler);
+    const target = (await store.target.findById(TGT))!;
+    const inbox = new HistoryInbox([inbound({ receivedAt: new Date('2026-07-06T12:00:00Z') })]);
+    const tick = new ReplyTick({
+      inbox,
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: llm('Interested'),
+      messages: store.message,
+    });
+
+    // The prospect reply predates the human's later outbound, but it is still
+    // enough to block a newly due automated message.
+    expect(await tick.probeTarget(ACCT, target, new Date('2026-07-06T13:00:00Z'))).toBe(true);
+    expect(inbox.historyCalls).toEqual(['urn:li:msg_conversation:t1']);
+    expect((await store.sequence.getTargetProgressByTarget(TGT))!.state).toBe('replied');
+
+    // The periodic sweep uses the identical history lane, not a latest-message
+    // snippet, so a fresh tick also observes the same reply.
+    const store2 = new InMemoryStore();
+    await seedEnrolledTarget(store2);
+    const orchestrator2 = makeOrchestratorServices(store2, noopScheduler);
+    const tick2 = new ReplyTick({
+      inbox: new HistoryInbox([inbound()]),
+      enrollments: activeEnrollments(store2),
+      targets: store2.target,
+      router: orchestrator2.replyRouter,
+      llm: llm('Interested'),
+    });
+    const result = await tick2.runTick();
+    expect(result.outcomes[0]).toMatchObject({ kind: 'routed', targetId: TGT });
+    expect((await store2.sequence.getTargetProgressByTarget(TGT))!.state).toBe('replied');
+  });
+
   it('routes a message once and marks a repeat of it as already-seen', async () => {
     const store = new InMemoryStore();
     await seedEnrolledTarget(store);
@@ -212,5 +274,63 @@ describe('ReplyTick', () => {
     expect(res.outcomes[1]).toMatchObject({ kind: 'seen' });
     // Classified exactly once despite the duplicate.
     expect(fakeLlm.seen).toHaveLength(1);
+  });
+
+  it('reports completed scan coverage so an empty inbox is distinguishable from an unrun scan', async () => {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    const orchestrator = makeOrchestratorServices(store, noopScheduler);
+    const scans: ReplyScan[] = [];
+    const tick = new ReplyTick({
+      inbox: new HistoryInbox([inbound()]),
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: llm('Interested'),
+      onScan: (scan) => scans.push(scan),
+    });
+
+    await tick.runTick();
+
+    expect(scans).toHaveLength(1);
+    expect(scans[0]).toMatchObject({
+      kind: 'succeeded',
+      accounts: 1,
+      enrollments: 1,
+      listedThreads: 1,
+      mappedThreads: 1,
+      unmatchedThreads: 0,
+      historyReads: 1,
+      routed: 1,
+    });
+  });
+
+  it('reports a failed read with its phase instead of swallowing it as no replies', async () => {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    const orchestrator = makeOrchestratorServices(store, noopScheduler);
+    const scans: ReplyScan[] = [];
+    const tick = new ReplyTick({
+      inbox: {
+        readInbox: async () => {
+          throw new Error('LinkedIn session expired');
+        },
+      },
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: llm('Interested'),
+      onScan: (scan) => scans.push(scan),
+    });
+
+    await expect(tick.runTick()).rejects.toThrow('LinkedIn session expired');
+    expect(scans).toEqual([
+      expect.objectContaining({
+        kind: 'failed',
+        phase: 'inbox_list',
+        accountId: ACCT,
+        error: 'LinkedIn session expired',
+      }),
+    ]);
   });
 });

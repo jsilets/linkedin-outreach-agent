@@ -16,7 +16,7 @@ import {
   readIcpScore,
 } from '@loa/shared';
 import type { SQL } from 'drizzle-orm';
-import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { type Db, db, schema } from './db.js';
 import { type NormalizedStep, normalizeSteps } from './steps.js';
@@ -70,17 +70,13 @@ export interface CampaignPerformance {
   invitesAccepted: number;
   /** message actions that succeeded. */
   messagesSent: number;
-  /** targets whose stage reached a replied-or-later stage. */
+  /** distinct targets with a persisted inbound LinkedIn message. */
   replies: number;
 }
 
 function emptyPerformance(): CampaignPerformance {
   return { invitesSent: 0, invitesAccepted: 0, messagesSent: 0, replies: 0 };
 }
-
-// Target stages that count as a reply having landed (replied and everything past
-// it in the funnel).
-const REPLIED_STAGES = ['replied', 'in_conversation', 'won'] as const;
 
 export interface CampaignSummary {
   id: string;
@@ -152,7 +148,8 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
   // Performance rollup: three more grouped queries, folded in by campaign id the
   // same way the histograms above are. Invites/messages come from successful
   // actions; accepts from the invite_accepted event log (campaign lives in the
-  // jsonb payload); replies from targets that reached a replied-or-later stage.
+  // jsonb payload); replies from distinct targets with a persisted inbound
+  // message. Intent can move a target to `lost`, so stage is not a reply metric.
   const perfActionRows = await buildCampaignPerformanceActionsQuery();
   const acceptedRows = await db
     .select({
@@ -165,10 +162,11 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
   const replyRows = await db
     .select({
       campaignId: targets.campaignId,
-      count: sql<number>`count(*)::int`,
+      count: sql<number>`count(distinct ${messages.targetId})::int`,
     })
-    .from(targets)
-    .where(inArray(targets.stage, [...REPLIED_STAGES]))
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(eq(messages.direction, 'inbound'))
     .groupBy(targets.campaignId);
 
   const stageByCampaign = new Map<string, { total: number; byStage: Record<string, number> }>();
@@ -300,9 +298,10 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     .where(and(eq(events.kind, 'invite_accepted'), eq(sql`${events.payload}->>'campaignId'`, id)));
   performance.invitesAccepted = accepted?.count ?? 0;
   const [replied] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(targets)
-    .where(and(eq(targets.campaignId, id), inArray(targets.stage, [...REPLIED_STAGES])));
+    .select({ count: sql<number>`count(distinct ${messages.targetId})::int` })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(and(eq(targets.campaignId, id), eq(messages.direction, 'inbound')));
   performance.replies = replied?.count ?? 0;
 
   return {
@@ -741,6 +740,258 @@ export async function getPending(campaignId?: string): Promise<Pending[]> {
   });
 }
 
+/** One persisted message rendered in the unified inbox. The inbox deliberately
+ * reads only our local audit history: opening the web app must not open a
+ * LinkedIn session or perform a live inbox read. */
+export interface InboxMessage {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  body: string;
+  status: string;
+  intent: string | null;
+  createdAt: string;
+  /** Present only for a draft the operator can approve or reject. */
+  pendingMessageId: string | null;
+  /** When this follow-up becomes eligible to enter the send queue. Null means
+   * it is eligible now. This is intentionally not a promise that it will send
+   * at that exact moment: approval and send-window pacing still apply. */
+  eligibleAt: string | null;
+}
+
+export interface InboxThread {
+  /** Account + target, not threadRef: outbound drafts start with a local
+   * pending:<account>:<target> ref before LinkedIn assigns a thread urn. */
+  id: string;
+  accountId: string;
+  targetId: string;
+  name: string | null;
+  company: string | null;
+  headline: string | null;
+  profileUrl: string | null;
+  campaignGoal: string | null;
+  latestAt: string;
+  latestPreview: string;
+  hasInbound: boolean;
+  needsApproval: boolean;
+  messages: InboxMessage[];
+}
+
+type InboxRow = {
+  messageId: string;
+  accountId: string;
+  targetId: string;
+  externalContext: unknown;
+  campaignGoal: string | null;
+  direction: 'inbound' | 'outbound';
+  body: string;
+  status: string;
+  intent: string | null;
+  pendingReq: unknown;
+  nextStepAt?: Date | null;
+  createdAt: Date;
+};
+
+/** Group an ordered audit stream into people-centric conversations. Exported so
+ * the key invariant stays unit-testable without a database: never split a
+ * conversation just because LinkedIn has not assigned the outbound a thread
+ * urn yet. */
+export function groupInboxRows(rows: InboxRow[]): InboxThread[] {
+  const threads = new Map<string, InboxThread>();
+  for (const row of rows) {
+    // Cancelled drafts are audit records, not conversation events. Showing them
+    // in the operator inbox makes a discarded message look like it was sent.
+    if (row.status === 'cancelled') continue;
+    const id = `${row.accountId}:${row.targetId}`;
+    let thread = threads.get(id);
+    if (!thread) {
+      const ctx = readLeadContext(row.externalContext);
+      thread = {
+        id,
+        accountId: row.accountId,
+        targetId: row.targetId,
+        name: ctx.name,
+        company: ctx.company,
+        headline: ctx.headline,
+        profileUrl: ctx.profileUrl,
+        campaignGoal: row.campaignGoal,
+        latestAt: row.createdAt.toISOString(),
+        latestPreview: row.body,
+        hasInbound: false,
+        needsApproval: false,
+        messages: [],
+      };
+      threads.set(id, thread);
+    }
+    const canApprove =
+      row.direction === 'outbound' && row.status === 'draft' && row.pendingReq != null;
+    thread.messages.push({
+      id: row.messageId,
+      direction: row.direction,
+      body: row.body,
+      status: row.status,
+      intent: row.intent,
+      createdAt: row.createdAt.toISOString(),
+      pendingMessageId: canApprove ? row.messageId : null,
+      eligibleAt: canApprove && row.nextStepAt ? row.nextStepAt.toISOString() : null,
+    });
+    thread.hasInbound ||= row.direction === 'inbound';
+    thread.needsApproval ||= canApprove;
+    if (row.createdAt.getTime() >= new Date(thread.latestAt).getTime()) {
+      thread.latestAt = row.createdAt.toISOString();
+      thread.latestPreview = row.body;
+    }
+  }
+  for (const thread of threads.values()) {
+    thread.messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  return [...threads.values()].sort((a, b) => b.latestAt.localeCompare(a.latestAt));
+}
+
+/** Every locally known conversation, newest first. This is intentionally a
+ * read-only projection over the message audit trail. Inbound messages enter the
+ * same trail when reply detection observes them. Cancelled drafts remain in the
+ * audit log but are deliberately excluded from this operator-facing inbox. */
+export async function getInbox(): Promise<InboxThread[]> {
+  const rows = await db
+    .select({
+      messageId: messages.id,
+      accountId: messages.accountId,
+      targetId: messages.targetId,
+      externalContext: targets.externalContext,
+      campaignGoal: campaigns.goal,
+      direction: messages.direction,
+      body: messages.body,
+      status: messages.status,
+      intent: messages.intent,
+      pendingReq: messages.pendingReq,
+      nextStepAt: targetProgress.nextStepAt,
+      createdAt: messages.createdAt,
+    })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .innerJoin(campaigns, eq(targets.campaignId, campaigns.id))
+    .leftJoin(targetProgress, eq(targetProgress.targetId, targets.id))
+    .where(ne(messages.status, 'cancelled'))
+    .orderBy(asc(messages.createdAt));
+  return groupInboxRows(rows);
+}
+
+// --- Reply detector health --------------------------------------------------
+
+export type ReplyDetectorStatus = 'healthy' | 'failing' | 'stale' | 'disabled' | 'never_run';
+
+export interface ReplyDetectorHealth {
+  status: ReplyDetectorStatus;
+  /** The newest completed observation pass, not an estimate. */
+  lastSuccessfulScanAt: string | null;
+  /** A recent detector failure, if it has not since been followed by success. */
+  error: { at: string; phase: string; message: string } | null;
+  /** Current scan coverage from the newest successful pass. */
+  coverage: {
+    accounts: number;
+    listedThreads: number;
+    mappedThreads: number;
+    unmatchedThreads: number;
+    unmatchedInboundMessages: number;
+  } | null;
+}
+
+type ReplyDetectorEventRow = { kind: string; ts: Date; payload: unknown };
+
+const REPLY_DETECTOR_EVENTS = [
+  'reply_detector_started',
+  'reply_detector_idle',
+  'reply_scan_succeeded',
+  'reply_scan_failed',
+] as const;
+
+function eventObject(payload: unknown): Record<string, unknown> {
+  return payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? (payload as Record<string, unknown>)
+    : {};
+}
+
+function eventNumber(payload: Record<string, unknown>, key: string): number {
+  const value = payload[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** Read the detector's append-only health trail. The dashboard deliberately
+ * does not infer health from the inbox count: zero replies can be healthy, an
+ * unrun detector, or a failed LinkedIn read. */
+export function deriveReplyDetectorHealth(
+  rows: ReplyDetectorEventRow[],
+  now = new Date(),
+): ReplyDetectorHealth {
+  const newest = (kind: (typeof REPLY_DETECTOR_EVENTS)[number]) =>
+    rows.find((row) => row.kind === kind);
+  const success = newest('reply_scan_succeeded');
+  const failure = newest('reply_scan_failed');
+  const started = newest('reply_detector_started');
+  const idle = newest('reply_detector_idle');
+  const successPayload = success ? eventObject(success.payload) : null;
+  const failedAfterSuccess = !!failure && (!success || failure.ts.getTime() > success.ts.getTime());
+
+  if (!success && !failure) {
+    return {
+      status:
+        idle && (!started || idle.ts.getTime() > started.ts.getTime()) ? 'disabled' : 'never_run',
+      lastSuccessfulScanAt: null,
+      error: null,
+      coverage: null,
+    };
+  }
+
+  if (failedAfterSuccess && failure) {
+    const payload = eventObject(failure.payload);
+    return {
+      status: 'failing',
+      lastSuccessfulScanAt: success?.ts.toISOString() ?? null,
+      error: {
+        at: failure.ts.toISOString(),
+        phase: typeof payload.phase === 'string' ? payload.phase : 'unknown',
+        message: typeof payload.error === 'string' ? payload.error : 'Unknown detector error',
+      },
+      coverage: successPayload
+        ? {
+            accounts: eventNumber(successPayload, 'accounts'),
+            listedThreads: eventNumber(successPayload, 'listedThreads'),
+            mappedThreads: eventNumber(successPayload, 'mappedThreads'),
+            unmatchedThreads: eventNumber(successPayload, 'unmatchedThreads'),
+            unmatchedInboundMessages: eventNumber(successPayload, 'unmatchedInboundMessages'),
+          }
+        : null,
+    };
+  }
+
+  const intervalMs = started ? eventNumber(eventObject(started.payload), 'intervalMs') : 0;
+  const staleAfterMs = intervalMs > 0 ? intervalMs * 2 : 60 * 60 * 1000;
+  return {
+    status: success && now.getTime() - success.ts.getTime() > staleAfterMs ? 'stale' : 'healthy',
+    lastSuccessfulScanAt: success?.ts.toISOString() ?? null,
+    error: null,
+    coverage: successPayload
+      ? {
+          accounts: eventNumber(successPayload, 'accounts'),
+          listedThreads: eventNumber(successPayload, 'listedThreads'),
+          mappedThreads: eventNumber(successPayload, 'mappedThreads'),
+          unmatchedThreads: eventNumber(successPayload, 'unmatchedThreads'),
+          unmatchedInboundMessages: eventNumber(successPayload, 'unmatchedInboundMessages'),
+        }
+      : null,
+  };
+}
+
+export async function getReplyDetectorHealth(now = new Date()): Promise<ReplyDetectorHealth> {
+  const rows = await db
+    .select({ kind: events.kind, ts: events.ts, payload: events.payload })
+    .from(events)
+    .where(inArray(events.kind, [...REPLY_DETECTOR_EVENTS]))
+    .orderBy(desc(events.ts))
+    .limit(32);
+  return deriveReplyDetectorHealth(rows, now);
+}
+
 export interface ActivityItem {
   actionId: string;
   type: string;
@@ -792,11 +1043,36 @@ export function buildActivityActionsQuery(opts: { campaignId?: string; limit: nu
     .limit(opts.limit);
 }
 
+/** Received LinkedIn messages are activity in their own right, rather than an
+ * inferred side effect of a funnel stage. Keep each message in the timeline,
+ * while campaign performance separately counts distinct replying targets. */
+export function buildReplyActivityQuery(opts: { campaignId?: string; limit: number }) {
+  return db
+    .select({
+      id: messages.id,
+      createdAt: messages.createdAt,
+      targetId: messages.targetId,
+      campaignId: targets.campaignId,
+      name: sql<string | null>`${targets.externalContext}->>'name'`,
+      profileUrl: sql<string | null>`${targets.externalContext}->>'profileUrl'`,
+    })
+    .from(messages)
+    .innerJoin(targets, eq(messages.targetId, targets.id))
+    .where(
+      and(
+        eq(messages.direction, 'inbound'),
+        ...(opts.campaignId ? [eq(targets.campaignId, opts.campaignId)] : []),
+      ),
+    )
+    .orderBy(desc(messages.createdAt))
+    .limit(opts.limit);
+}
+
 /**
  * Reverse-chron feed of what happened, newest first: outbound actions AND
- * inbound invite_accepted events, so an acceptance shows up alongside the sends
- * ("X accepted your invite"). An acceptance is not an action row, so it is
- * unioned in from the event log. Optional campaignId narrows both. limit is
+ * inbound milestones: invite accepts and received replies show up alongside
+ * sends. Neither is an action row, so they are projected from their durable
+ * event/message records. Optional campaignId narrows every source. limit is
  * clamped by the caller (default 50, max 200).
  */
 export async function getActivity(opts: {
@@ -804,6 +1080,7 @@ export async function getActivity(opts: {
   limit: number;
 }): Promise<ActivityItem[]> {
   const actionRows = await buildActivityActionsQuery(opts);
+  const replyRows = await buildReplyActivityQuery(opts);
 
   // Acceptance events carry targetId/campaignId/name/profileUrl in their jsonb
   // payload — but older events were written without profileUrl, so fall back to
@@ -855,6 +1132,18 @@ export async function getActivity(opts: {
       targetId: r.targetId ?? '',
       name: r.name,
       profileUrl: r.profileUrl ?? null,
+      campaignId: r.campaignId,
+      failureDetail: null,
+    })),
+    ...replyRows.map((r) => ({
+      actionId: r.id,
+      type: 'reply_received',
+      result: 'success',
+      executedAt: r.createdAt.toISOString(),
+      scheduledAt: r.createdAt.toISOString(),
+      targetId: r.targetId,
+      name: r.name,
+      profileUrl: r.profileUrl,
       campaignId: r.campaignId,
       failureDetail: null,
     })),

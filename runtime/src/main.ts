@@ -51,11 +51,32 @@ async function main(): Promise<void> {
   // opt-in rule as dispatch, and it only exists with a real session (fake mode
   // has no inbox to read), so it starts only when both are present.
   if (config.replyPollIntervalMs && runtime.replyTick) {
+    await runtime.orchestrator.eventLog.recordEvent('reply_detector_started', null, {
+      intervalMs: config.replyPollIntervalMs,
+    });
+    // Scan before waiting for the first interval. A restart must not create a
+    // 30-minute blind spot while a reply is already sitting in the inbox.
+    try {
+      const initial = await runtime.replyTick.runTick();
+      console.log(
+        `[@loa/runtime] reply detector initial scan complete: ${initial.accounts} account(s), ${initial.outcomes.length} outcome(s)`,
+      );
+    } catch (error) {
+      // runTick has recorded reply_scan_failed. Keep the paused/read-only host
+      // alive so the next interval can recover after a transient session error.
+      console.error('[@loa/runtime] reply detector initial scan failed:', error);
+    }
     runtime.replyTick.start(config.replyPollIntervalMs);
     console.log(`[@loa/runtime] reply tick started: every ${config.replyPollIntervalMs}ms`);
   } else if (config.replyPollIntervalMs) {
+    await runtime.orchestrator.eventLog.recordEvent('reply_detector_idle', null, {
+      reason: 'needs_real_executor',
+    });
     console.log('[@loa/runtime] reply tick idle (needs LOA_EXECUTOR=real for a live inbox)');
   } else {
+    await runtime.orchestrator.eventLog.recordEvent('reply_detector_idle', null, {
+      reason: 'poll_interval_unset',
+    });
     console.log('[@loa/runtime] reply tick idle (set LOA_REPLY_POLL_INTERVAL_MS to run it)');
   }
 

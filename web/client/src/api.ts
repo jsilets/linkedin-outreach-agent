@@ -89,6 +89,50 @@ export interface Pending {
   profileUrl: string | null;
 }
 
+export interface InboxMessage {
+  id: string;
+  direction: 'inbound' | 'outbound';
+  body: string;
+  status: string;
+  intent: string | null;
+  createdAt: string;
+  /** Present only when this is a live, sendable approval item. */
+  pendingMessageId: string | null;
+  /** When a pending follow-up becomes eligible to enter the send queue. Null
+   * means it is eligible now; actual delivery remains subject to approval and
+   * the account's pacing window. */
+  eligibleAt: string | null;
+}
+
+export interface InboxThread {
+  id: string;
+  accountId: string;
+  targetId: string;
+  name: string | null;
+  company: string | null;
+  headline: string | null;
+  profileUrl: string | null;
+  campaignGoal: string | null;
+  latestAt: string;
+  latestPreview: string;
+  hasInbound: boolean;
+  needsApproval: boolean;
+  messages: InboxMessage[];
+}
+
+export interface ReplyDetectorHealth {
+  status: 'healthy' | 'failing' | 'stale' | 'disabled' | 'never_run';
+  lastSuccessfulScanAt: string | null;
+  error: { at: string; phase: string; message: string } | null;
+  coverage: {
+    accounts: number;
+    listedThreads: number;
+    mappedThreads: number;
+    unmatchedThreads: number;
+    unmatchedInboundMessages: number;
+  } | null;
+}
+
 export interface ActivityItem {
   actionId: string;
   type: string;
@@ -255,6 +299,8 @@ export const api = {
     const q = campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : '';
     return get<Pending[]>(`/api/pending${q}`);
   },
+  inbox: () => get<InboxThread[]>('/api/inbox'),
+  inboxHealth: () => get<ReplyDetectorHealth>('/api/inbox/health'),
   activity: (opts: { campaignId?: string; limit?: number } = {}) => {
     const params = new URLSearchParams();
     if (opts.campaignId) params.set('campaignId', opts.campaignId);

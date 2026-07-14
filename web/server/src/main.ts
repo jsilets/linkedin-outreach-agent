@@ -18,8 +18,10 @@ import {
   getCampaign,
   getCampaignLeads,
   getErrors,
+  getInbox,
   getList,
   getPending,
+  getReplyDetectorHealth,
   getScheduled,
   getVolume,
   LaunchError,
@@ -380,6 +382,27 @@ api.get('/pending', async (req, res, next) => {
         ? req.query.campaignId
         : undefined;
     res.json(await getPending(campaignId));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Unified local message history. This does not read LinkedIn or mutate any
+// account: it is the durable audit trail populated by sends, drafts, and reply
+// detection.
+api.get('/inbox', async (_req, res, next) => {
+  try {
+    res.json(await getInbox());
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Detector health is a local audit projection. It never opens LinkedIn; its
+// job is to distinguish "no replies" from "we could not check".
+api.get('/inbox/health', async (_req, res, next) => {
+  try {
+    res.json(await getReplyDetectorHealth());
   } catch (err) {
     next(err);
   }

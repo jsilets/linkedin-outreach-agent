@@ -105,15 +105,6 @@ async function isPresent(ctx: ActionContext, selector: string): Promise<boolean>
   return (await ctx.page.locator(selector).count()) > 0;
 }
 
-/** Prefix every comma-part of a (possibly multi-part) selector with an ancestor
- * scope, confining the whole OR-chain to one container. */
-function scopeSelector(scope: string, sel: string): string {
-  return sel
-    .split(',')
-    .map((s) => `${scope} ${s.trim()}`)
-    .join(', ');
-}
-
 /** The /in/<publicId> slug from a profile URL, or undefined. Used to scope the
  * message composer to the intended recipient's conversation. */
 function publicIdFromProfileUrl(url: string): string | undefined {
@@ -322,25 +313,50 @@ export async function connect(
   return { ok: true, detail: `${how} (${via})` };
 }
 
-// How long to wait for the recipient's chat overlay to hydrate after the Message
-// click before giving up. The bubble usually appears within a second, but a slow
-// profile render can take several; a too-short bound false-refuses a valid send.
-const MESSAGE_OVERLAY_TIMEOUT_MS = 8000;
+// The recipient composer opens on a dedicated, lightweight surface. Bounds:
+// field appears after the messaging app hydrates; result cards a beat after
+// typing; the thread (with its recipient anchor) a beat after selecting a card.
+const COMPOSER_FIELD_TIMEOUT_MS = 15000;
+const TYPEAHEAD_RESULT_TIMEOUT_MS = 8000;
+const THREAD_OPEN_TIMEOUT_MS = 10000;
+// Per-key delay while typing the recipient name: the typeahead fires on
+// keystroke input events, so this must be a real character-by-character type
+// (a paste-like insert does not populate suggestions).
+const TYPEAHEAD_KEY_DELAY_MS = 70;
+
+/** Build a selector that scopes `inner` to whichever thread container provably
+ * links to the recipient (`:has(anchor)`), across every container/inner OR-part.
+ * This keeps the compose box + Send bound to the ONE thread for this recipient,
+ * so a stray minimized overlay for someone else can never receive the send. */
+function scopeToThread(container: string, anchor: string, inner: string): string {
+  const parts: string[] = [];
+  for (const c of container.split(',').map((s) => s.trim())) {
+    for (const i of inner.split(',').map((s) => s.trim())) {
+      parts.push(`${c}:has(${anchor}) ${i}`);
+    }
+  }
+  return parts.join(', ');
+}
 
 /**
- * Send a direct message to the person at `profileUrl`.
+ * Send a direct message to `recipientName` at `profileUrl`.
  *
- * SAFETY: LinkedIn keeps multiple chat overlays open at once, so the compose box
- * and Send button must be scoped to the ONE conversation that provably belongs
- * to this recipient — matched by a link to their /in/<publicId> inside the
- * overlay bubble. If that scoped conversation is not open, we REFUSE to send
- * (ok:false) rather than risk typing into a different person's conversation
- * (which once mis-sent a message to the wrong connection). The composer is also
- * cleared first, because LinkedIn pre-fills a suggested/AI icebreaker.
+ * Sends through the dedicated new-message composer (thread/new) + recipient
+ * typeahead, NOT the profile page. The profile-page Message button hydrates
+ * after `domcontentloaded`, so clicking it immediately races the render — the
+ * source of both the "Message button timeout" and half-hydrated wrong-recipient
+ * refusals seen in production. The composer is a stable surface.
+ *
+ * SAFETY: the typeahead cards carry no stable id, so the picked card is a
+ * best-effort name match; the REAL guard is the post-select identity check — the
+ * opened thread must link to THIS recipient's /in/ profile (their vanity or the
+ * opaque member id from the urn). If it does not, we REFUSE (ok:false) rather
+ * than risk messaging the wrong person. Compose box + Send are then scoped to
+ * that verified thread, and the box is cleared before typing.
  */
 export async function message(
   ctx: ActionContext,
-  params: { profileUrl: string; body: string },
+  params: { profileUrl: string; recipientName: string; body: string; memberId?: string },
 ): Promise<ActionResultOut> {
   guard(ctx);
   const publicId = publicIdFromProfileUrl(params.profileUrl);
@@ -350,45 +366,92 @@ export async function message(
       detail: `no /in/ id in ${params.profileUrl}; refusing to send (cannot verify recipient)`,
     };
   }
-  await ctx.page.goto(params.profileUrl, { waitUntil: 'domcontentloaded' });
-  await gap(ctx);
-  await humanClick(ctx, SELECTORS.messageButton);
-
-  // The overlay bubble for THIS recipient: the conversation bubble that contains
-  // a link to their profile. Scoping the box + Send to it makes a wrong-recipient
-  // send impossible even when other conversations are open. Match the profile
-  // anchor whether LinkedIn renders it WITH a trailing slash (`/in/<id>/…`) or
-  // WITHOUT one (an href that ends at `/in/<id>`): both the `/` and the end-anchor
-  // keep it from matching a longer id, so the scoping stays strict either way.
-  const convo =
-    `${SELECTORS.messageConversationBubble}` +
-    `:has(a[href*="/in/${publicId}/"], a[href$="/in/${publicId}"])`;
-  // The overlay hydrates a beat after the Message click. Wait for the scoped
-  // bubble to appear (bounded) rather than deciding on one fixed-delay snapshot —
-  // a slow render used to trip the refusal below and silently drop the send. The
-  // wait resolves the moment the bubble is visible; the count check stays the
-  // real gate, so a genuinely-absent conversation still refuses to send.
-  try {
-    await ctx.page
-      .locator(convo)
-      .first()
-      .waitFor({ state: 'visible', timeout: MESSAGE_OVERLAY_TIMEOUT_MS });
-  } catch {
-    // Timed out — fall through to the count check, which returns the refusal.
-  }
-  if (!(await isPresent(ctx, convo))) {
+  const name = params.recipientName?.trim();
+  if (!name) {
     return {
       ok: false,
-      detail: `recipient conversation for /in/${publicId} did not open; refusing to send to avoid a wrong recipient`,
+      detail: 'no recipient name; refusing to send (cannot address the composer)',
+    };
+  }
+  // Drop a trailing credential suffix ("Daniel Valadares, P.Eng." -> "Daniel
+  // Valadares"): LinkedIn's typeahead search and result cards use the plain name,
+  // so the suffix breaks both the query and the card match.
+  const searchName = (name.split(',')[0] ?? name).trim() || name;
+
+  // 1. Open the composer and address it via the recipient typeahead.
+  await ctx.page.goto('https://www.linkedin.com/messaging/thread/new/', {
+    waitUntil: 'domcontentloaded',
+  });
+  await gap(ctx);
+  const field = ctx.page.locator(SELECTORS.composerRecipientField).first();
+  try {
+    await field.waitFor({ state: 'visible', timeout: COMPOSER_FIELD_TIMEOUT_MS });
+  } catch {
+    return { ok: false, detail: 'message composer recipient field did not open' };
+  }
+  await field.click();
+  await field.type(searchName, { delay: TYPEAHEAD_KEY_DELAY_MS });
+  await gap(ctx);
+
+  // 2. Pick the suggestion card that matches the recipient's name (case-
+  //    insensitive), preferring a 1st-degree card. The identity check in step 3
+  //    is the real gate; this only chooses which card to open.
+  const cards = ctx.page.locator(SELECTORS.composerResultCard);
+  try {
+    await cards.first().waitFor({ state: 'visible', timeout: TYPEAHEAD_RESULT_TIMEOUT_MS });
+  } catch {
+    return { ok: false, detail: `no typeahead result for "${searchName}"; refusing to send` };
+  }
+  const count = await cards.count();
+  const wanted = searchName.toLowerCase();
+  let picked = -1;
+  let firstNameMatch = -1;
+  for (let i = 0; i < count; i++) {
+    const text = ((await cards.nth(i).textContent()) ?? '').toLowerCase();
+    if (!text.includes(wanted)) continue;
+    if (firstNameMatch === -1) firstNameMatch = i;
+    if (/•\s*1st\b/.test(text) || /\b1st\b/.test(text)) {
+      picked = i;
+      break;
+    }
+  }
+  if (picked === -1) picked = firstNameMatch;
+  if (picked === -1) {
+    return { ok: false, detail: `no typeahead card matched "${searchName}"; refusing to send` };
+  }
+  await clickLoc(ctx, cards.nth(picked));
+  await gap(ctx);
+
+  // 3. WRONG-RECIPIENT GUARD. The opened thread links to the selected person's
+  //    /in/ profile. Require it to match THIS target (vanity, or the opaque
+  //    member id from the urn) before typing a word. Match the anchor with or
+  //    without a trailing slash so it cannot match a longer id.
+  const memberId = params.memberId?.trim();
+  const anchor =
+    `a[href*="/in/${publicId}/"], a[href$="/in/${publicId}"]` +
+    (memberId ? `, a[href*="/in/${memberId}/"], a[href$="/in/${memberId}"]` : '');
+  try {
+    await ctx.page.locator(anchor).first().waitFor({
+      state: 'visible',
+      timeout: THREAD_OPEN_TIMEOUT_MS,
+    });
+  } catch {
+    // Timed out — fall through to the count gate, which returns the refusal.
+  }
+  if (!(await isPresent(ctx, anchor))) {
+    return {
+      ok: false,
+      detail: `composer did not open a thread for /in/${publicId}; refusing to send to avoid a wrong recipient`,
     };
   }
 
-  await humanType(ctx, scopeSelector(convo, SELECTORS.messageComposeBox), params.body);
+  // 4. Compose + send, scoped to the verified thread. humanType clears the box
+  //    first; the Send button activates via focus+Enter (off-viewport safe).
+  const container = SELECTORS.messageThreadContainer;
+  await humanType(ctx, scopeToThread(container, anchor, SELECTORS.messageComposeBox), params.body);
   await gap(ctx);
-  // The Send button lives in the same off-viewport overlay as the composer, so
-  // activate it via focus+Enter rather than a pointer click (see pressButton).
-  await pressButton(ctx, scopeSelector(convo, SELECTORS.messageSendButton));
-  return { ok: true, detail: 'message sent' };
+  await pressButton(ctx, scopeToThread(container, anchor, SELECTORS.messageSendButton));
+  return { ok: true, detail: 'message sent (composer)' };
 }
 
 /** Read the inbox conversation list; returns the number of visible threads. */
