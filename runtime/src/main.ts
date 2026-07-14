@@ -5,10 +5,21 @@
 import { startServer } from '@loa/mcp';
 import { compose } from './compose.js';
 import { loadConfig } from './config.js';
+import { waitForStoreReady } from './store/wait-ready.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const runtime = compose(config);
+  // Wait for the database to accept connections before the first query. A rapid
+  // restart or a cold Postgres can refuse for a few seconds; without this the
+  // rehydrate below throws ECONNREFUSED, the process exits, and the supervisor
+  // respawns ~30s later. Retrying here makes a restart a clean short wait. Only
+  // meaningful with a real database — the in-memory probe succeeds immediately.
+  if (config.databaseUrl) {
+    await waitForStoreReady(() => runtime.store.account.all(), {
+      log: (m) => console.log(`[@loa/runtime] ${m}`),
+    });
+  }
   await runtime.rehydrateSafety();
 
   const store = config.databaseUrl ? 'postgres' : 'in-memory';
