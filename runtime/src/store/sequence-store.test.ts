@@ -99,6 +99,22 @@ describe('InMemoryStore sequence surface', () => {
     );
   });
 
+  it('upcomingTargetProgress selects only in_progress rows with a future nextStepAt', async () => {
+    const now = new Date('2026-07-06T12:00:00Z');
+    const future = new Date(now.getTime() + 60_000);
+    const p = await store.sequence.enrollTarget(CAMP, 'tgt-1', ACCT); // nextStepAt null -> not upcoming
+    expect(await store.sequence.upcomingTargetProgress(now)).toHaveLength(0);
+
+    await store.sequence.advanceTargetProgress(p.id, { nextStepAt: future });
+    expect(await store.sequence.upcomingTargetProgress(now)).toHaveLength(1);
+    // Once the time arrives the row is due, not upcoming.
+    expect(await store.sequence.upcomingTargetProgress(future)).toHaveLength(0);
+
+    // A parked state is not upcoming even with a future due time.
+    await store.sequence.advanceTargetProgress(p.id, { state: 'awaiting_approval' });
+    expect(await store.sequence.upcomingTargetProgress(now)).toHaveLength(0);
+  });
+
   it('pullTargetFromFunnel moves an active cursor to terminal replied', async () => {
     const p = await store.sequence.enrollTarget(CAMP, 'tgt-1', ACCT);
     await store.sequence.pullTargetFromFunnel('tgt-1', 'reply');

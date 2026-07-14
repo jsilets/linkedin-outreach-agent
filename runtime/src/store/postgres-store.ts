@@ -9,7 +9,7 @@
 import { type Db, makeRepositories, PostgresDb, type Repositories } from '@loa/orchestrator';
 import type { Json } from '@loa/shared';
 import { ACTIVE_PROGRESS_STATES, CANCELABLE_MESSAGE_STATUSES, db as shared } from '@loa/shared';
-import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type {
   AccountStorePort,
   ActionStorePort,
@@ -175,6 +175,13 @@ class PgSequenceStore implements SequenceStorePort {
           or(isNull(targetProgress.nextStepAt), lte(targetProgress.nextStepAt, now)),
         ),
       );
+  }
+
+  async upcomingTargetProgress(now: Date): Promise<shared.TargetProgressRow[]> {
+    return this.db.handle
+      .select()
+      .from(targetProgress)
+      .where(and(eq(targetProgress.state, 'in_progress'), gt(targetProgress.nextStepAt, now)));
   }
 
   async awaitingConnectionEnrollments(): Promise<shared.TargetProgressRow[]> {
