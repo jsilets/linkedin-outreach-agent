@@ -69,18 +69,22 @@ export interface SequenceStorePort {
 
   // --- per-target cursor ---
   /** Enroll a target. Idempotent on targetId (unique index): a second call for
-   * the same target returns the existing row unchanged. */
+   * the same target returns the existing row unchanged. `nextStepAt` schedules
+   * the first step (absent/null = due immediately, as before). */
   enrollTarget(
     campaignId: string,
     targetId: string,
     accountId: string,
+    nextStepAt?: Date | null,
   ): Promise<shared.TargetProgressRow>;
   listTargetProgress(campaignId: string): Promise<shared.TargetProgressRow[]>;
   /** The single enrollment cursor for a target (unique on targetId), if any.
    * Used by the post-approval resume to move a parked cursor forward. */
   getTargetProgressByTarget(targetId: string): Promise<shared.TargetProgressRow | undefined>;
   /** Rows the dispatch tick should act on: state='in_progress' AND
-   * (nextStepAt IS NULL OR nextStepAt<=now). */
+   * (nextStepAt IS NULL OR nextStepAt<=now). Ordered nextStepAt ASC NULLS
+   * FIRST, then createdAt ASC, so the tick drains cursors deterministically
+   * (oldest commitment first) instead of in arbitrary row order. */
   dueTargetProgress(now: Date): Promise<shared.TargetProgressRow[]>;
   /** Rows scheduled but not yet due: state='in_progress' AND nextStepAt>now.
    * The dispatch tick's pre-draft pass reads these so a message step can be

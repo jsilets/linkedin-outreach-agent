@@ -42,6 +42,7 @@
     "msg-overlay-dump": "node --env-file-if-exists=.env --import tsx runtime/src/tools/msg-overlay-dump.ts",
     "selector-scan": "node --env-file-if-exists=.env --import tsx runtime/src/tools/selector-scan.ts",
     "ops:report": "node --env-file-if-exists=.env --import tsx scripts/ops-report.ts",
+    "ops:restagger": "node --env-file-if-exists=.env --import tsx scripts/restagger-backlog.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },

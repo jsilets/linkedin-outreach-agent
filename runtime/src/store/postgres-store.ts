@@ -135,11 +135,12 @@ class PgSequenceStore implements SequenceStorePort {
     campaignId: string,
     targetId: string,
     accountId: string,
+    nextStepAt?: Date | null,
   ): Promise<shared.TargetProgressRow> {
     // Idempotent on the target_progress_target_idx unique index.
     const [out] = await this.db.handle
       .insert(targetProgress)
-      .values({ campaignId, targetId, accountId, state: 'in_progress' })
+      .values({ campaignId, targetId, accountId, state: 'in_progress', nextStepAt })
       .onConflictDoNothing({ target: targetProgress.targetId })
       .returning();
     if (out) return out;
@@ -166,6 +167,8 @@ class PgSequenceStore implements SequenceStorePort {
   }
 
   async dueTargetProgress(now: Date): Promise<shared.TargetProgressRow[]> {
+    // NULLS FIRST is explicit: Postgres puts nulls LAST under ASC by default,
+    // which would drain the freshly-staggered tail before the due-now head.
     return this.db.handle
       .select()
       .from(targetProgress)
@@ -174,7 +177,8 @@ class PgSequenceStore implements SequenceStorePort {
           eq(targetProgress.state, 'in_progress'),
           or(isNull(targetProgress.nextStepAt), lte(targetProgress.nextStepAt, now)),
         ),
-      );
+      )
+      .orderBy(sql`${targetProgress.nextStepAt} asc nulls first`, asc(targetProgress.createdAt));
   }
 
   async upcomingTargetProgress(now: Date): Promise<shared.TargetProgressRow[]> {

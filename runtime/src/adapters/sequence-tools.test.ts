@@ -1,9 +1,12 @@
 // Tests for the campaign-sequence MCP tools backed by CampaignAdapter: define
-// (replace) the step template, read it back, and enroll targets. These only use
-// store.sequence, so the orchestrator services are stubbed.
+// (replace) the step template, read it back, and enroll targets (including the
+// cap-driven nextStepAt stagger). These only use store.sequence and
+// store.account, so the orchestrator services are stubbed.
 
 import { DefaultSafetyGate } from '@loa/safety';
+import { DEFAULT_SCHEDULE } from '@loa/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { dueAfterDelay } from '../dispatch/advance.js';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter } from './mcp-ports.js';
 import type { OrchestratorServices } from './orchestrator.js';
@@ -122,5 +125,119 @@ describe('CampaignAdapter sequence surface', () => {
     const rows = await store.sequence.listTargetProgress(CAMP);
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.state === 'in_progress' && r.accountId === ACCT)).toBe(true);
+  });
+});
+
+describe('CampaignAdapter enrollment stagger', () => {
+  let store: InMemoryStore;
+  let campaign: CampaignAdapter;
+
+  /** The account's connect cap for these tests; small so a batch overflows it. */
+  const CONNECT_CAP = 2;
+
+  beforeEach(async () => {
+    store = new InMemoryStore();
+    campaign = new CampaignAdapter(
+      noServices,
+      store,
+      new DefaultSafetyGate({ allowMissingCounters: true }),
+    );
+    const zero = {
+      connect: 0,
+      message: 0,
+      view_profile: 0,
+      follow: 0,
+      withdraw_invite: 0,
+      react: 0,
+    };
+    await store.account.create({
+      id: ACCT,
+      handle: 'op',
+      proxyBinding: { proxyId: 'p', region: 'us', sticky: true },
+      health: {
+        acceptanceRate: 0.6,
+        replyRate: 0.3,
+        challengesLast7d: 0,
+        lastCheckedAt: new Date(),
+      },
+      budget: { date: new Date().toISOString().slice(0, 10), caps: zero, used: zero },
+      limits: {
+        caps: { ...zero, connect: CONNECT_CAP, message: 20 },
+      },
+    });
+  });
+
+  /** nextStepAt per enrolled progress id, in enrollment order. */
+  async function nextStepAts(progressIds: string[]): Promise<Array<Date | null>> {
+    const rows = await store.sequence.listTargetProgress(CAMP);
+    const byId = new Map(rows.map((r) => [r.id, r] as const));
+    return progressIds.map((id) => byId.get(id)!.nextStepAt);
+  }
+
+  it('staggers a batch past the first-step daily cap onto later working mornings', async () => {
+    await campaign.defineCampaignSteps(CAMP, [{ stepType: 'connect' }]);
+    const now = new Date();
+    const res = await campaign.enrollTargets(CAMP, ['t1', 't2', 't3', 't4', 't5'], ACCT);
+    expect(res.enrolled).toBe(5);
+
+    const ats = await nextStepAts(res.progressIds);
+    // First `cap` are due now (today's budget); the tail lands on working mornings.
+    expect(ats[0]).toBeNull();
+    expect(ats[1]).toBeNull();
+    expect(ats[2]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE));
+    expect(ats[3]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE));
+    expect(ats[4]).toEqual(dueAfterDelay(now, 2 * 86_400, DEFAULT_SCHEDULE));
+  });
+
+  it('appends a second batch after the first batch future slots', async () => {
+    await campaign.defineCampaignSteps(CAMP, [{ stepType: 'connect' }]);
+    const now = new Date();
+    // Batch 1: slots 0..2 -> two due now, one on day 1.
+    await campaign.enrollTargets(CAMP, ['t1', 't2', 't3'], ACCT);
+    // Batch 2 starts at slot = 1 (one future-scheduled cursor), not slot 0:
+    // only ONE more lands due-now before the day rolls over.
+    const second = await campaign.enrollTargets(CAMP, ['t4', 't5', 't6'], ACCT);
+
+    const ats = await nextStepAts(second.progressIds);
+    expect(ats[0]).toBeNull(); // slot 1 -> day 0
+    expect(ats[1]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE)); // slot 2 -> day 1
+    expect(ats[2]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE)); // slot 3 -> day 1
+  });
+
+  it('enrolls all-null when the campaign has no steps yet', async () => {
+    const res = await campaign.enrollTargets(CAMP, ['t1', 't2', 't3', 't4', 't5'], ACCT);
+    const ats = await nextStepAts(res.progressIds);
+    expect(ats).toEqual([null, null, null, null, null]);
+  });
+
+  it('does not let skipped-removed targets consume slots', async () => {
+    await campaign.defineCampaignSteps(CAMP, [{ stepType: 'connect' }]);
+    const removed = await store.target.create({
+      campaignId: CAMP,
+      prospectRef: 'gone',
+      linkedinUrn: 'urn:li:person:gone',
+      externalContext: { removed: true },
+    });
+    const now = new Date();
+    // cap 2: with the removed target skipped, t2+t3 take today's two slots and
+    // t4 rolls to day 1. If the removed target consumed a slot, t3 would roll.
+    const res = await campaign.enrollTargets(CAMP, [removed.id, 't2', 't3', 't4'], ACCT);
+    expect(res.skippedRemoved).toBe(1);
+    expect(res.enrolled).toBe(3);
+
+    const ats = await nextStepAts(res.progressIds);
+    expect(ats[0]).toBeNull();
+    expect(ats[1]).toBeNull();
+    expect(ats[2]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE));
+  });
+
+  it('enrolls all-null when the first enabled step is a delay', async () => {
+    await campaign.defineCampaignSteps(CAMP, [
+      { stepType: 'delay', delaySeconds: 86_400 },
+      { stepType: 'connect' },
+    ]);
+    const res = await campaign.enrollTargets(CAMP, ['t1', 't2', 't3'], ACCT);
+    const ats = await nextStepAts(res.progressIds);
+    expect(ats).toEqual([null, null, null]);
   });
 });

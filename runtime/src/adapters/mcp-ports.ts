@@ -43,6 +43,7 @@ import type {
 import type { DefaultSafetyGate } from '@loa/safety';
 import type {
   Account,
+  AccountSchedule,
   ApprovalDecision,
   AutonomyLevel,
   Campaign,
@@ -52,11 +53,13 @@ import type {
 } from '@loa/shared';
 import {
   canonicalProfileKey,
+  DEFAULT_CAPS,
+  DEFAULT_SCHEDULE,
   extractCompany,
   planCampaignTargetRemoval,
   readIcpScore,
 } from '@loa/shared';
-import { advanceAfterStep } from '../dispatch/advance.js';
+import { advanceAfterStep, dueAfterDelay } from '../dispatch/advance.js';
 import { rowToAccount } from '../mappers.js';
 import type { RuntimeStore } from '../store/index.js';
 import type { OrchestratorServices } from './orchestrator.js';
@@ -353,8 +356,15 @@ export class CampaignAdapter implements CampaignPort {
     targetIds: string[],
     accountId: string,
   ): Promise<EnrollResult> {
+    // Stagger nextStepAt across days so the stored schedule tells the truth:
+    // the account's daily cap on the first step's action type means only `cap`
+    // enrollments can fire per day, so everyone past that would sit "due now"
+    // for days while the gate drip-fed them in arbitrary order.
+    const now = new Date();
+    const stagger = await this.enrollStagger(campaignId, accountId, now);
     const progressIds: string[] = [];
     let skippedRemoved = 0;
+    let slot = stagger?.startSlot ?? 0;
     for (const targetId of targetIds) {
       // An operator-removed target must never re-enter the funnel; removal
       // stamps `removed` into the target's external context (see removeTargets).
@@ -364,10 +374,49 @@ export class CampaignAdapter implements CampaignPort {
         skippedRemoved += 1;
         continue;
       }
-      const row = await this.store.sequence.enrollTarget(campaignId, targetId, accountId);
+      let nextStepAt: Date | null = null;
+      if (stagger) {
+        // Day 0 keeps nextStepAt null (due now, today's budget); later days
+        // land on the working-window start, skipping days off.
+        const dayOffset = Math.floor(slot / stagger.cap);
+        nextStepAt = dueAfterDelay(now, dayOffset * 86_400, stagger.schedule);
+        slot += 1;
+      }
+      const row = await this.store.sequence.enrollTarget(
+        campaignId,
+        targetId,
+        accountId,
+        nextStepAt,
+      );
       progressIds.push(row.id);
     }
     return { campaignId, accountId, enrolled: progressIds.length, progressIds, skippedRemoved };
+  }
+
+  /** Stagger context for a batch enrollment: the account's daily cap on the
+   * campaign's first enabled step, the account schedule, and the slot to start
+   * from (cursors already scheduled into the future, so a second batch appends
+   * after the first instead of overlapping it). Undefined when there is nothing
+   * to stagger against: no steps defined yet, a delay-typed first step (no cap
+   * applies), or a cap of 0 (the action is disabled; the gate blocks it). */
+  private async enrollStagger(
+    campaignId: string,
+    accountId: string,
+    now: Date,
+  ): Promise<{ cap: number; schedule: AccountSchedule; startSlot: number } | undefined> {
+    const steps = await this.store.sequence.listCampaignSteps(campaignId);
+    const first = steps.find((s) => s.enabled);
+    if (!first || first.stepType === 'delay') return undefined;
+    const row = await this.store.account.findById(accountId);
+    const limits = row ? rowToAccount(row).limits : undefined;
+    const cap = limits?.caps[first.stepType] ?? DEFAULT_CAPS[first.stepType];
+    if (cap <= 0) return undefined;
+    const schedule = limits?.schedule ?? DEFAULT_SCHEDULE;
+    const existing = await this.store.sequence.listTargetProgress(campaignId);
+    const startSlot = existing.filter(
+      (p) => p.state === 'in_progress' && p.nextStepAt !== null && p.nextStepAt > now,
+    ).length;
+    return { cap, schedule, startSlot };
   }
 
   async removeTargets(
