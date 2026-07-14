@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApprovalsPanel } from './ApprovalsPanel';
 import {
   type Account,
   type ActivityItem,
   api,
   type CampaignSummary,
-  type Pending,
+  type ScheduledItem,
   type VolumeRow,
 } from './api';
 import { type Column, DataTable } from './DataTable';
 import { FunnelBar, MiniFunnel } from './FunnelBar';
 import { formatRelative, formatStamp } from './format';
+import { usePref } from './prefs';
 import { actionLabel, actionResultLabel, actionResultVar, statusLabel, statusVar } from './status';
 
 // One theme-aware status token per action type, used as a categorical palette in
@@ -42,14 +42,21 @@ function typeLabel(type: string): string {
   return TYPE_LABELS[type] ?? type;
 }
 
-export function MetricsView() {
+type ChartMode = 'bars' | 'line';
+
+export function MetricsView({
+  onOpenApproval,
+}: {
+  onOpenApproval?: (targetId: string) => void;
+} = {}) {
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [accountId, setAccountId] = useState('');
-  const [days, setDays] = useState(30);
+  const [accountId, setAccountId] = usePref('volume.account', '');
+  const [days, setDays] = usePref('volume.days', 30);
+  const [mode, setMode] = usePref<ChartMode>('volume.mode', 'bars');
   const [rows, setRows] = useState<VolumeRow[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
-  const [pending, setPending] = useState<Pending[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
+  const [scheduled, setScheduled] = useState<ScheduledItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const loadOps = useCallback(() => {
@@ -58,12 +65,14 @@ export function MetricsView() {
       .then(setCampaigns)
       .catch(() => {});
     api
-      .pending()
-      .then(setPending)
-      .catch(() => {});
-    api
       .activity({ limit: 60 })
       .then(setActivity)
+      .catch(() => {});
+    // Full window (server cap), not 60: overdue invites sort first and would
+    // otherwise crowd every future-dated message out of a short fetch.
+    api
+      .scheduled(200)
+      .then(setScheduled)
       .catch(() => {});
   }, []);
 
@@ -74,6 +83,14 @@ export function MetricsView() {
       .catch((e) => setError(String(e)));
     loadOps();
   }, [loadOps]);
+
+  // A stored account filter may point at an account that's since been unlinked —
+  // fall back to "All accounts" once the live list is in, so it isn't a ghost.
+  useEffect(() => {
+    if (accountId && accounts.length > 0 && !accounts.some((a) => a.id === accountId)) {
+      setAccountId('');
+    }
+  }, [accounts, accountId, setAccountId]);
 
   useEffect(() => {
     api
@@ -88,27 +105,29 @@ export function MetricsView() {
   }
 
   return (
-    <div className="grid" style={{ gap: 'var(--space-5)' }}>
-      {/* Surface what needs a human first — but only when something actually does. */}
-      {pending.length > 0 && (
-        <div className="card">
-          <div className="section-head">
-            <span
-              className="status-badge"
-              style={{ ['--c' as string]: statusVar('awaiting_approval') }}
-            >
-              Needs your approval
-            </span>
-            <span className="count-tag">{pending.length}</span>
-          </div>
-          <ApprovalsPanel pending={pending} onChange={loadOps} showCampaign />
-        </div>
-      )}
-
+    <div className="dash">
       <div className="card">
         <div className="toolbar" style={{ margin: '0 0 var(--space-2)' }}>
           <h3 style={{ margin: 0 }}>Outreach volume</h3>
           <span className="spacer" />
+          <div className="seg-toggle" role="group" aria-label="Chart style">
+            <button
+              type="button"
+              className={mode === 'bars' ? 'on' : ''}
+              aria-pressed={mode === 'bars'}
+              onClick={() => setMode('bars')}
+            >
+              Bars
+            </button>
+            <button
+              type="button"
+              className={mode === 'line' ? 'on' : ''}
+              aria-pressed={mode === 'line'}
+              onClick={() => setMode('line')}
+            >
+              Line
+            </button>
+          </div>
           <select
             style={{ width: 'auto' }}
             aria-label="Filter volume by account"
@@ -135,7 +154,7 @@ export function MetricsView() {
           </select>
         </div>
         {error && <div className="error">{error}</div>}
-        <VolumeChart rows={rows} days={days} />
+        <VolumeChart rows={rows} days={days} mode={mode} />
       </div>
 
       <div className="card">
@@ -174,12 +193,22 @@ export function MetricsView() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="section-head">
-          <h3>Recent activity</h3>
-          <span className="count-tag">{activity.length}</span>
+      <div className="dash-feeds">
+        <div className="card">
+          <div className="section-head">
+            <h3>Recent activity</h3>
+            <span className="count-tag">{activity.length}</span>
+          </div>
+          <ActivityFeed items={activity} />
         </div>
-        <ActivityFeed items={activity} />
+
+        <div className="card">
+          <div className="section-head">
+            <h3>Scheduled</h3>
+            <span className="count-tag">{scheduled.length}</span>
+          </div>
+          <ScheduledFeed items={scheduled} onOpenApproval={onOpenApproval} />
+        </div>
       </div>
     </div>
   );
@@ -217,9 +246,27 @@ function ActivityFeed({ items }: { items: ActivityItem[] }) {
         const isAccept = a.type === 'invite_accepted';
         const color = isAccept ? statusVar('connected') : actionResultVar(a.result);
         const label = isAccept ? 'Accepted' : actionResultLabel(a.result);
+        // A failed row carries the executor's reason (e.g. "needs recipient email
+        // to connect"); surface it in a real hover popover so "why" is legible on
+        // hover instead of buried in the events table (a bare title attribute only
+        // gave a help cursor with no visible text). The dotted underline signals
+        // there's more to read; the popover renders on hover/focus.
+        const reason = a.failureDetail;
+        if (isAccept || !reason) {
+          return (
+            <span className="chip" style={{ ['--c' as string]: color }}>
+              {label}
+            </span>
+          );
+        }
         return (
-          <span className="chip" style={{ ['--c' as string]: color }}>
-            {label}
+          <span className="chip-reason" tabIndex={0}>
+            <span className="chip has-reason" style={{ ['--c' as string]: color }}>
+              {label}
+            </span>
+            <span className="chip-reason-pop" role="tooltip">
+              {reason}
+            </span>
           </span>
         );
       },
@@ -245,6 +292,129 @@ function ActivityFeed({ items }: { items: ActivityItem[] }) {
       columns={columns}
       rowKey={(a) => a.actionId}
       initialSort={{ key: 'when', dir: 'desc' }}
+      persistKey="activity"
+    />
+  );
+}
+
+// What the dispatch loop will run next, per enrolled lead, soonest first. A null
+// nextStepAt (or one already in the past) means "ripe, waiting on the next tick",
+// so it sorts to the very top and reads "next tick" rather than a false countdown.
+function ScheduledFeed({
+  items,
+  onOpenApproval,
+}: {
+  items: ScheduledItem[];
+  onOpenApproval?: (targetId: string) => void;
+}) {
+  if (items.length === 0) return <div className="empty">Nothing queued.</div>;
+
+  const columns: Column<ScheduledItem>[] = [
+    {
+      key: 'when',
+      header: 'When',
+      // Sort by the forecast time so the column reads as a timeline. A null
+      // projectedAt means "today's budget" (imminent) — anchor it at NOW, so an
+      // overdue drafted message scheduled earlier today (a real, past time) sorts
+      // ABOVE the today-budget invites where it belongs, and future work sorts
+      // below. (Using 0 for null pinned invites to the very top and buried the
+      // overdue pending-approval messages beneath them.)
+      sortValue: (s) => {
+        const iso = s.state === 'awaiting_approval' ? s.nextStepAt : s.projectedAt;
+        if (!iso) return Date.now();
+        const t = new Date(iso).getTime();
+        return Number.isNaN(t) ? Date.now() : t;
+      },
+      cellClassName: 'when',
+      // Forecast, and it must reflect reality: what you already APPROVED reads
+      // "sending soon" (or its future due time), what still needs you reads
+      // "pending approval", and neither shows a stale past clock time as if it
+      // were a live send slot. In-progress work reads its projected day.
+      cell: (s) => {
+        if (s.state === 'awaiting_approval') {
+          const at = s.nextStepAt;
+          const dueInFuture = !!at && new Date(at).getTime() > Date.now();
+          // Already approved by the operator — only waiting for its send tick.
+          if (s.approvedQueued) {
+            return dueInFuture ? (
+              <span title={`approved · sends ${formatStamp(at)}`}>
+                {formatRelative(at)} <span className="muted">(approved)</span>
+              </span>
+            ) : (
+              <span className="muted" title="approved — sends on the next dispatch tick">
+                sending soon
+              </span>
+            );
+          }
+          // A draft still waiting on the operator. Show a future due time when it
+          // is not due yet; for an already-passed due time show only the status,
+          // never a stale "8:00 AM" that implies it went out. "pending approval"
+          // is a link that opens this lead's draft in the Inbox to approve it.
+          const pendingLabel = onOpenApproval ? (
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => onOpenApproval(s.targetId)}
+              title="Open this draft in the Inbox to approve it"
+            >
+              pending approval
+            </button>
+          ) : (
+            <span className="muted" title="ready to send — waiting on your approval">
+              pending approval
+            </span>
+          );
+          return dueInFuture ? (
+            <span title={`scheduled ${formatStamp(at)} · then waits for your approval`}>
+              {formatRelative(at)} {pendingLabel}
+            </span>
+          ) : (
+            pendingLabel
+          );
+        }
+        // projectedAt null = within today's remaining daily budget.
+        if (!s.projectedAt) {
+          return (
+            <span className="muted" title="within today's daily budget — fires as capacity frees">
+              today
+            </span>
+          );
+        }
+        return (
+          <span title={`${formatStamp(s.projectedAt)} · paced by the daily cap`}>
+            {formatRelative(s.projectedAt)}
+          </span>
+        );
+      },
+    },
+    {
+      key: 'action',
+      header: 'Action',
+      sortValue: (s) => (s.nextStepType ? actionLabel(s.nextStepType) : '—'),
+      cell: (s) => (s.nextStepType ? actionLabel(s.nextStepType) : '—'),
+    },
+    {
+      key: 'lead',
+      header: 'Lead',
+      sortValue: (s) => (s.name ?? '').toLowerCase(),
+      cell: (s) =>
+        s.profileUrl ? (
+          <a href={s.profileUrl} target="_blank" rel="noopener noreferrer">
+            {s.name ?? 'Unknown'}
+          </a>
+        ) : (
+          (s.name ?? '—')
+        ),
+    },
+  ];
+
+  return (
+    <DataTable
+      rows={items}
+      columns={columns}
+      rowKey={(s) => s.targetId}
+      initialSort={{ key: 'when', dir: 'asc' }}
+      persistKey="scheduled"
     />
   );
 }
@@ -258,8 +428,10 @@ interface HoverState {
 
 // Grouped bars per day, one status color per action type. Hovering a day
 // highlights that day's band and floats a tooltip with each action-type count.
-// The native <title> on each bar is the accessible / no-JS fallback.
-function VolumeChart({ rows, days }: { rows: VolumeRow[]; days: number }) {
+// The native <title> on each bar is the accessible / no-JS fallback. In line
+// mode, one polyline per action type replaces the bars; the day-band hover,
+// tooltip, and axes are shared.
+function VolumeChart({ rows, days, mode }: { rows: VolumeRow[]; days: number; mode: ChartMode }) {
   const [hover, setHover] = useState<HoverState | null>(null);
   const [containerW, setContainerW] = useState(0);
   const roRef = useRef<ResizeObserver | null>(null);
@@ -350,25 +522,26 @@ function VolumeChart({ rows, days }: { rows: VolumeRow[]; days: number }) {
                     height={plotH}
                   />
                 )}
-                {types.map((t, ti) => {
-                  const v = bucket[t] ?? 0;
-                  const h = (v / max) * plotH;
-                  const x = bandX + 2 + ti * barW;
-                  const y = plotTop + plotH - h;
-                  return (
-                    <rect
-                      key={t}
-                      className="vbar"
-                      x={x}
-                      y={y}
-                      width={Math.max(1, barW - 1)}
-                      height={h}
-                      style={{ fill: typeColor(t), opacity: dimmed ? 0.28 : 1 }}
-                    >
-                      <title>{`${day} ${typeLabel(t)}: ${v}`}</title>
-                    </rect>
-                  );
-                })}
+                {mode === 'bars' &&
+                  types.map((t, ti) => {
+                    const v = bucket[t] ?? 0;
+                    const h = (v / max) * plotH;
+                    const x = bandX + 2 + ti * barW;
+                    const y = plotTop + plotH - h;
+                    return (
+                      <rect
+                        key={t}
+                        className="vbar"
+                        x={x}
+                        y={y}
+                        width={Math.max(1, barW - 1)}
+                        height={h}
+                        style={{ fill: typeColor(t), opacity: dimmed ? 0.28 : 1 }}
+                      >
+                        <title>{`${day} ${typeLabel(t)}: ${v}`}</title>
+                      </rect>
+                    );
+                  })}
                 {/* Full-height, transparent hit area so the whole day column is hoverable. */}
                 <rect
                   x={bandX}
@@ -395,6 +568,35 @@ function VolumeChart({ rows, days }: { rows: VolumeRow[]; days: number }) {
               </g>
             );
           })}
+          {/* Lines paint above the bands but below nothing interactive: pointer-events
+              are off so the per-day hit rects underneath still drive hover. */}
+          {mode === 'line' &&
+            types.map((t) => {
+              const pts = dayLabels.map((day, di) => {
+                const v = byDay.get(day)?.[t] ?? 0;
+                const x = padL + di * bandW + bandW / 2;
+                const y = plotTop + plotH - (v / max) * plotH;
+                return { x, y, v };
+              });
+              const line = pts.map((p) => `${p.x},${p.y}`).join(' ');
+              return (
+                <g key={t} style={{ pointerEvents: 'none' }}>
+                  <polyline
+                    points={line}
+                    fill="none"
+                    stroke={typeColor(t)}
+                    strokeWidth={2}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                  {pts.map((p) =>
+                    p.v > 0 ? (
+                      <circle key={p.x} cx={p.x} cy={p.y} r={2.5} fill={typeColor(t)} />
+                    ) : null,
+                  )}
+                </g>
+              );
+            })}
         </svg>
       </div>
 
@@ -414,13 +616,22 @@ function VolumeChart({ rows, days }: { rows: VolumeRow[]; days: number }) {
   );
 }
 
+// Local "YYYY-MM-DD" for a date, matching the server's local-timezone day
+// buckets. Not toISOString(), which would render the UTC day and drift a bar
+// into "tomorrow" after 5pm Pacific.
+function localDay(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function buildDayAxis(days: number): string[] {
   const out: string[] = [];
   const now = new Date();
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now);
-    d.setUTCDate(d.getUTCDate() - i);
-    out.push(d.toISOString().slice(0, 10));
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    out.push(localDay(d));
   }
   return out;
 }

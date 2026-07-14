@@ -21,12 +21,21 @@ const CAP_LABELS: Record<ActionType, string> = {
 // Weekday initials, index 0=Sunday … 6=Saturday (JS Date.getDay order).
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-// 24h clock as a readable label ("8 AM", "8 PM", "midnight").
+// 24h clock as a readable label ("8:00 AM", "8:00 PM", "midnight").
 function hourLabel(h: number): string {
   if (h === 0 || h === 24) return 'midnight';
   if (h === 12) return 'noon';
-  return h < 12 ? `${h} AM` : `${h - 12} PM`;
+  return h < 12 ? `${h}:00 AM` : `${h - 12}:00 PM`;
 }
+
+// The operator's local timezone (e.g. "America/Los_Angeles"), shown next to the
+// hour pickers so it's clear the window is in local — not UTC — time. This is
+// the same clock the runtime schedules against.
+const LOCAL_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local time';
+
+// Selectable start hours (00:00–23:00) and end hours (01:00–24:00/midnight).
+const START_HOURS = Array.from({ length: 24 }, (_, h) => h);
+const END_HOURS = Array.from({ length: 24 }, (_, h) => h + 1);
 
 function sameSchedule(a: AccountSchedule, b: AccountSchedule): boolean {
   return (
@@ -194,7 +203,14 @@ function AccountCard({ account }: { account: Account }) {
 
   function setHour(which: 'hoursStart' | 'hoursEnd', value: string) {
     const n = Math.max(0, Math.min(24, Math.floor(Number(value) || 0)));
-    setSchedule((prev) => ({ ...prev, [which]: n }));
+    setSchedule((prev) => {
+      // Keep the range valid: nudging the start past the end drags the end with
+      // it, so an invalid window can never be selected.
+      if (which === 'hoursStart') {
+        return { ...prev, hoursStart: n, hoursEnd: Math.max(prev.hoursEnd, n + 1) };
+      }
+      return { ...prev, hoursEnd: n };
+    });
     setSaved(false);
   }
 
@@ -271,27 +287,32 @@ function AccountCard({ account }: { account: Account }) {
         </div>
         <div className="schedule-hours">
           <span className="muted">Active hours</span>
-          <input
-            type="number"
-            min={0}
-            max={23}
-            step={1}
+          <select
+            className="hour-select"
             value={schedule.hoursStart}
             onChange={(e) => setHour('hoursStart', e.target.value)}
             aria-label="Start hour"
-          />
-          <span className="muted">{hourLabel(schedule.hoursStart)}</span>
+          >
+            {START_HOURS.map((h) => (
+              <option key={h} value={h}>
+                {hourLabel(h)}
+              </option>
+            ))}
+          </select>
           <span className="schedule-dash">to</span>
-          <input
-            type="number"
-            min={1}
-            max={24}
-            step={1}
+          <select
+            className="hour-select"
             value={schedule.hoursEnd}
             onChange={(e) => setHour('hoursEnd', e.target.value)}
             aria-label="End hour"
-          />
-          <span className="muted">{hourLabel(schedule.hoursEnd)}</span>
+          >
+            {END_HOURS.filter((h) => h > schedule.hoursStart).map((h) => (
+              <option key={h} value={h}>
+                {hourLabel(h)}
+              </option>
+            ))}
+          </select>
+          <span className="muted schedule-tz">{LOCAL_TZ}</span>
         </div>
         {!hoursValid && <div className="error">End hour must be after start hour.</div>}
       </div>

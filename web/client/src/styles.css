@@ -131,28 +131,54 @@ a:hover {
   padding: var(--space-6) var(--space-5) var(--space-16);
 }
 
+/* Full-width sticky header. z-scale: sticky header 30 < floating tooltip 60. The
+ * translucent surface + blur keeps content legible as it scrolls underneath. */
 header.top {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: color-mix(in srgb, var(--surface-0) 88%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+
+/* Inner rail matches the .app content width so the header aligns with the page. */
+.top-inner {
+  max-width: 1040px;
+  margin: 0 auto;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-3) var(--space-5);
-  margin-bottom: var(--space-6);
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-5);
 }
 
-header.top h1 {
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-weight: var(--weight-semibold);
   font-size: var(--text-sub);
-  margin: 0;
-  margin-right: auto;
+  letter-spacing: 0.01em;
+  color: var(--ink-1);
+  margin-right: var(--space-3);
+  white-space: nowrap;
 }
 
-/* Tabs sit on a hairline rule; the selected one is marked by an accent underline
- * (accent = selection), not a filled box — so "you are here" never blurs into
- * the hover fill. */
+.brand svg {
+  flex: none;
+}
+
+/* Tabs are plain text on the header rule — no hover fill, no box. State is
+ * carried by ink weight and the accent underline (accent = selection), so the
+ * bar stays quiet. margin-right:auto pushes the meta controls to the far right. */
 nav {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-  border-bottom: 1px solid var(--line);
+  gap: var(--space-1);
+  margin-right: auto;
 }
 
 nav button {
@@ -162,17 +188,13 @@ nav button {
   color: var(--ink-2);
   padding: var(--space-2) var(--space-3);
   min-height: 44px;
-  border-radius: var(--radius-1) var(--radius-1) 0 0;
   cursor: pointer;
   font: inherit;
-  transition:
-    color var(--dur) var(--ease),
-    background var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease);
 }
 
 nav button:hover {
   color: var(--ink-1);
-  background: var(--surface-2);
 }
 
 nav button:focus-visible {
@@ -204,39 +226,109 @@ nav button.active {
   color: var(--st-approval-ink);
 }
 
-/* Accent underline indicator, overlapping the nav's bottom rule. */
+/* Accent underline indicator. The button sits var(--space-2) above the header's
+ * bottom border (the .top-inner padding), so drop the bar that far plus 1px to
+ * land it ON the header hairline. */
 nav button.active::after {
   content: "";
   position: absolute;
   left: var(--space-3);
   right: var(--space-3);
-  bottom: -1px;
+  bottom: calc(-1 * var(--space-2) - 1px);
   height: 2px;
   background: var(--accent);
   border-radius: 1px;
 }
 
-/* ── Theme toggle (single sun/moon icon button) ───────────────────────────── */
-.theme-toggle {
+/* ── Header meta controls (theme toggle, settings gear) ───────────────────── */
+/* Ghost icon buttons: no chrome at rest, a soft fill on hover. The gear's
+ * .active state marks "you are on the settings view" in the selection accent. */
+.theme-toggle,
+.icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 40px;
   height: 40px;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
+  background: transparent;
+  border: none;
   border-radius: var(--radius-1);
   color: var(--ink-2);
   cursor: pointer;
   transition:
     color var(--dur) var(--ease),
-    background var(--dur) var(--ease),
-    border-color var(--dur) var(--ease);
+    background var(--dur) var(--ease);
 }
 
-.theme-toggle:hover {
+.theme-toggle:hover,
+.icon-btn:hover {
   color: var(--ink-1);
-  border-color: var(--line-strong);
+  background: var(--surface-2);
+}
+
+.icon-btn.active {
+  color: var(--accent);
+  background: var(--surface-2);
+}
+
+/* ── Dashboard (Activity) layout ──────────────────────────────────────────── */
+/* A plain stack of sections: volume, pipeline, then the two feeds. */
+.dash {
+  display: grid;
+  /* minmax(0,…) so a wide data table can't push the column past the viewport. */
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+}
+
+/* Recent activity + Scheduled, side by side when there's room, stacked when not. */
+.dash-feeds {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--space-5);
+}
+
+/* Let the feed cards shrink inside the auto-fit grid instead of holding their
+   content's min-content width (a wide table blowing out the column). */
+.dash-feeds > * {
+  min-width: 0;
+}
+
+/* ── Segmented control (chart-style toggle) ───────────────────────────────── */
+.seg-toggle {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-1);
+  overflow: hidden;
+}
+
+.seg-toggle button {
+  background: transparent;
+  border: none;
+  /* Hairline divider between segments, none on the leading one. */
+  border-left: 1px solid var(--line);
+  color: var(--ink-2);
+  padding: var(--space-1) var(--space-3);
+  min-height: 34px;
+  font: inherit;
+  font-size: var(--text-meta);
+  cursor: pointer;
+  transition:
+    color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+
+.seg-toggle button:first-child {
+  border-left: none;
+}
+
+.seg-toggle button:hover {
+  color: var(--ink-1);
+}
+
+.seg-toggle button.on {
+  background: var(--surface-3);
+  color: var(--ink-1);
+  font-weight: var(--weight-medium);
 }
 
 /* ── Panels ───────────────────────────────────────────────────────────────── */
@@ -477,24 +569,22 @@ textarea {
   gap: var(--space-2);
 }
 
-.schedule-hours input {
-  width: 4ch;
-  text-align: center;
+/* Hour pickers size to their content instead of the 100% form-control default,
+ * so the two dropdowns and the "to" separator read as one inline control. */
+.hour-select {
+  width: auto;
+  min-width: 8.5ch;
+  padding: var(--space-1) var(--space-2);
   font-variant-numeric: tabular-nums;
-  /* Hide the number spinners: they clip two-digit hours ("20" -> "2") and the
-   * value is edited by typing anyway. */
-  appearance: textfield;
-  -moz-appearance: textfield;
-}
-
-.schedule-hours input::-webkit-outer-spin-button,
-.schedule-hours input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
 }
 
 .schedule-dash {
   color: var(--ink-3);
+}
+
+/* Timezone hint after the range: quiet, so it reads as a note, not a field. */
+.schedule-tz {
+  font-size: var(--text-meta);
 }
 
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
@@ -859,6 +949,66 @@ th {
   flex: none;
 }
 
+/* A text label that acts as a link (e.g. "pending approval" → opens the Inbox).
+   Inherits the cell's muted look but reads as actionable on hover/focus. */
+.link-btn {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--ink-2);
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.link-btn:hover,
+.link-btn:focus-visible {
+  color: var(--accent, var(--ink-1));
+  text-decoration-style: solid;
+}
+
+/* A failed chip whose reason shows in a hover/focus popover. */
+.chip-reason {
+  position: relative;
+  display: inline-flex;
+  outline: none;
+}
+.chip.has-reason {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, var(--c) 60%, transparent);
+}
+.chip-reason-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  max-width: 320px;
+  width: max-content;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-1);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 22%);
+  color: var(--ink-1);
+  font-size: var(--text-caption);
+  line-height: 1.45;
+  white-space: normal;
+  text-align: left;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s ease;
+  pointer-events: none;
+}
+.chip-reason:hover .chip-reason-pop,
+.chip-reason:focus-visible .chip-reason-pop,
+.chip-reason:focus .chip-reason-pop {
+  opacity: 1;
+  visibility: visible;
+}
+
 /* ── Status badge: campaign-level status, slightly larger, same neutral rule ── */
 .status-badge {
   display: inline-flex;
@@ -893,6 +1043,10 @@ th {
 
 .section-head h3 {
   margin: 0;
+}
+
+.section-head .spacer {
+  flex: 1;
 }
 
 .count-tag {
@@ -933,67 +1087,265 @@ td.when {
   background: color-mix(in srgb, var(--st-approval) 8%, transparent);
 }
 
-/* ── Approvals queue: divided rows inside one panel, never nested cards ────── */
-.approvals-wrap {
+/* ── Editable draft field (the approval textarea) ─────────────────────────── */
+/* Styled as a control surface, not a card. In the inbox detail it grows to fill
+   the pane's height. */
+textarea.draft {
+  background: var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-1);
+  padding: var(--space-3);
+  font: inherit;
+  font-size: var(--text-body);
+  line-height: 1.55;
+  color: var(--ink-1);
+}
+
+/* ── Performance stat chips (campaign rows + detail) ──────────────────────── */
+/* Quiet inline stats, not badges: the leading count in mono ink-1, the rest a
+   muted label. */
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+}
+
+.stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-size: var(--text-meta);
+}
+
+.stat .stat-n {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-1);
+}
+
+.stat .stat-label {
+  color: var(--ink-2);
+}
+
+/* ── Inbox: two-pane approval workspace ───────────────────────────────────── */
+/* One card holding a fixed-width queue and a detail pane. Fills the viewport
+   height (less the header + page padding) so each pane scrolls on its own. */
+.inbox {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  height: calc(100vh - 140px);
+  min-height: 480px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.inbox-list {
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+/* Sticky so "Approve all" stays reachable while the queue scrolls. */
+.inbox-list-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-1);
+}
+
+.inbox-list-head .spacer {
+  flex: 1;
+}
+
+/* One queue row: three stacked lines, divided by a hairline. Selection is
+   carried by the raised surface and the accent name — no border-left stripe. */
+.inbox-item {
   display: flex;
   flex-direction: column;
-}
-
-.approval {
-  padding: var(--space-3) 0;
+  gap: 2px;
+  width: 100%;
+  padding: var(--space-3);
+  text-align: left;
+  background: transparent;
+  border: none;
   border-top: 1px solid var(--line);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease);
 }
 
-.approval:first-child {
-  border-top: none;
-  padding-top: var(--space-1);
+.inbox-item:hover {
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
 }
 
-.approval .approval-head {
+.inbox-item.selected {
+  background: var(--surface-2);
+}
+
+.ii-line1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.ii-name {
+  min-width: 0;
+  font-weight: var(--weight-medium);
+  color: var(--ink-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Selected row tints the name with the selection accent. Placed after the base
+   .ii-name so specificity ascends in source order. */
+.inbox-item.selected .ii-name {
+  color: var(--accent);
+}
+
+.ii-wait {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.ii-line2 {
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ii-body {
+  font-size: var(--text-meta);
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inbox-detail {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.inbox-detail-head {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
-.approval .approval-head .to {
+.inbox-detail-head .name {
   font-weight: var(--weight-medium);
 }
 
-.approval .approval-head .age {
+.inbox-detail-head .wait {
   margin-left: auto;
+  flex: none;
   font-family: var(--font-mono);
   font-size: var(--text-meta);
   font-variant-numeric: tabular-nums;
   color: var(--ink-2);
 }
 
-/* The drafted message: a read-only content region (a control surface), styled
-   like the textarea it becomes when editing — not a card. */
-.approval .draft {
-  white-space: pre-wrap;
-  background: var(--surface-0);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-1);
-  padding: var(--space-3);
-  font-size: var(--text-body);
-  line-height: 1.55;
-  color: var(--ink-1);
+/* The draft grows to fill the pane between the header and the action row. */
+.inbox-detail textarea.draft {
+  flex: 1;
+  min-height: 180px;
+  resize: none;
 }
 
-.approval textarea.draft {
-  font: inherit;
-  font-size: var(--text-body);
-  color: var(--ink-1);
-}
-
-.approval .approval-actions {
+.inbox-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+
+.inbox-reject {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.inbox-reject input {
+  flex: 1;
+  min-width: 200px;
+  width: auto;
+}
+
+/* The mobile-only "back to the list" control; hidden where both panes show. */
+.inbox-back {
+  display: none;
+}
+
+/* Inbox zero: one centered, quiet block — no nested card. */
+.inbox-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: 320px;
+  text-align: center;
+}
+
+.inbox-empty h3 {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.inbox-empty p {
+  margin: 0;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+}
+
+/* Under 760px the panes stack: the list is the default view, and selecting a
+   draft swaps in the detail with a back control. */
+@media (max-width: 759px) {
+  .inbox {
+    grid-template-columns: minmax(0, 1fr);
+    height: calc(100vh - 120px);
+  }
+
+  .inbox-list {
+    border-right: none;
+  }
+
+  .inbox-detail {
+    display: none;
+  }
+
+  .inbox.show-detail .inbox-list {
+    display: none;
+  }
+
+  .inbox.show-detail .inbox-detail {
+    display: flex;
+  }
+
+  .inbox-back {
+    display: inline-block;
+  }
 }
 
 /* ── Volume chart ─────────────────────────────────────────────────────────── */

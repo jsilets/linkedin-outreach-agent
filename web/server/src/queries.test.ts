@@ -15,8 +15,10 @@ let buildApprovedQueuedCountsQuery: typeof import('./queries.js').buildApprovedQ
 let splitApprovedQueued: typeof import('./queries.js').splitApprovedQueued;
 let leadFunnelBucket: typeof import('./queries.js').leadFunnelBucket;
 let buildActivityActionsQuery: typeof import('./queries.js').buildActivityActionsQuery;
+let buildCampaignPerformanceActionsQuery: typeof import('./queries.js').buildCampaignPerformanceActionsQuery;
 let deriveApprovedQueued: typeof import('./queries.js').deriveApprovedQueued;
 let readLeadContext: typeof import('./queries.js').readLeadContext;
+let projectScheduledSends: typeof import('./queries.js').projectScheduledSends;
 let db: typeof import('./db.js').db;
 
 beforeAll(async () => {
@@ -30,8 +32,10 @@ beforeAll(async () => {
     splitApprovedQueued,
     leadFunnelBucket,
     buildActivityActionsQuery,
+    buildCampaignPerformanceActionsQuery,
     deriveApprovedQueued,
     readLeadContext,
+    projectScheduledSends,
   } = await import('./queries.js'));
   ({ db } = await import('./db.js'));
 });
@@ -270,6 +274,74 @@ describe('buildActivityActionsQuery', () => {
     expect(sql).toContain('"campaign_id"');
     expect(params).toContain(campaignId);
     expect(params).toContain(10);
+  });
+
+  it('correlates the failure reason from the matching action_failed event', () => {
+    const { sql } = buildActivityActionsQuery({ limit: 50 }).toSQL();
+    // A scalar subquery pulls detail from the action_failed event keyed by actionId.
+    expect(sql).toContain('"events"');
+    expect(sql).toContain("->>'detail'");
+    expect(sql).toContain("->>'actionId'");
+    expect(sql).toContain('action_failed%');
+  });
+});
+
+describe('projectScheduledSends', () => {
+  // Every-day schedule so day assertions don't depend on which weekday the test runs.
+  const schedule = { hoursStart: 8, hoursEnd: 20, days: [0, 1, 2, 3, 4, 5, 6] };
+  const configById = new Map([['acct', { caps: { connect: 20, message: 20 }, schedule }]]);
+  const now = new Date(2026, 6, 14, 12, 0, 0); // local noon, a fixed day
+  const backlog = (n: number) =>
+    Array.from({ length: n }, () => ({
+      accountId: 'acct',
+      type: 'connect',
+      state: 'in_progress',
+      nextStepAt: null,
+    }));
+
+  it("fills today's remaining budget, then ladders onto following days at hoursStart", () => {
+    const usedToday = new Map([['acct:connect', 18]]); // 2 of 20 left today
+    const out = projectScheduledSends(backlog(24), { now, configById, usedToday });
+    expect(out[0]).toBeNull(); // today's budget
+    expect(out[1]).toBeNull();
+    const tomorrow8 = new Date(2026, 6, 15, 8, 0, 0);
+    expect(out[2]?.getTime()).toBe(tomorrow8.getTime()); // first laddered slot
+    expect(out[21]?.getTime()).toBe(tomorrow8.getTime()); // 20th slot still tomorrow
+    const dayAfter8 = new Date(2026, 6, 16, 8, 0, 0);
+    expect(out[22]?.getTime()).toBe(dayAfter8.getTime()); // 21st rolls to the next day
+  });
+
+  it('keeps a real future next_step_at unchanged and does not spend today on it', () => {
+    const future = new Date(2026, 6, 15, 8, 0, 0); // a known future send (tomorrow)
+    const cursors = [
+      { accountId: 'acct', type: 'connect', state: 'in_progress', nextStepAt: future },
+      ...backlog(20),
+    ];
+    const out = projectScheduledSends(cursors, { now, configById, usedToday: new Map() });
+    expect(out[0]?.getTime()).toBe(future.getTime()); // passed through
+    // 20 backlog with a full today budget all land today (null), not pushed by the fixed one.
+    expect(out.slice(1).every((x) => x === null)).toBe(true);
+  });
+
+  it('leaves awaiting_approval cursors on their own next_step_at (never laddered)', () => {
+    const at = new Date(2026, 6, 14, 15, 0, 0);
+    const out = projectScheduledSends(
+      [{ accountId: 'acct', type: 'message', state: 'awaiting_approval', nextStepAt: at }],
+      { now, configById, usedToday: new Map() },
+    );
+    expect(out[0]?.getTime()).toBe(at.getTime());
+  });
+});
+
+describe('buildCampaignPerformanceActionsQuery', () => {
+  it('filters to successful actions and groups by campaign + type', () => {
+    const { sql, params } = buildCampaignPerformanceActionsQuery().toSQL();
+    expect(sql).toContain('"actions"');
+    // result='success' is a bound param, not inlined.
+    expect(params).toContain('success');
+    expect(sql).toContain('group by');
+    expect(sql).toContain('"campaign_id"');
+    expect(sql).toContain('"type"');
   });
 });
 

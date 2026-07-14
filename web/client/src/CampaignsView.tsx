@@ -1,13 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ApprovalsPanel } from './ApprovalsPanel';
-import {
-  type Account,
-  api,
-  type CampaignDetail,
-  type CampaignSummary,
-  type Lead,
-  type Pending,
-} from './api';
+import { type Account, api, type CampaignDetail, type CampaignSummary, type Lead } from './api';
 import { FlowEditor } from './FlowEditor';
 import { FunnelBar, MiniFunnel } from './FunnelBar';
 import { LeadsTable } from './LeadsTable';
@@ -18,6 +10,31 @@ function StatusBadge({ status }: { status: string }) {
     <span className="status-badge" style={{ ['--c' as string]: statusVar(status) }}>
       {statusLabel(status)}
     </span>
+  );
+}
+
+// A campaign's headline performance as two quiet stat chips: invite acceptance
+// and message reply rates. Rates guard divide-by-zero with an em dash, so a
+// campaign that hasn't sent yet reads honestly rather than "0%" or "NaN". Coded
+// defensively against `performance` since the server field may not be present.
+function PerfStats({ performance }: { performance?: CampaignSummary['performance'] }) {
+  const invitesSent = performance?.invitesSent ?? 0;
+  const invitesAccepted = performance?.invitesAccepted ?? 0;
+  const messagesSent = performance?.messagesSent ?? 0;
+  const replies = performance?.replies ?? 0;
+  const accepted = invitesSent > 0 ? `${Math.round((invitesAccepted / invitesSent) * 100)}%` : '—';
+  const replied = messagesSent > 0 ? `${Math.round((replies / messagesSent) * 100)}%` : '—';
+  return (
+    <div className="stat-row">
+      <span className="stat">
+        <span className="stat-n">{invitesSent}</span>
+        <span className="stat-label">invites · {accepted} accepted</span>
+      </span>
+      <span className="stat">
+        <span className="stat-n">{messagesSent}</span>
+        <span className="stat-label">messages · {replied} replied</span>
+      </span>
+    </div>
   );
 }
 
@@ -66,6 +83,7 @@ export function CampaignsView() {
               {c.owner} · {c.autonomyLevel} · {c.targetCount} targets
             </div>
             <MiniFunnel counts={c.byProgressState} />
+            <PerfStats performance={c.performance} />
           </div>
         </div>
       ))}
@@ -76,7 +94,6 @@ export function CampaignsView() {
 function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
   const [leads, setLeads] = useState<Lead[]>([]);
-  const [pending, setPending] = useState<Pending[]>([]);
   const [filter, setFilter] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -92,10 +109,6 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
     api
       .leads(id)
       .then(setLeads)
-      .catch(() => {});
-    api
-      .pending(id)
-      .then(setPending)
       .catch(() => {});
   }
   useEffect(() => {
@@ -144,9 +157,10 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
           <h2 style={{ margin: 0 }}>{detail.goal}</h2>
           <StatusBadge status={detail.status} />
         </div>
-        <div className="muted" style={{ marginBottom: 16 }}>
+        <div className="muted" style={{ marginBottom: 12 }}>
           {detail.owner} · {detail.autonomyLevel} · strategy: {detail.messageStrategy}
         </div>
+        <PerfStats performance={detail.performance} />
         <FunnelBar counts={detail.byProgressState} selected={filter} onSelect={setFilter} />
         <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
           {filter
@@ -154,21 +168,6 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
             : 'Click a segment to see exactly who is there.'}
         </div>
       </div>
-
-      {detail.pendingCount > 0 && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <div className="section-head">
-            <span
-              className="status-badge"
-              style={{ ['--c' as string]: statusVar('awaiting_approval') }}
-            >
-              Needs your approval
-            </span>
-            <span className="count-tag">{pending.length}</span>
-          </div>
-          <ApprovalsPanel pending={pending} onChange={load} />
-        </div>
-      )}
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="section-head">
