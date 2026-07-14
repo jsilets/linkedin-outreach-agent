@@ -130,6 +130,19 @@ class InMemActionStore implements ActionStorePort {
   async deleteById(id: string): Promise<void> {
     this.rows.delete(id);
   }
+  async countFailedSince(targetId: string, type: string, since: Date): Promise<number> {
+    return [...this.rows.values()].filter(
+      (r) =>
+        r.targetId === targetId && r.type === type && r.result === 'failed' && r.createdAt >= since,
+    ).length;
+  }
+  async reclaimStalePending(olderThan: Date): Promise<number> {
+    const stale = [...this.rows.values()].filter(
+      (r) => r.result === 'pending' && r.executedAt === null && r.createdAt <= olderThan,
+    );
+    for (const r of stale) this.rows.delete(r.id);
+    return stale.length;
+  }
 }
 
 class InMemCampaignRepo implements CampaignRepoPort {

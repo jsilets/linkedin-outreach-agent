@@ -322,6 +322,11 @@ export async function connect(
   return { ok: true, detail: `${how} (${via})` };
 }
 
+// How long to wait for the recipient's chat overlay to hydrate after the Message
+// click before giving up. The bubble usually appears within a second, but a slow
+// profile render can take several; a too-short bound false-refuses a valid send.
+const MESSAGE_OVERLAY_TIMEOUT_MS = 8000;
+
 /**
  * Send a direct message to the person at `profileUrl`.
  *
@@ -351,9 +356,26 @@ export async function message(
 
   // The overlay bubble for THIS recipient: the conversation bubble that contains
   // a link to their profile. Scoping the box + Send to it makes a wrong-recipient
-  // send impossible even when other conversations are open.
-  const convo = `${SELECTORS.messageConversationBubble}:has(a[href*="/in/${publicId}/"])`;
-  await ctx.page.waitForTimeout(1500);
+  // send impossible even when other conversations are open. Match the profile
+  // anchor whether LinkedIn renders it WITH a trailing slash (`/in/<id>/…`) or
+  // WITHOUT one (an href that ends at `/in/<id>`): both the `/` and the end-anchor
+  // keep it from matching a longer id, so the scoping stays strict either way.
+  const convo =
+    `${SELECTORS.messageConversationBubble}` +
+    `:has(a[href*="/in/${publicId}/"], a[href$="/in/${publicId}"])`;
+  // The overlay hydrates a beat after the Message click. Wait for the scoped
+  // bubble to appear (bounded) rather than deciding on one fixed-delay snapshot —
+  // a slow render used to trip the refusal below and silently drop the send. The
+  // wait resolves the moment the bubble is visible; the count check stays the
+  // real gate, so a genuinely-absent conversation still refuses to send.
+  try {
+    await ctx.page
+      .locator(convo)
+      .first()
+      .waitFor({ state: 'visible', timeout: MESSAGE_OVERLAY_TIMEOUT_MS });
+  } catch {
+    // Timed out — fall through to the count check, which returns the refusal.
+  }
   if (!(await isPresent(ctx, convo))) {
     return {
       ok: false,

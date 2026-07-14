@@ -285,12 +285,17 @@ describe('executor acts when allowed', () => {
     expect(page.composed).toContain('Thanks for connecting!');
     // Send is activated via focus + Enter (the button is off-viewport), not click.
     expect(page.keysPressed).toContain('Enter');
+    // The scoped-conversation bubble is waited on (bounded) before the gate, so a
+    // slow-hydrating overlay is not mistaken for an absent recipient.
+    const convo =
+      `${SELECTORS.messageConversationBubble}` + ':has(a[href*="/in/jane/"], a[href$="/in/jane"])';
+    expect(page.locators.get(convo)?.waits ?? 0).toBeGreaterThan(0);
   });
 
   it('REFUSES to send when the recipient conversation is not open (wrong-recipient guard)', async () => {
     // No conversation bubble links to /in/jane/, so the recipient can't be
     // verified — the runner must not type or send anywhere.
-    const convo = '.msg-overlay-conversation-bubble:has(a[href*="/in/jane/"])';
+    const convo = '.msg-overlay-conversation-bubble:has(a[href*="/in/jane/"], a[href$="/in/jane"])';
     const page = new FakePage({ counts: { [convo]: 0 } });
     const action = makeAction({ type: 'message' });
     const res = await message(ctx(page, action, validToken(action)), {

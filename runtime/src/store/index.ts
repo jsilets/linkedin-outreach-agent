@@ -9,6 +9,7 @@ export { InMemoryStore, makeInMemoryStore } from './in-memory-store.js';
 export { makePostgresStore } from './postgres-store.js';
 
 export type {
+  ActionStorePort,
   RuntimeStore,
   SequenceStorePort,
   TargetProgressPatch,

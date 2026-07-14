@@ -126,8 +126,9 @@ export const SELECTORS = {
   // The chat overlay bubble for ONE conversation. LinkedIn keeps several open at
   // once and they live in a shadow subtree; the runner scopes the compose box +
   // Send to the bubble that provably links to the intended recipient
-  // (`${messageConversationBubble}:has(a[href*="/in/<publicId>/"])`) so a message
-  // can never land in a different open conversation. Verified live 2026-07-10.
+  // (`${messageConversationBubble}:has(a[href*="/in/<publicId>/"], a[href$="/in/<publicId>"])`,
+  // matching the anchor with or without a trailing slash) so a message can never
+  // land in a different open conversation. Verified live 2026-07-10.
   messageConversationBubble: '.msg-overlay-conversation-bubble',
   messageComposeBox:
     'div[contenteditable="true"][aria-label*="message" i], ' +

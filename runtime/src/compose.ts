@@ -282,6 +282,8 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
     targets: store.target,
     // Send human-approved drafts when the working-hours window opens.
     messages: store.message,
+    // Failure counter behind the send give-up cap (stop retrying a doomed send).
+    actions: store.action,
     // Cancel an approved send whose person said Stop (on any campaign).
     suppression: orchestrator.suppression,
     // Send-time reply probe: only when a real session can read a live inbox.

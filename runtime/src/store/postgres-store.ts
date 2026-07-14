@@ -40,7 +40,10 @@ class PgAccountStore implements AccountStorePort {
 }
 
 class PgActionStore implements ActionStorePort {
-  constructor(private readonly repos: Repositories) {}
+  constructor(
+    private readonly repos: Repositories,
+    private readonly db: Db,
+  ) {}
   async create(row: shared.NewActionRow): Promise<shared.ActionRow> {
     return this.repos.action.create(row);
   }
@@ -59,6 +62,33 @@ class PgActionStore implements ActionStorePort {
   }
   async deleteById(id: string): Promise<void> {
     return this.repos.action.deleteById(id);
+  }
+  async countFailedSince(targetId: string, type: string, since: Date): Promise<number> {
+    const [row] = await this.db.handle
+      .select({ n: sql<number>`count(*)::int` })
+      .from(actions)
+      .where(
+        and(
+          eq(actions.targetId, targetId),
+          eq(actions.type, type as shared.ActionRow['type']),
+          eq(actions.result, 'failed'),
+          gte(actions.createdAt, since),
+        ),
+      );
+    return row?.n ?? 0;
+  }
+  async reclaimStalePending(olderThan: Date): Promise<number> {
+    const out = await this.db.handle
+      .delete(actions)
+      .where(
+        and(
+          eq(actions.result, 'pending'),
+          isNull(actions.executedAt),
+          lte(actions.createdAt, olderThan),
+        ),
+      )
+      .returning({ id: actions.id });
+    return out.length;
   }
 }
 
@@ -427,7 +457,7 @@ export class PostgresStore implements RuntimeStore {
     const repos = makeRepositories(db);
     this.repos = repos;
     this.account = new PgAccountStore(repos);
-    this.action = new PgActionStore(repos);
+    this.action = new PgActionStore(repos, db);
     this.campaign = repos.campaign;
     this.target = repos.target;
     this.message = repos.message;

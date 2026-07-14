@@ -38,8 +38,14 @@ import {
   SafetyDeferredError,
 } from '@loa/shared';
 import { personalizeBody } from '../executor/session-provider.js';
-import type { SequenceStorePort } from '../store/index.js';
+import type { ActionStorePort, SequenceStorePort } from '../store/index.js';
 import { advanceAfterStep, dueAfterDelay } from './advance.js';
+
+/** Give up on an approved send after this many recorded failures for the same
+ * target+type, so a permanently-failing send (a recipient overlay that never
+ * matches, a profile that always rejects) is abandoned — terminal 'cancelled',
+ * target pulled from the funnel — instead of retried on every tick forever. */
+const MAX_SEND_ATTEMPTS = 5;
 
 type CampaignStepRow = shared.CampaignStepRow;
 type TargetProgressRow = shared.TargetProgressRow;
@@ -115,6 +121,9 @@ export interface DispatchTickDeps {
   /** Messages, so the tick can send human-approved drafts when the working-hours
    * window opens (the approval path no longer dispatches directly). */
   messages: MessageRepoPort;
+  /** Action failure counter, for the send give-up cap. Optional so tests that do
+   * not exercise the cap can omit it; wired in compose from the action store. */
+  actions?: Pick<ActionStorePort, 'countFailedSince'>;
   /** Cross-campaign suppression (the person said Stop, on any campaign). Wired by
    * compose from the orchestrator; omitted by tests that do not exercise it. When
    * present, a suppressed target's approved send is cancelled and a suppressed
@@ -178,6 +187,7 @@ export class DispatchTick {
   private readonly gate: GateDeps;
   private readonly targets: TargetStagePort;
   private readonly messages: MessageRepoPort;
+  private readonly actions?: Pick<ActionStorePort, 'countFailedSince'>;
   private readonly suppression?: { isSuppressed(targetId: string): Promise<boolean> };
   private readonly replyProbe?: SendTimeReplyCheck;
   private readonly log?: {
@@ -193,6 +203,7 @@ export class DispatchTick {
     this.gate = deps.gate;
     this.targets = deps.targets;
     this.messages = deps.messages;
+    this.actions = deps.actions;
     this.suppression = deps.suppression;
     this.replyProbe = deps.replyProbe;
     this.log = deps.log;
@@ -284,6 +295,19 @@ export class DispatchTick {
   private async sendApproved(msg: MessageRow, now: Date): Promise<StepOutcome | undefined> {
     const req = msg.pendingReq as ActRequest | undefined;
     if (!req) return undefined; // pre-binding orphan; nothing to dispatch
+
+    // Give-up cap: if this send has already failed MAX_SEND_ATTEMPTS times, stop
+    // retrying it every tick and abandon it terminally. This is the general
+    // "can't get stuck" guard — a permanently-failing send (e.g. a recipient
+    // whose chat overlay never matches our scoped selector) would otherwise loop
+    // forever, burning a live action attempt each tick.
+    if (this.actions) {
+      const failures = await this.actions.countFailedSince(msg.targetId, req.type, msg.createdAt);
+      if (failures >= MAX_SEND_ATTEMPTS) {
+        const prog = await this.sequence.getTargetProgressByTarget(msg.targetId);
+        return this.giveUpApproved(msg, prog?.id, req.type, failures);
+      }
+    }
 
     // Pre-send guards. An approval given earlier can be invalidated before the
     // window opens: the person replied, was hard-suppressed, or the target went
@@ -404,6 +428,39 @@ export class DispatchTick {
       reason,
     });
     return { kind: 'cancelled', progressId: progressId ?? msg.targetId, messageId: msg.id, reason };
+  }
+
+  /** Abandon an approved send that has failed too many times: cancel the message
+   * and mark the cursor terminally FAILED (not 'replied' — pullTargetFromFunnel
+   * would mislabel an exhausted send as a reply), with the failure count in the
+   * error message and a distinct audit event so the operator sees it gave up.
+   * Mirrors the step()-throw failure path, which also sets state 'failed'. */
+  private async giveUpApproved(
+    msg: MessageRow,
+    progressId: string | undefined,
+    type: string,
+    failures: number,
+  ): Promise<StepOutcome> {
+    await this.messages.setStatus(msg.id, 'cancelled');
+    if (progressId) {
+      await this.sequence.advanceTargetProgress(progressId, {
+        state: 'failed',
+        nextStepAt: null,
+        errorMessage: `${type} send abandoned after ${failures} failed attempts`,
+      });
+    }
+    this.logEvent('approved_send_exhausted', msg.accountId, {
+      messageId: msg.id,
+      targetId: msg.targetId,
+      type,
+      failures,
+    });
+    return {
+      kind: 'cancelled',
+      progressId: progressId ?? msg.targetId,
+      messageId: msg.id,
+      reason: 'send_failed_exhausted',
+    };
   }
 
   /** Advance one target-progress cursor by exactly one sequence step. */

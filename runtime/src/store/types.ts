@@ -38,6 +38,17 @@ export interface ActionStorePort {
   /** Remove an action row. Used to clean up a just-created pending row when a
    * mint-time safety re-check defers, so no orphan pending row is left behind. */
   deleteById(id: string): Promise<void>;
+  /** How many FAILED actions of `type` this target has recorded since `since`.
+   * The retry counter behind the send give-up cap: a step that keeps failing
+   * (e.g. a message whose recipient overlay never matches) is abandoned after a
+   * bounded number of attempts instead of retried on every tick forever. */
+  countFailedSince(targetId: string, type: string, since: Date): Promise<number>;
+  /** Reclaim actions abandoned mid-flight by a crash or restart: rows still
+   * 'pending' with no executed_at, created before `olderThan`. Deletes them —
+   * freeing the dedup key so the owning step can be re-created and retried — and
+   * returns how many were reclaimed. Called once on boot; nothing is genuinely
+   * in flight at startup, so any such row is a leftover from a killed process. */
+  reclaimStalePending(olderThan: Date): Promise<number>;
 }
 
 /** Event reads the admin audit-log adapter needs on top of EventRepoPort. */

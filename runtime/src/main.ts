@@ -20,6 +20,16 @@ async function main(): Promise<void> {
   // with LOA_DISPATCH_INTERVAL_MS. Unset, the MCP surface is up but the sequence
   // engine stays idle (agent-over-MCP still works; nothing self-paces).
   if (config.dispatchIntervalMs) {
+    // Reclaim actions stranded 'pending' by a prior crash/restart (killed
+    // mid-execute, so the executor never wrote a result). Nothing is genuinely in
+    // flight at boot, so any pending row older than a minute is a leftover; delete
+    // it to free the dedup key and let the owning step be re-created and retried.
+    const reclaimed = await runtime.store.action.reclaimStalePending(new Date(Date.now() - 60_000));
+    if (reclaimed > 0) {
+      console.log(
+        `[@loa/runtime] reclaimed ${reclaimed} stale pending action(s) orphaned by a prior restart`,
+      );
+    }
     runtime.dispatch.start(config.dispatchIntervalMs);
     console.log(`[@loa/runtime] dispatch tick started: every ${config.dispatchIntervalMs}ms`);
   } else {
