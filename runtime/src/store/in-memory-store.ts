@@ -381,6 +381,7 @@ class InMemSequenceStore implements SequenceStorePort {
     campaignId: string,
     targetId: string,
     accountId: string,
+    nextStepAt?: Date | null,
   ): Promise<TargetProgressRow> {
     // Idempotent on targetId (unique index): return the existing enrollment.
     const existing = [...this.progress.values()].find((p) => p.targetId === targetId);
@@ -393,7 +394,7 @@ class InMemSequenceStore implements SequenceStorePort {
       accountId,
       currentStep: 0,
       state: 'in_progress',
-      nextStepAt: null,
+      nextStepAt: nextStepAt ?? null,
       lastStepAt: null,
       errorMessage: null,
       createdAt: now,
@@ -412,11 +413,15 @@ class InMemSequenceStore implements SequenceStorePort {
   }
 
   async dueTargetProgress(now: Date): Promise<TargetProgressRow[]> {
-    return [...this.progress.values()].filter(
-      (p) =>
-        p.state === 'in_progress' &&
-        (p.nextStepAt === null || p.nextStepAt.getTime() <= now.getTime()),
-    );
+    // Mirror the Postgres ordering: nextStepAt ASC NULLS FIRST, then createdAt.
+    const at = (p: TargetProgressRow) => p.nextStepAt?.getTime() ?? Number.NEGATIVE_INFINITY;
+    return [...this.progress.values()]
+      .filter(
+        (p) =>
+          p.state === 'in_progress' &&
+          (p.nextStepAt === null || p.nextStepAt.getTime() <= now.getTime()),
+      )
+      .sort((a, b) => at(a) - at(b) || a.createdAt.getTime() - b.createdAt.getTime());
   }
 
   async upcomingTargetProgress(now: Date): Promise<TargetProgressRow[]> {

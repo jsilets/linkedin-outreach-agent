@@ -115,6 +115,37 @@ describe('InMemoryStore sequence surface', () => {
     expect(await store.sequence.upcomingTargetProgress(now)).toHaveLength(0);
   });
 
+  it('enrollTarget persists a scheduled nextStepAt', async () => {
+    const at = new Date('2026-07-08T15:00:00Z');
+    const p = await store.sequence.enrollTarget(CAMP, 'tgt-1', ACCT, at);
+    expect(p.nextStepAt).toEqual(at);
+    // Not due before its time, due at it.
+    expect(await store.sequence.dueTargetProgress(new Date(at.getTime() - 1))).toHaveLength(0);
+    expect(await store.sequence.dueTargetProgress(at)).toHaveLength(1);
+  });
+
+  it('dueTargetProgress orders nulls first, then ascending nextStepAt', async () => {
+    const now = new Date('2026-07-06T12:00:00Z');
+    const later = await store.sequence.enrollTarget(
+      CAMP,
+      'tgt-later',
+      ACCT,
+      new Date(now.getTime() - 60_000),
+    );
+    const earlier = await store.sequence.enrollTarget(
+      CAMP,
+      'tgt-earlier',
+      ACCT,
+      new Date(now.getTime() - 120_000),
+    );
+    const dueNow = await store.sequence.enrollTarget(CAMP, 'tgt-null', ACCT);
+    // A future cursor never appears, regardless of ordering.
+    await store.sequence.enrollTarget(CAMP, 'tgt-future', ACCT, new Date(now.getTime() + 60_000));
+
+    const due = await store.sequence.dueTargetProgress(now);
+    expect(due.map((d) => d.id)).toEqual([dueNow.id, earlier.id, later.id]);
+  });
+
   it('pullTargetFromFunnel moves an active cursor to terminal replied', async () => {
     const p = await store.sequence.enrollTarget(CAMP, 'tgt-1', ACCT);
     await store.sequence.pullTargetFromFunnel('tgt-1', 'reply');
