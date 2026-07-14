@@ -35,6 +35,14 @@ export interface CampaignSummary {
   byProgressState: Record<string, number>;
   status: CampaignStatus;
   pendingCount: number;
+  // Headline funnel counts for the campaign's stat chips. Optional on the wire so
+  // the UI renders before the server side lands; read defensively.
+  performance: {
+    invitesSent: number;
+    invitesAccepted: number;
+    messagesSent: number;
+    replies: number;
+  };
 }
 
 export interface CampaignDetail extends CampaignSummary {
@@ -91,10 +99,31 @@ export interface ActivityItem {
   name: string | null;
   campaignId: string | null;
   profileUrl: string | null;
+  /** For a failed action, the reason from the action_failed event (e.g. "email-gated"),
+   * shown as a hover tooltip on the result chip. Null for successful/inbound rows. */
+  failureDetail: string | null;
 }
 
 export interface BulkApproveResult {
   results: Array<{ messageId: string; ok: boolean; error?: string }>;
+}
+
+export interface ScheduledItem {
+  targetId: string;
+  campaignId: string;
+  campaignGoal: string | null;
+  name: string | null;
+  profileUrl: string | null;
+  nextStepType: string | null;
+  nextStepAt: string | null;
+  /** 'in_progress' fires on the clock; 'awaiting_approval' waits for approval. */
+  state: string;
+  /** Forecast send time accounting for daily caps + working hours (a due-now
+   * backlog is laddered across future days). Null = today's budget. */
+  projectedAt: string | null;
+  /** awaiting_approval only: true = message already approved, just waiting to send
+   * ("sending soon"); false = a draft still pending your approval. */
+  approvedQueued: boolean;
 }
 
 export interface VolumeRow {
@@ -287,6 +316,7 @@ export const api = {
     if (accountId) params.set('accountId', accountId);
     return get<VolumeRow[]>(`/api/metrics/volume?${params.toString()}`);
   },
+  scheduled: (limit = 60) => get<ScheduledItem[]>(`/api/scheduled?limit=${limit}`),
   launchCampaign: async (
     id: string,
     accountId: string,

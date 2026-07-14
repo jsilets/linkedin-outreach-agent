@@ -199,6 +199,7 @@ export function LeadsTable({
         rows={rows}
         columns={columns}
         rowKey={(l) => l.targetId}
+        persistKey="leads"
         rowClassName={(l) =>
           l.progressState === 'awaiting_approval' && !l.approvedQueued
             ? 'needs-you'

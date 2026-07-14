@@ -20,6 +20,7 @@ import {
   getErrors,
   getList,
   getPending,
+  getScheduled,
   getVolume,
   LaunchError,
   LimitsError,
@@ -392,6 +393,16 @@ api.get('/activity', async (req, res, next) => {
         ? req.query.campaignId
         : undefined;
     res.json(await getActivity({ campaignId, limit: clampLimit(req.query.limit) }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Forward-looking feed: enrollment cursors the dispatch loop will step next,
+// soonest first (null next_step_at = due on the next tick).
+api.get('/scheduled', async (req, res, next) => {
+  try {
+    res.json(await getScheduled(clampLimit(req.query.limit)));
   } catch (err) {
     next(err);
   }

@@ -8,6 +8,7 @@ import {
   CAMPAIGN_TARGET_REMOVAL_REASON,
   CANCELABLE_MESSAGE_STATUSES,
   DEFAULT_CAPS,
+  DEFAULT_SCHEDULE,
   defaultLimits,
   extractCompany,
   FAILURE_EVENT_KIND_SUFFIXES,
@@ -58,6 +59,29 @@ function deriveStatus(byProgressState: Record<string, number>): CampaignStatus {
   return active ? 'active' : 'done';
 }
 
+/**
+ * HeyReach-style per-campaign performance counts. Absolute totals only; the UI
+ * derives acceptance/reply rates from these client-side.
+ */
+export interface CampaignPerformance {
+  /** connect actions that succeeded. */
+  invitesSent: number;
+  /** invite_accepted events attributed to this campaign. */
+  invitesAccepted: number;
+  /** message actions that succeeded. */
+  messagesSent: number;
+  /** targets whose stage reached a replied-or-later stage. */
+  replies: number;
+}
+
+function emptyPerformance(): CampaignPerformance {
+  return { invitesSent: 0, invitesAccepted: 0, messagesSent: 0, replies: 0 };
+}
+
+// Target stages that count as a reply having landed (replied and everything past
+// it in the funnel).
+const REPLIED_STAGES = ['replied', 'in_conversation', 'won'] as const;
+
 export interface CampaignSummary {
   id: string;
   goal: string;
@@ -69,6 +93,23 @@ export interface CampaignSummary {
   byProgressState: Record<string, number>;
   status: CampaignStatus;
   pendingCount: number;
+  performance: CampaignPerformance;
+}
+
+// Successful outbound actions grouped by campaign + type, the actions half of the
+// performance rollup (invitesSent = connect, messagesSent = message). Extracted so
+// its SQL shape (result='success' filter, grouped) is assertable without a live DB
+// (see buildVolumeQuery).
+export function buildCampaignPerformanceActionsQuery() {
+  return db
+    .select({
+      campaignId: actions.campaignId,
+      type: actions.type,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(actions)
+    .where(eq(actions.result, 'success'))
+    .groupBy(actions.campaignId, actions.type);
 }
 
 // Campaigns list with per-campaign target counts, a stage histogram, a progress
@@ -108,6 +149,28 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
 
   const queuedByCampaign = queuedTypeCountsByCampaign(await buildApprovedQueuedCountsQuery());
 
+  // Performance rollup: three more grouped queries, folded in by campaign id the
+  // same way the histograms above are. Invites/messages come from successful
+  // actions; accepts from the invite_accepted event log (campaign lives in the
+  // jsonb payload); replies from targets that reached a replied-or-later stage.
+  const perfActionRows = await buildCampaignPerformanceActionsQuery();
+  const acceptedRows = await db
+    .select({
+      campaignId: sql<string | null>`${events.payload}->>'campaignId'`,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(events)
+    .where(eq(events.kind, 'invite_accepted'))
+    .groupBy(sql`${events.payload}->>'campaignId'`);
+  const replyRows = await db
+    .select({
+      campaignId: targets.campaignId,
+      count: sql<number>`count(*)::int`,
+    })
+    .from(targets)
+    .where(inArray(targets.stage, [...REPLIED_STAGES]))
+    .groupBy(targets.campaignId);
+
   const stageByCampaign = new Map<string, { total: number; byStage: Record<string, number> }>();
   for (const r of stageRows) {
     const entry = stageByCampaign.get(r.campaignId) ?? { total: 0, byStage: {} };
@@ -123,6 +186,26 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
   }
   const pendingByCampaign = new Map<string, number>();
   for (const r of pendingRows) pendingByCampaign.set(r.campaignId, r.count);
+
+  const perfByCampaign = new Map<string, CampaignPerformance>();
+  const ensurePerf = (id: string): CampaignPerformance => {
+    let p = perfByCampaign.get(id);
+    if (!p) {
+      p = emptyPerformance();
+      perfByCampaign.set(id, p);
+    }
+    return p;
+  };
+  for (const r of perfActionRows) {
+    const p = ensurePerf(r.campaignId);
+    if (r.type === 'connect') p.invitesSent = r.count;
+    else if (r.type === 'message') p.messagesSent = r.count;
+  }
+  for (const r of acceptedRows) {
+    if (!r.campaignId) continue;
+    ensurePerf(r.campaignId).invitesAccepted = r.count;
+  }
+  for (const r of replyRows) ensurePerf(r.campaignId).replies = r.count;
 
   return rows.map((c) => {
     const counts = stageByCampaign.get(c.id) ?? { total: 0, byStage: {} };
@@ -144,6 +227,7 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
       byProgressState,
       status: deriveStatus(rawByProgressState),
       pendingCount: pendingByCampaign.get(c.id) ?? 0,
+      performance: perfByCampaign.get(c.id) ?? emptyPerformance(),
     };
   });
 }
@@ -199,6 +283,28 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     queuedTypeCountsByCampaign(await buildApprovedQueuedCountsQuery(id)).get(id) ?? {};
   const byProgressState = splitApprovedQueued(rawByProgressState, queuedByType);
 
+  // Same performance rollup as listCampaigns, scoped to this one campaign.
+  const performance = emptyPerformance();
+  const perfActionRows = await db
+    .select({ type: actions.type, count: sql<number>`count(*)::int` })
+    .from(actions)
+    .where(and(eq(actions.campaignId, id), eq(actions.result, 'success')))
+    .groupBy(actions.type);
+  for (const r of perfActionRows) {
+    if (r.type === 'connect') performance.invitesSent = r.count;
+    else if (r.type === 'message') performance.messagesSent = r.count;
+  }
+  const [accepted] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(events)
+    .where(and(eq(events.kind, 'invite_accepted'), eq(sql`${events.payload}->>'campaignId'`, id)));
+  performance.invitesAccepted = accepted?.count ?? 0;
+  const [replied] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(targets)
+    .where(and(eq(targets.campaignId, id), inArray(targets.stage, [...REPLIED_STAGES])));
+  performance.replies = replied?.count ?? 0;
+
   return {
     id: campaign.id,
     goal: campaign.goal,
@@ -214,6 +320,7 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     pendingCount: pending?.count ?? 0,
     enrolledCount,
     steps,
+    performance,
   };
 }
 
@@ -644,6 +751,9 @@ export interface ActivityItem {
   name: string | null;
   profileUrl: string | null;
   campaignId: string | null;
+  /** Why a failed action failed (from the matching action_failed event), for a
+   * hover tooltip on the result chip. Null when the action did not fail. */
+  failureDetail: string | null;
 }
 
 // Reverse-chron outbound action rows for the activity feed, newest first, with
@@ -663,6 +773,17 @@ export function buildActivityActionsQuery(opts: { campaignId?: string; limit: nu
       campaignId: actions.campaignId,
       name: sql<string | null>`${targets.externalContext}->>'name'`,
       profileUrl: sql<string | null>`${targets.externalContext}->>'profileUrl'`,
+      // The reason string the executor recorded when this action failed. It lives
+      // in the action_failed event payload (keyed by actionId), not on the action
+      // row, so correlate the latest such event here. Null for non-failed actions.
+      failureDetail: sql<string | null>`(
+        select ${events.payload}->>'detail'
+        from ${events}
+        where ${events.kind} like 'action_failed%'
+          and ${events.payload}->>'actionId' = ${actions.id}::text
+        order by ${events.ts} desc
+        limit 1
+      )`,
     })
     .from(actions)
     .innerJoin(targets, eq(actions.targetId, targets.id))
@@ -684,7 +805,10 @@ export async function getActivity(opts: {
 }): Promise<ActivityItem[]> {
   const actionRows = await buildActivityActionsQuery(opts);
 
-  // Acceptance events carry targetId/campaignId/name/profileUrl in their jsonb payload.
+  // Acceptance events carry targetId/campaignId/name/profileUrl in their jsonb
+  // payload — but older events were written without profileUrl, so fall back to
+  // the target row's external_context (joined by the payload's targetId). The
+  // join compares as text to avoid a cast error on any malformed payload id.
   const payloadCampaign = sql<string | null>`${events.payload}->>'campaignId'`;
   const acceptRows = await db
     .select({
@@ -692,10 +816,15 @@ export async function getActivity(opts: {
       ts: events.ts,
       targetId: sql<string | null>`${events.payload}->>'targetId'`,
       campaignId: payloadCampaign,
-      name: sql<string | null>`${events.payload}->>'name'`,
-      profileUrl: sql<string | null>`${events.payload}->>'profileUrl'`,
+      name: sql<
+        string | null
+      >`coalesce(${events.payload}->>'name', ${targets.externalContext}->>'name')`,
+      profileUrl: sql<
+        string | null
+      >`coalesce(${events.payload}->>'profileUrl', ${targets.externalContext}->>'profileUrl')`,
     })
     .from(events)
+    .leftJoin(targets, sql`${targets.id}::text = ${events.payload}->>'targetId'`)
     .where(
       opts.campaignId
         ? and(eq(events.kind, 'invite_accepted'), eq(payloadCampaign, opts.campaignId))
@@ -715,6 +844,7 @@ export async function getActivity(opts: {
       name: r.name,
       profileUrl: r.profileUrl,
       campaignId: r.campaignId,
+      failureDetail: r.failureDetail,
     })),
     ...acceptRows.map((r) => ({
       actionId: r.id,
@@ -726,6 +856,7 @@ export async function getActivity(opts: {
       name: r.name,
       profileUrl: r.profileUrl ?? null,
       campaignId: r.campaignId,
+      failureDetail: null,
     })),
   ];
 
@@ -736,6 +867,284 @@ export async function getActivity(opts: {
     return tb - ta;
   });
   return items.slice(0, opts.limit);
+}
+
+export interface ScheduledItem {
+  targetId: string;
+  campaignId: string;
+  campaignGoal: string | null;
+  name: string | null;
+  profileUrl: string | null;
+  /** The step about to run (connect / message / …), null if the cursor points past the flow. */
+  nextStepType: string | null;
+  /** When it becomes due. Null means due immediately (next dispatch tick). */
+  nextStepAt: string | null;
+  /** The cursor state: 'in_progress' fires on the clock; 'awaiting_approval' is a
+   * drafted step that waits for approval before it sends. Lets the UI tell a
+   * ready-to-fire send apart from one parked behind the approval gate. */
+  state: string;
+  /** Forecast of when this actually goes out, accounting for the per-type daily
+   * cap and working hours: a due-now backlog does not all fire at once, so item N
+   * past today's remaining budget is projected onto a later working day. Null
+   * means "today's budget" (fires as capacity frees today). See
+   * projectScheduledSends. */
+  projectedAt: string | null;
+  /** For an awaiting_approval cursor: true when its outbound message is already
+   * APPROVED and only waiting for its send tick (no draft left to approve), false
+   * when a draft is still pending the operator's approval. Lets the UI say
+   * "sending soon" for what you already approved instead of "pending approval".
+   * Always false for non-approval states. (SQL twin: deriveApprovedQueued.) */
+  approvedQueued: boolean;
+}
+
+// ── Scheduled-send forecast ──────────────────────────────────────────────────
+// The Scheduled table is a forecast of WHEN queued work goes out, not a dump of
+// raw next_step_at. A backlog of due-now cursors (e.g. 60 overdue invites) does
+// not fire at once — the safety gate paces it to the per-type daily cap within
+// working hours, so item 21 really goes out tomorrow, item 41 the day after. This
+// ladders each due-now cursor onto the earliest working day with spare cap,
+// mirroring the runtime's StaggerAllocator / dueAfterDelay so the forecast tracks
+// how dispatch will pace. (Deliberate duplication of runtime/src/dispatch logic;
+// consolidate into @loa/shared when the read model and runtime share more.)
+
+const PROJ_DAY_SECONDS = 86_400;
+
+/** Local calendar-day bucket key (server-local, matching the runtime's clock). */
+function projDayKey(d: Date): string {
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+/** Working-window start `delaySeconds` out, skipping days off. Mirrors runtime
+ * dueAfterDelay: sub-day delays stay exact; day-level snaps to hoursStart. */
+function projWindowStart(now: Date, delaySeconds: number, s: AccountSchedule): Date | null {
+  if (delaySeconds <= 0) return null;
+  const raw = new Date(now.getTime() + delaySeconds * 1000);
+  if (delaySeconds < PROJ_DAY_SECONDS) return raw;
+  let d = new Date(raw.getFullYear(), raw.getMonth(), raw.getDate(), s.hoursStart, 0, 0, 0);
+  for (let i = 0; i < 8; i++) {
+    if (s.days.includes(d.getDay())) return d;
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, s.hoursStart, 0, 0, 0);
+  }
+  return d;
+}
+
+/** Hands out the earliest working day whose per-type occupancy is below the cap.
+ * Day 0 yields null (today's budget); later days yield the working-window start. */
+class DaySlotter {
+  private readonly occ = new Map<string, number>();
+  constructor(
+    private readonly now: Date,
+    private readonly cap: number,
+    private readonly schedule: AccountSchedule,
+    seed: Array<Date | null>,
+  ) {
+    for (const at of seed) this.bump(at !== null && at > now ? at : now);
+  }
+  private bump(d: Date): void {
+    const k = projDayKey(d);
+    this.occ.set(k, (this.occ.get(k) ?? 0) + 1);
+  }
+  next(): Date | null {
+    for (let day = 0; ; day += 1) {
+      const at =
+        day === 0 ? null : projWindowStart(this.now, day * PROJ_DAY_SECONDS, this.schedule);
+      const k = projDayKey(at ?? this.now);
+      if ((this.occ.get(k) ?? 0) < Math.max(this.cap, 1)) {
+        this.bump(at ?? this.now);
+        return at;
+      }
+    }
+  }
+}
+
+export interface ProjectableCursor {
+  accountId: string | null;
+  /** Action type of the next step (connect / message / …); drives which cap applies. */
+  type: string | null;
+  state: string;
+  nextStepAt: Date | null;
+}
+
+export interface ProjectInputs {
+  now: Date;
+  /** Per-account caps + working-hours schedule. */
+  configById: Map<string, { caps: Record<string, number>; schedule: AccountSchedule }>;
+  /** Already-sent-today count per `${accountId}:${type}`, seeded onto day 0. */
+  usedToday: Map<string, number>;
+}
+
+/**
+ * Projected send time per cursor, in the SAME order as `cursors`. A cursor with a
+ * real future next_step_at keeps it (its time is already known). A due-now cursor
+ * (in_progress, null/past next_step_at) is laddered onto the earliest working day
+ * whose per-type cap still has room. Null projectedAt = today's budget ("due now").
+ * Callers should pass cursors in due-order (oldest first) so the earliest-waiting
+ * gets the earliest slot.
+ */
+export function projectScheduledSends(
+  cursors: ProjectableCursor[],
+  { now, configById, usedToday }: ProjectInputs,
+): Array<Date | null> {
+  const keyOf = (acct: string, type: string) => `${acct}:${type}`;
+  const isBacklog = (c: ProjectableCursor) =>
+    c.state === 'in_progress' && (c.nextStepAt === null || c.nextStepAt <= now);
+
+  // Seed each (account,type) slotter with today's already-used count plus every
+  // fixed (non-backlog) cursor on its own day, so backlog never double-books a
+  // slot a known send already holds.
+  const seedByKey = new Map<string, Array<Date | null>>();
+  for (const c of cursors) {
+    const key = keyOf(c.accountId ?? '', c.type ?? '');
+    if (!seedByKey.has(key)) {
+      const used = usedToday.get(key) ?? 0;
+      seedByKey.set(
+        key,
+        Array.from({ length: used }, () => now),
+      );
+    }
+    if (!isBacklog(c) && c.nextStepAt) seedByKey.get(key)?.push(c.nextStepAt);
+  }
+
+  const slotters = new Map<string, DaySlotter>();
+  const slotterFor = (acct: string, type: string): DaySlotter => {
+    const key = keyOf(acct, type);
+    let s = slotters.get(key);
+    if (!s) {
+      const cfg = configById.get(acct);
+      const cap = cfg?.caps[type] ?? DEFAULT_CAPS[type as ActionType] ?? 20;
+      const schedule = cfg?.schedule ?? DEFAULT_SCHEDULE;
+      s = new DaySlotter(now, cap, schedule, seedByKey.get(key) ?? []);
+      slotters.set(key, s);
+    }
+    return s;
+  };
+
+  return cursors.map((c) =>
+    isBacklog(c) ? slotterFor(c.accountId ?? '', c.type ?? '').next() : c.nextStepAt,
+  );
+}
+
+/**
+ * What the runtime has queued: every enrollment cursor whose next step is a real
+ * scheduled send — the `in_progress` cursors the dispatch tick fires on the clock
+ * PLUS the `awaiting_approval` cursors holding a drafted message with its send
+ * time — across all campaigns, soonest first (null next_step_at sorts first).
+ * `awaiting_connection` is excluded on purpose: an invite waiting to be accepted
+ * has no send time to schedule and would only add timeless rows to a table meant
+ * to be read/filtered by when things go out. The step type comes from indexing
+ * the campaign's enabled steps with the cursor's current_step — same derivation
+ * as getCampaignLeads.
+ */
+export async function getScheduled(limit: number): Promise<ScheduledItem[]> {
+  const rows = await db
+    .select({
+      targetId: targets.id,
+      campaignId: targets.campaignId,
+      campaignGoal: campaigns.goal,
+      name: sql<string | null>`${targets.externalContext}->>'name'`,
+      profileUrl: sql<string | null>`${targets.externalContext}->>'profileUrl'`,
+      currentStep: targetProgress.currentStep,
+      nextStepAt: targetProgress.nextStepAt,
+      state: targetProgress.state,
+      accountId: targetProgress.accountId,
+    })
+    .from(targetProgress)
+    .innerJoin(targets, eq(targetProgress.targetId, targets.id))
+    .innerJoin(campaigns, eq(targets.campaignId, campaigns.id))
+    .where(inArray(targetProgress.state, ['in_progress', 'awaiting_approval']))
+    .orderBy(sql`${targetProgress.nextStepAt} asc nulls first`)
+    .limit(limit);
+
+  // Enabled step types per involved campaign, in flow order.
+  const campaignIds = [...new Set(rows.map((r) => r.campaignId))];
+  const stepsByCampaign = new Map<string, string[]>();
+  if (campaignIds.length > 0) {
+    const stepRows = await db
+      .select({
+        campaignId: campaignSteps.campaignId,
+        stepType: campaignSteps.stepType,
+      })
+      .from(campaignSteps)
+      .where(and(inArray(campaignSteps.campaignId, campaignIds), eq(campaignSteps.enabled, true)))
+      .orderBy(asc(campaignSteps.stepOrder));
+    for (const s of stepRows) {
+      const list = stepsByCampaign.get(s.campaignId) ?? [];
+      list.push(s.stepType);
+      stepsByCampaign.set(s.campaignId, list);
+    }
+  }
+
+  const typeOf = (r: (typeof rows)[number]): string | null =>
+    r.currentStep !== null && r.currentStep >= 0
+      ? (stepsByCampaign.get(r.campaignId)?.[r.currentStep] ?? null)
+      : null;
+
+  // Forecast inputs: per-account caps + schedule, and how much each type has
+  // already sent today (which eats into today's budget before the backlog does).
+  const accountIds = [...new Set(rows.map((r) => r.accountId).filter((a): a is string => !!a))];
+  const configById = new Map<string, { caps: Record<string, number>; schedule: AccountSchedule }>();
+  const usedToday = new Map<string, number>();
+  if (accountIds.length > 0) {
+    const acctRows = await db
+      .select({ id: accounts.id, limits: accounts.limits })
+      .from(accounts)
+      .where(inArray(accounts.id, accountIds));
+    for (const a of acctRows) {
+      const lim = (a.limits ?? {}) as Partial<AccountLimits>;
+      configById.set(a.id, {
+        caps: lim.caps ?? DEFAULT_CAPS,
+        schedule: lim.schedule ?? DEFAULT_SCHEDULE,
+      });
+    }
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const usedRows = await db
+      .select({
+        accountId: actions.accountId,
+        type: actions.type,
+        n: sql<number>`cast(count(*) as int)`,
+      })
+      .from(actions)
+      .where(
+        and(
+          eq(actions.result, 'success'),
+          gte(actions.executedAt, midnight),
+          inArray(actions.accountId, accountIds),
+        ),
+      )
+      .groupBy(actions.accountId, actions.type);
+    for (const u of usedRows) usedToday.set(`${u.accountId}:${u.type}`, u.n);
+  }
+
+  const projected = projectScheduledSends(
+    rows.map((r) => ({
+      accountId: r.accountId,
+      type: typeOf(r),
+      state: r.state,
+      nextStepAt: r.nextStepAt,
+    })),
+    { now: new Date(), configById, usedToday },
+  );
+
+  // Which awaiting_approval cursors are actually APPROVED-and-queued (message
+  // already approved, no draft left to approve) vs still pending the operator.
+  // Same SQL as the leads view's approved-queued split, so the two agree.
+  const approvedQueuedTargets = new Set(
+    (await buildApprovedQueuedCountsQuery()).map((r) => r.targetId),
+  );
+
+  return rows.map((r, i) => ({
+    targetId: r.targetId,
+    campaignId: r.campaignId,
+    campaignGoal: r.campaignGoal,
+    name: r.name,
+    profileUrl: r.profileUrl,
+    nextStepType: typeOf(r),
+    nextStepAt: r.nextStepAt ? r.nextStepAt.toISOString() : null,
+    state: r.state,
+    projectedAt: projected[i] ? (projected[i] as Date).toISOString() : null,
+    approvedQueued: approvedQueuedTargets.has(r.targetId),
+  }));
 }
 
 export interface ErrorItem {
@@ -949,9 +1358,22 @@ export interface VolumeRow {
   count: number;
 }
 
+// The server's IANA timezone (e.g. "America/Los_Angeles"), resolved once. Day
+// buckets are cut on this zone's calendar so the chart lines up with the
+// machine-local clock the runtime schedules against — not UTC, which would open
+// a "tomorrow" bar after 5pm Pacific. Sanitized to the IANA charset because it
+// is inlined as a SQL literal below (not a bound param): the day expression must
+// be byte-identical across SELECT/GROUP BY/ORDER BY for Postgres to accept the
+// grouping, which a `$n` placeholder breaks.
+const SERVER_TZ =
+  (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC').replace(/[^A-Za-z0-9_/+-]/g, '') ||
+  'UTC';
+
 // Build the volume aggregation query. Isolated so a test can assert the SQL
 // shape without a live DB. Counts successful actions per calendar day per type,
-// over the trailing `days` window, optionally filtered to one account.
+// over the trailing `days` window, optionally filtered to one account. Days are
+// bucketed in the server's local timezone (SERVER_TZ), so the boundary matches
+// what the operator sees as "today".
 export function buildVolumeQuery(opts: { accountId?: string; days: number }) {
   const since = sql`now() - (${opts.days} * interval '1 day')`;
   const conditions = [
@@ -961,7 +1383,13 @@ export function buildVolumeQuery(opts: { accountId?: string; days: number }) {
   if (opts.accountId) {
     conditions.push(eq(actions.accountId, opts.accountId));
   }
-  const day = sql<string>`to_char(date_trunc('day', coalesce(${actions.executedAt}, ${actions.scheduledAt})), 'YYYY-MM-DD')`;
+  // `AT TIME ZONE` converts the stored timestamptz to local wall-clock time in
+  // SERVER_TZ before truncating, so the calendar day is the local one. The zone
+  // is inlined via sql.raw (SERVER_TZ is sanitized above) so the expression is
+  // identical everywhere it appears — a bound param renders as $1/$4/$5 and
+  // Postgres then rejects the GROUP BY.
+  const tz = sql.raw(`'${SERVER_TZ}'`);
+  const day = sql<string>`to_char(date_trunc('day', coalesce(${actions.executedAt}, ${actions.scheduledAt}) AT TIME ZONE ${tz}), 'YYYY-MM-DD')`;
   return db
     .select({ day, type: actions.type, count: sql<number>`count(*)::int` })
     .from(actions)

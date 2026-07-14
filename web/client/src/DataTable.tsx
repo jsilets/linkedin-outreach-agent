@@ -1,10 +1,12 @@
 import { type ReactNode, useMemo, useState } from 'react';
+import { readPref, writePref } from './prefs';
 
 // A generic, sortable, client-paginated table. Sort and page state live in the
 // component and survive parent refetches (e.g. after an approval reloads leads):
 // nothing here is keyed off the data array, so a new `rows` reference re-renders
 // with the same sort column and page. Rows are matched by `rowKey`, so identity
 // is stable across reloads too. Pass `search` to add a text filter above the table.
+// Pass `persistKey` to also remember sort + filter across visits (localStorage).
 
 export type SortValue = string | number | null | undefined;
 
@@ -45,6 +47,7 @@ export function DataTable<T>({
   initialSort,
   search,
   searchPlaceholder = 'Filter…',
+  persistKey,
 }: {
   rows: T[];
   columns: Column<T>[];
@@ -54,10 +57,31 @@ export function DataTable<T>({
   // Provide a text accessor to render a filter box; rows are matched by substring.
   search?: (row: T) => string;
   searchPlaceholder?: string;
+  // Namespace for remembering sort + filter across visits. Omit for ephemeral state.
+  persistKey?: string;
 }) {
-  const [sort, setSort] = useState<{ key: string; dir: Dir } | null>(initialSort ?? null);
+  const [sort, setSortState] = useState<{ key: string; dir: Dir } | null>(() =>
+    persistKey ? readPref(`${persistKey}.sort`, initialSort ?? null) : (initialSort ?? null),
+  );
   const [page, setPage] = useState(0);
-  const [query, setQuery] = useState('');
+  const [query, setQueryState] = useState(() =>
+    persistKey ? readPref(`${persistKey}.q`, '') : '',
+  );
+
+  function setSort(
+    update: (prev: { key: string; dir: Dir } | null) => { key: string; dir: Dir } | null,
+  ) {
+    setSortState((prev) => {
+      const next = update(prev);
+      if (persistKey) writePref(`${persistKey}.sort`, next);
+      return next;
+    });
+  }
+
+  function setQuery(q: string) {
+    setQueryState(q);
+    if (persistKey) writePref(`${persistKey}.q`, q);
+  }
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

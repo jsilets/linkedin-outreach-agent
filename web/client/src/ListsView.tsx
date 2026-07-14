@@ -5,99 +5,43 @@ import { type Column, DataTable } from './DataTable';
 export function ListsView() {
   const [lists, setLists] = useState<ListSummary[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
-  function loadLists() {
+  useEffect(() => {
     api
       .lists()
       .then(setLists)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }
-
-  useEffect(() => {
-    loadLists();
   }, []);
-
-  async function create() {
-    setSaving(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      const body = { name: name.trim(), description: description.trim() || undefined };
-      const res = await api.createList(body);
-      setSuccess(`Created ${res.name}`);
-      setName('');
-      setDescription('');
-      loadLists();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Create failed.');
-    } finally {
-      setSaving(false);
-    }
-  }
 
   if (selected) {
     return <ListDetailView id={selected} onBack={() => setSelected(null)} />;
   }
 
-  const canSubmit = name.trim() && !saving;
+  if (error) return <div className="error">{error}</div>;
+  if (lists === null) return <p className="muted">Loading...</p>;
+  if (lists.length === 0) {
+    return (
+      <p className="muted">
+        No lists yet. Create one via the engine (create_list), then it shows here.
+      </p>
+    );
+  }
 
   return (
-    <div className="grid" style={{ gap: 'var(--space-5)' }}>
-      <div className="card">
-        <strong>Create a lead list</strong>
-        <div className="grid" style={{ marginTop: 'var(--space-3)' }}>
+    <div className="grid">
+      {lists.map((l) => (
+        <div className="card campaign-row" key={l.id} onClick={() => setSelected(l.id)}>
           <div>
-            <label>List name</label>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Q3 SaaS founders"
-            />
-          </div>
-          <div>
-            <label>Description (optional)</label>
-            <input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What's in this list"
-            />
-          </div>
-          <div className="toolbar" style={{ margin: 0 }}>
-            <button type="button" className="btn" onClick={create} disabled={!canSubmit}>
-              {saving ? 'Creating...' : 'Create list'}
-            </button>
-            <span className="spacer" />
-            {success && <span className="saved">{success}</span>}
-          </div>
-          {error && <div className="error">{error}</div>}
-        </div>
-      </div>
-
-      {lists === null ? (
-        <p className="muted">Loading...</p>
-      ) : lists.length === 0 ? (
-        <p className="muted">No lists yet. Create one above.</p>
-      ) : (
-        <div className="grid">
-          {lists.map((l) => (
-            <div className="card campaign-row" key={l.id} onClick={() => setSelected(l.id)}>
-              <div>
-                <h3>{l.name}</h3>
-                <div className="muted">
-                  {l.description ? `${l.description} · ` : ''}
-                  {l.memberCount} {l.memberCount === 1 ? 'lead' : 'leads'} · created{' '}
-                  {new Date(l.createdAt).toLocaleDateString()}
-                </div>
-              </div>
+            <h3>{l.name}</h3>
+            <div className="muted">
+              {l.description ? `${l.description} · ` : ''}
+              {l.memberCount} {l.memberCount === 1 ? 'lead' : 'leads'} · created{' '}
+              {new Date(l.createdAt).toLocaleDateString()}
             </div>
-          ))}
+          </div>
         </div>
-      )}
+      ))}
     </div>
   );
 }
@@ -248,6 +192,7 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
             rowKey={(m) => m.id}
             rowClassName={(m) => (m.offIcp ? 'row-warn' : undefined)}
             initialSort={{ key: 'score', dir: 'desc' }}
+            persistKey="list-members"
             search={(m) =>
               [m.name, m.headline, m.currentCompany, m.location].filter(Boolean).join(' ')
             }
