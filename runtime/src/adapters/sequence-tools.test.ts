@@ -189,19 +189,19 @@ describe('CampaignAdapter enrollment stagger', () => {
     expect(ats[4]).toEqual(dueAfterDelay(now, 2 * 86_400, DEFAULT_SCHEDULE));
   });
 
-  it('appends a second batch after the first batch future slots', async () => {
+  it('appends a second batch after the first batch commitments, never past a day cap', async () => {
     await campaign.defineCampaignSteps(CAMP, [{ stepType: 'connect' }]);
     const now = new Date();
-    // Batch 1: slots 0..2 -> two due now, one on day 1.
+    // Batch 1 (cap 2): two due now, one on day 1.
     await campaign.enrollTargets(CAMP, ['t1', 't2', 't3'], ACCT);
-    // Batch 2 starts at slot = 1 (one future-scheduled cursor), not slot 0:
-    // only ONE more lands due-now before the day rolls over.
+    // Batch 2: today is full (2 nulls), day 1 has one slot left -> fill it,
+    // then overflow to day 2. Nothing restarts at day 0 or overbooks day 1.
     const second = await campaign.enrollTargets(CAMP, ['t4', 't5', 't6'], ACCT);
 
     const ats = await nextStepAts(second.progressIds);
-    expect(ats[0]).toBeNull(); // slot 1 -> day 0
-    expect(ats[1]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE)); // slot 2 -> day 1
-    expect(ats[2]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE)); // slot 3 -> day 1
+    expect(ats[0]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE)); // day 1 fills to cap
+    expect(ats[1]).toEqual(dueAfterDelay(now, 2 * 86_400, DEFAULT_SCHEDULE)); // overflow
+    expect(ats[2]).toEqual(dueAfterDelay(now, 2 * 86_400, DEFAULT_SCHEDULE));
   });
 
   it('enrolls all-null when the campaign has no steps yet', async () => {

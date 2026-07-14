@@ -43,7 +43,6 @@ import type {
 import type { DefaultSafetyGate } from '@loa/safety';
 import type {
   Account,
-  AccountSchedule,
   ApprovalDecision,
   AutonomyLevel,
   Campaign,
@@ -59,7 +58,8 @@ import {
   planCampaignTargetRemoval,
   readIcpScore,
 } from '@loa/shared';
-import { advanceAfterStep, dueAfterDelay } from '../dispatch/advance.js';
+import { advanceAfterStep } from '../dispatch/advance.js';
+import { StaggerAllocator } from '../dispatch/stagger.js';
 import { rowToAccount } from '../mappers.js';
 import type { RuntimeStore } from '../store/index.js';
 import type { OrchestratorServices } from './orchestrator.js';
@@ -364,7 +364,6 @@ export class CampaignAdapter implements CampaignPort {
     const stagger = await this.enrollStagger(campaignId, accountId, now);
     const progressIds: string[] = [];
     let skippedRemoved = 0;
-    let slot = stagger?.startSlot ?? 0;
     for (const targetId of targetIds) {
       // An operator-removed target must never re-enter the funnel; removal
       // stamps `removed` into the target's external context (see removeTargets).
@@ -374,14 +373,11 @@ export class CampaignAdapter implements CampaignPort {
         skippedRemoved += 1;
         continue;
       }
-      let nextStepAt: Date | null = null;
-      if (stagger) {
-        // Day 0 keeps nextStepAt null (due now, today's budget); later days
-        // land on the working-window start, skipping days off.
-        const dayOffset = Math.floor(slot / stagger.cap);
-        nextStepAt = dueAfterDelay(now, dayOffset * 86_400, stagger.schedule);
-        slot += 1;
-      }
+      // Day 0 keeps nextStepAt null (due now, today's budget); later days land
+      // on the working-window start, skipping days off. An idempotent
+      // re-enrollment still claims a slot (its existing row keeps its time);
+      // that only pushes later work out — a day is never packed past the cap.
+      const nextStepAt = stagger ? stagger.next() : null;
       const row = await this.store.sequence.enrollTarget(
         campaignId,
         targetId,
@@ -393,17 +389,18 @@ export class CampaignAdapter implements CampaignPort {
     return { campaignId, accountId, enrolled: progressIds.length, progressIds, skippedRemoved };
   }
 
-  /** Stagger context for a batch enrollment: the account's daily cap on the
-   * campaign's first enabled step, the account schedule, and the slot to start
-   * from (cursors already scheduled into the future, so a second batch appends
-   * after the first instead of overlapping it). Undefined when there is nothing
-   * to stagger against: no steps defined yet, a delay-typed first step (no cap
-   * applies), or a cap of 0 (the action is disabled; the gate blocks it). */
+  /** Slot allocator for a batch enrollment, capped by the account's daily
+   * limit on the campaign's first enabled step and seeded with the first-step
+   * due times already committed in this campaign — so a new batch fills the
+   * earliest day with room instead of restarting at day 0 or double-booking a
+   * morning. Undefined when there is nothing to stagger against: no steps
+   * defined yet, a delay-typed first step (no cap applies), or a cap of 0
+   * (the action is disabled; the gate blocks it). */
   private async enrollStagger(
     campaignId: string,
     accountId: string,
     now: Date,
-  ): Promise<{ cap: number; schedule: AccountSchedule; startSlot: number } | undefined> {
+  ): Promise<StaggerAllocator | undefined> {
     const steps = await this.store.sequence.listCampaignSteps(campaignId);
     const first = steps.find((s) => s.enabled);
     if (!first || first.stepType === 'delay') return undefined;
@@ -413,10 +410,10 @@ export class CampaignAdapter implements CampaignPort {
     if (cap <= 0) return undefined;
     const schedule = limits?.schedule ?? DEFAULT_SCHEDULE;
     const existing = await this.store.sequence.listTargetProgress(campaignId);
-    const startSlot = existing.filter(
-      (p) => p.state === 'in_progress' && p.nextStepAt !== null && p.nextStepAt > now,
-    ).length;
-    return { cap, schedule, startSlot };
+    const ledger = existing
+      .filter((p) => p.state === 'in_progress' && p.currentStep === 0)
+      .map((p) => p.nextStepAt);
+    return new StaggerAllocator(now, cap, schedule, ledger);
   }
 
   async removeTargets(

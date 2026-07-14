@@ -4,9 +4,9 @@
 // Enrollments made before staggered scheduling landed all carry a null
 // nextStepAt, so 90 people show "due now" while the cap (e.g. connect 20/day)
 // means the tail really goes out days later. This assigns those cursors the
-// same slot/dayOffset/nextStepAt the enrollment path now computes, oldest
-// (createdAt) first, appending after any cursors already scheduled into the
-// future.
+// same day-occupancy slots the enrollment path now computes (StaggerAllocator),
+// oldest (createdAt) first, filling the room left in each day after any
+// cursors already scheduled into the future.
 //
 // Scope: state='in_progress' cursors that are due-or-overdue (next_step_at null
 // or <= now) and sitting at the first enabled step (current_step = 0) of a
@@ -24,9 +24,7 @@
 import type { AccountSchedule, ActionType } from '@loa/shared';
 import { DEFAULT_CAPS, DEFAULT_SCHEDULE } from '@loa/shared';
 import postgres from 'postgres';
-import { dueAfterDelay } from '../runtime/src/dispatch/advance.js';
-
-const DAY_SECONDS = 86_400;
+import { StaggerAllocator } from '../runtime/src/dispatch/stagger.js';
 
 interface Limits {
   caps?: Partial<Record<ActionType, number>>;
@@ -80,12 +78,14 @@ async function main(): Promise<void> {
       const firstType = steps[0]?.step_type as ActionType | 'delay' | undefined;
       if (!firstType || firstType === 'delay') continue; // nothing to schedule against
 
-      // Cursors already scheduled into the future keep their slots; the
-      // backlog appends after them (same rule as the enrollment path).
-      const [future] = await sql<{ count: number }[]>`
-        select count(*)::int as count from target_progress
+      // First-step cursors already scheduled into the future keep their
+      // slots; the backlog fills the remaining room in each day after them
+      // (the same day-occupancy rule as the enrollment path).
+      const future = await sql<{ next_step_at: Date }[]>`
+        select next_step_at from target_progress
         where campaign_id = ${campaign.id}
           and state = 'in_progress'
+          and current_step = 0
           and next_step_at > ${now}
       `;
 
@@ -99,9 +99,10 @@ async function main(): Promise<void> {
       `;
       if (backlog.length === 0) continue;
 
-      // Slots are campaign-wide; cap and schedule come from each cursor's
-      // account (in practice one account per campaign).
-      let slot = future?.count ?? 0;
+      // The ledger is campaign-wide; cap and schedule come from each cursor's
+      // account (in practice one account per campaign), so allocators are
+      // built per account over the shared future ledger.
+      const allocators = new Map<string, StaggerAllocator>();
       const assignments: Array<{ id: string; nextStepAt: Date | null }> = [];
       const byDay = new Map<string, number>();
       let skippedUncapped = 0;
@@ -112,10 +113,18 @@ async function main(): Promise<void> {
           skippedUncapped += 1;
           continue; // action disabled for this account; leave the cursor alone
         }
-        const schedule = limits?.schedule ?? DEFAULT_SCHEDULE;
-        const dayOffset = Math.floor(slot / cap);
-        const nextStepAt = dueAfterDelay(now, dayOffset * DAY_SECONDS, schedule);
-        slot += 1;
+        let allocator = allocators.get(cursor.account_id);
+        if (!allocator) {
+          const schedule = limits?.schedule ?? DEFAULT_SCHEDULE;
+          allocator = new StaggerAllocator(
+            now,
+            cap,
+            schedule,
+            future.map((f) => f.next_step_at),
+          );
+          allocators.set(cursor.account_id, allocator);
+        }
+        const nextStepAt = allocator.next();
         assignments.push({ id: cursor.id, nextStepAt });
         const key = nextStepAt ? nextStepAt.toISOString() : 'due now (today)';
         byDay.set(key, (byDay.get(key) ?? 0) + 1);
@@ -124,7 +133,7 @@ async function main(): Promise<void> {
       p(`## ${campaign.goal ?? campaign.id} (${campaign.id})`);
       p();
       p(`- First enabled step: ${firstType}`);
-      p(`- Already scheduled in the future: ${future?.count ?? 0}`);
+      p(`- Already scheduled in the future: ${future.length}`);
       p(
         `- Backlog cursors: ${backlog.length}${skippedUncapped > 0 ? ` (${skippedUncapped} skipped: cap 0)` : ''}`,
       );
