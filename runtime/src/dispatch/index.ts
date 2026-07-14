@@ -7,7 +7,7 @@
 import type { GateDeps } from '@loa/mcp';
 import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
 import type { Json } from '@loa/shared';
-import type { SequenceStorePort } from '../store/index.js';
+import type { ActionStorePort, SequenceStorePort } from '../store/index.js';
 import { DispatchTick, type SendTimeReplyCheck, type StepOutcome } from './tick.js';
 
 export type { SendTimeReplyCheck };
@@ -22,6 +22,8 @@ export interface MakeDispatchTickDeps {
   targets: Pick<TargetRepoPort, 'findById' | 'setStage' | 'listByUrn'>;
   /** Messages, so the tick sends human-approved drafts when the window opens. */
   messages: MessageRepoPort;
+  /** Action failure counter behind the send give-up cap. */
+  actions?: Pick<ActionStorePort, 'countFailedSince'>;
   /** Cross-campaign suppression check (person said Stop). */
   suppression?: { isSuppressed(targetId: string): Promise<boolean> };
   /** Send-time reply probe (live inbox); omitted in fake mode. */
@@ -41,6 +43,7 @@ export function makeDispatchTick(deps: MakeDispatchTickDeps): DispatchTick {
     gate: deps.gate,
     targets: deps.targets,
     messages: deps.messages,
+    ...(deps.actions ? { actions: deps.actions } : {}),
     ...(deps.suppression ? { suppression: deps.suppression } : {}),
     ...(deps.replyProbe ? { replyProbe: deps.replyProbe } : {}),
     ...(deps.log ? { log: deps.log } : {}),

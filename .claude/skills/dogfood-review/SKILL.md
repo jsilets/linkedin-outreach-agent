@@ -1,7 +1,7 @@
 ---
 name: dogfood-review
 description: Use to run the recurring ops "dogfood review" of the local self-hosted LinkedIn outreach runtime — inspect its errors, stuck pipeline, action outcomes, cap utilization, and pending-approval queue, diagnose anomalies against the code, and append findings to the ops journal. Invoke when asked to review runtime health, check the ops report, do the dogfood review, look for silent failures, or on a schedule (headless). Read-only on runtime state.
-version: 1.0.0
+version: 1.1.0
 user-invocable: true
 argument-hint: "[--hours N]"
 ---
@@ -19,19 +19,21 @@ This is a **self-improvement loop**: run the report, read it critically, trace
 each anomaly to the code that produced it, and write down what you found and what
 should change. You are a reviewer and a scribe, not an operator.
 
-## Hard boundary: read-only on runtime state
+## Hard boundary: read-only on runtime state and on git/GitHub
 
-You may read anything, and you may propose fixes as pull requests (see step 5).
-You may **not** change the running system. Specifically, you must never:
+You may read anything, and you may propose fixes in the journal (see step 5).
+You may **not** change the running system or produce outbound artifacts.
+Specifically, you must never:
 
 - restart, stop, or redeploy the runtime, the web server, or Postgres;
 - approve, reject, edit, send, or cancel any message or campaign action;
 - mutate any campaign, target, account, list, or database row (no `UPDATE`,
   `INSERT`, `DELETE`, no MCP write tools like `approve` / `send_message` /
   `pause_account`);
-- merge anything, push to `main`, or touch the operator's checked-out working
-  tree. Fix branches live in their own `git worktree` and land only via a PR a
-  human reviews.
+- write to git or GitHub: no commits, no branches, no pushes, no pull
+  requests, no issues, and never touch the operator's checked-out working
+  tree. This is a public OSS repo; anything outbound is the operator's call,
+  made deliberately, not a scheduled side effect.
 
 If a finding is urgent (the pipeline is frozen right now), say so loudly in the
 journal and in your summary to the operator, and let a human act on the running
@@ -82,6 +84,17 @@ all at once, are one root cause, not three problems.
 
 ### 3. Cross-reference anomalies against the code
 
+**First check the anomaly is not already known or fixed.** This repo changes
+daily, and the running build can lag main (rebuild-before-restart), so an
+already-fixed bug can still be emitting events. Before diagnosing, read:
+
+- the tail of `docs/ops-journal.md` — has a previous review already traced this?
+- `git log --oneline -20` and `gh pr list --state all --limit 10` — did a recent
+  commit or PR touch this seam or this exact symptom?
+
+If it is already diagnosed or fixed, say so in the journal entry and move on —
+re-deriving a known finding as if it were new is the loop's main failure mode.
+
 Do not guess at causes. Open the seam that owns the anomaly and read it:
 
 - **`runtime/src/dispatch/tick.ts`** — the dispatch loop. It decides each step's
@@ -124,43 +137,37 @@ reviewer knows the window was checked.
 If nothing is anomalous, still write a short "healthy" entry: the value of the
 loop is the unbroken record that someone looked.
 
-### 5. Turn real findings into a PR (the improvement half of the loop)
+### 5. Turn real findings into a written proposal (the improvement half of the loop)
 
-A diagnosis with a concrete, code-level fix should become a pull request for
-the operator to review — logging it and walking away is not improvement. Open a
-PR when ALL of these hold:
+A diagnosis with a concrete, code-level fix becomes a **proposal in the journal
+entry**, not a PR. The scheduled loop never writes to git or GitHub — this is a
+public OSS repo, and outbound artifacts (branches, PRs, issues) are the
+operator's deliberate call, made later in an interactive session.
+
+Write the proposal when ALL of these hold:
 
 - you traced the anomaly to a specific seam and can name the failing condition;
 - the fix is small and testable (an endpoint/queryId refresh, a wrong filter, a
   reporting bug, a missing guard — not an architecture change);
-- the repo gates pass with your change (`npm run lint`, `npm run typecheck`,
-  `npm test`).
+- you checked step 3's "already known or fixed" gate and it is genuinely new.
 
-How, without disturbing the operator's checkout:
+A good proposal names the file and function, states the failing condition,
+sketches the change (a few lines of pseudo-diff is ideal), and says how the
+operator can verify it (which test to add or run, which shakeout to run for
+anything needing a live-account probe — `npm run inbox-shakeout`,
+`npm run search-shakeout`; never run those yourself on a schedule). One
+proposal per root cause — batch related findings.
 
-```
-git fetch origin
-git worktree add /tmp/dogfood-fix-<date> -b <descriptive-branch> origin/main
-# ...edit, add tests, run the gates IN THAT WORKTREE...
-git -C /tmp/dogfood-fix-<date> push -u origin <descriptive-branch>
-gh pr create --head <descriptive-branch> --title "..." --body "..."
-git worktree remove /tmp/dogfood-fix-<date>
-```
-
-PR rules: branch names are descriptive, no vendor/agent prefixes. The PR body
-cites the report evidence (error kind, counts, first/last seen) and the
-diagnosis, and states how you verified the fix. One PR per root cause — batch
-related findings, don't open five PRs for one disease. NEVER merge it yourself;
-NEVER commit directly to main. If the fix is too big, too risky, or you are not
-confident, open a GitHub issue instead and say so in the journal.
-
-If a fix would need a live-account probe to verify (e.g. a rotated LinkedIn
-queryId), note in the PR that the operator must run the matching shakeout
-(`npm run inbox-shakeout`, `npm run search-shakeout`) — do not run live-account
-probes yourself on a schedule.
+If the operator later asks, interactively, to turn a proposal into a PR: build
+it in an isolated `git worktree` off origin/main, pass `npm run lint` +
+`npm run typecheck` + `npm test` there, and write the PR body for the project's
+public audience — describe the defect in the project's own terms, and where it
+cites operational evidence, say plainly that it comes from our own use of the
+project (dogfooding), since numbers from a private runtime mean nothing to an
+outside reader otherwise. Never merge it yourself; never commit to main.
 
 ### 6. Summarize back to the operator
 
 End with a two-or-three-line summary: the single most important finding, whether
-anything is on fire right now, the journal entry you appended, and a link to any
-PR or issue you opened.
+anything is on fire right now, the journal entry you appended, and each proposed
+fix as one short paragraph (what, where, why).

@@ -856,6 +856,77 @@ describe('DispatchTick pre-draft pass — draft at schedule time, send at due ti
     expect((await store.message.findById(msg.id))!.status).toBe('sent');
   });
 
+  it('gives up on an approved send after too many failures instead of retrying forever', async () => {
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
+    const p = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.target.setStage(TGT, 'connected');
+    await store.sequence.advanceTargetProgress(p.id, {
+      state: 'awaiting_approval',
+      nextStepAt: null,
+    });
+    const req: ActRequest = {
+      type: 'message',
+      accountId: ACCT,
+      targetId: TGT,
+      campaignId: CAMP,
+      payload: 'hi',
+    };
+    const msg = await store.message.create({
+      accountId: ACCT,
+      targetId: TGT,
+      direction: 'outbound',
+      body: 'hi',
+      threadRef: `pending:${ACCT}:${TGT}`,
+      status: 'approved',
+      pendingReq: req as unknown as Json,
+    });
+    // Five prior failed sends for this target: the recipient overlay never matches.
+    for (let i = 0; i < 5; i++) {
+      await store.action.create({
+        accountId: ACCT,
+        targetId: TGT,
+        campaignId: CAMP,
+        type: 'message',
+        scheduledAt: NOW,
+        executedAt: NOW,
+        result: 'failed',
+        dedupKey: `fail-${i}`,
+      });
+    }
+
+    const executor = new RecordingExecutor();
+    const events: string[] = [];
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      actions: store.action,
+      gate: makeGate(executor, { kind: 'allow' }),
+      log: {
+        async recordEvent(kind: string) {
+          events.push(kind);
+          return undefined;
+        },
+      },
+    });
+
+    const res = await tick.runTick(NOW);
+
+    expect(executor.calls).toHaveLength(0); // no 6th live send attempt
+    expect((await store.message.findById(msg.id))!.status).toBe('cancelled');
+    expect(res.outcomes[0]).toMatchObject({ kind: 'cancelled', reason: 'send_failed_exhausted' });
+    expect(events).toContain('approved_send_exhausted');
+    // The cursor is marked FAILED (honest), not 'replied' — the send was
+    // abandoned, the person did not reply.
+    const [after] = await store.sequence.listTargetProgress(CAMP);
+    expect(after.state).toBe('failed');
+  });
+
   it('does not pre-draft (or execute early) an upcoming message on an autonomous campaign', async () => {
     // Autonomous executes messages directly: an early step() call would SEND
     // now, so the pre-draft pass must skip it and leave due-time behavior.
