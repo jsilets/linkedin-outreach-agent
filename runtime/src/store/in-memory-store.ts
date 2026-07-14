@@ -419,6 +419,15 @@ class InMemSequenceStore implements SequenceStorePort {
     );
   }
 
+  async upcomingTargetProgress(now: Date): Promise<TargetProgressRow[]> {
+    return [...this.progress.values()].filter(
+      (p) =>
+        p.state === 'in_progress' &&
+        p.nextStepAt !== null &&
+        p.nextStepAt.getTime() > now.getTime(),
+    );
+  }
+
   async awaitingConnectionEnrollments(): Promise<TargetProgressRow[]> {
     return [...this.progress.values()].filter((p) => p.state === 'awaiting_connection');
   }

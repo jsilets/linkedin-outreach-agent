@@ -59,7 +59,9 @@ function makeServices(store: InMemoryStore): OrchestratorServices {
 
 /** A dispatch tick over the same store, whose executor the test controls. Its
  * gate is a stub — the tick's approved-send path uses only executor + safety
- * (for the account schedule); autonomy/approval are not exercised there. */
+ * (for the account schedule). approval.enqueue must work, though: once a send
+ * advances the cursor onto a scheduled follow-up message step, the tick's
+ * pre-draft pass queues that follow-up in the same tick. */
 function makeTick(store: InMemoryStore, executor: RecordingExecutor): DispatchTick {
   const gate: GateDeps = {
     executor,
@@ -69,8 +71,8 @@ function makeTick(store: InMemoryStore, executor: RecordingExecutor): DispatchTi
       canAct: async () => ({ kind: 'allow' as const }),
     },
     approval: {
-      async enqueue() {
-        throw new Error('not used');
+      async enqueue(req, autonomyLevel) {
+        return { id: `pending-${req.targetId}`, req, autonomyLevel, createdAt: new Date() };
       },
       async listPending() {
         return [];
@@ -202,8 +204,11 @@ describe('ApprovalAdapter — approval marks approved, tick sends', () => {
     expect(executor.calls).toHaveLength(1);
     expect((await store.message.findById(pending.id))!.status).toBe('sent');
     const prog = await store.sequence.getTargetProgressByTarget('t2');
-    expect(prog!.state).toBe('in_progress');
     expect(prog!.currentStep).toBe(1); // advanced to the follow-up
+    // The pre-draft pass queued the scheduled follow-up in the same tick, so
+    // the cursor is already parked for its approval — not idle in_progress.
+    expect(prog!.state).toBe('awaiting_approval');
+    expect(prog!.nextStepAt!.getTime()).toBeGreaterThan(Date.now()); // send still waits
     expect(res.outcomes.some((o) => o.kind === 'executed')).toBe(true);
   });
 

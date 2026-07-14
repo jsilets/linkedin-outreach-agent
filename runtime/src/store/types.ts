@@ -82,6 +82,11 @@ export interface SequenceStorePort {
   /** Rows the dispatch tick should act on: state='in_progress' AND
    * (nextStepAt IS NULL OR nextStepAt<=now). */
   dueTargetProgress(now: Date): Promise<shared.TargetProgressRow[]>;
+  /** Rows scheduled but not yet due: state='in_progress' AND nextStepAt>now.
+   * The dispatch tick's pre-draft pass reads these so a message step can be
+   * drafted for approval as soon as it is scheduled, while the send still
+   * waits for nextStepAt. */
+  upcomingTargetProgress(now: Date): Promise<shared.TargetProgressRow[]>;
   /** Cursors parked after a connect step (state='awaiting_connection'), waiting
    * for the invite to be accepted. The acceptance tick reads these to release
    * connected targets into the next step. */

@@ -9,7 +9,7 @@
 // allow -> deny per test.
 
 import type { ActRequest, ExecutorPort, GateDeps } from '@loa/mcp';
-import type { Account, Action, Campaign, Decision } from '@loa/shared';
+import type { Account, Action, Campaign, Decision, Json } from '@loa/shared';
 import { SafetyDeferredError } from '@loa/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
@@ -130,8 +130,12 @@ function makeGate(executor: ExecutorPort, decision: Decision): GateDeps {
 }
 
 /** A supervised gate: getCampaign returns a supervised campaign so every send
- * queues, and approval.enqueue returns a pending item (never touches executor). */
-function makeSupervisedGate(executor: ExecutorPort): GateDeps {
+ * queues, and approval.enqueue records the draft and returns a pending item
+ * (never touches executor). */
+function makeSupervisedGate(
+  executor: ExecutorPort,
+  enqueued: Array<{ req: ActRequest; draftBody?: string }> = [],
+): GateDeps {
   return {
     executor,
     safety: {
@@ -146,7 +150,8 @@ function makeSupervisedGate(executor: ExecutorPort): GateDeps {
       },
     },
     approval: {
-      async enqueue(req) {
+      async enqueue(req, _level, draftBody) {
+        enqueued.push({ req, draftBody });
         return { id: 'pending-1', req, autonomyLevel: 'supervised', createdAt: new Date() };
       },
       async listPending() {
@@ -749,5 +754,171 @@ describe('DispatchTick', () => {
     [p] = await store.sequence.listTargetProgress(CAMP);
     expect(p.state).toBe('completed');
     expect(executor.calls.map((c) => c.type)).toEqual(['view_profile', 'message']);
+  });
+});
+
+describe('DispatchTick pre-draft pass — draft at schedule time, send at due time', () => {
+  const NOW = new Date('2026-07-06T12:00:00Z');
+  const FUTURE = new Date('2026-07-07T09:00:00Z');
+
+  let store: InMemoryStore;
+
+  beforeEach(async () => {
+    store = new InMemoryStore();
+    await seedTargetRow(store);
+  });
+
+  it('drafts an upcoming message step immediately on a supervised campaign, keeping the future due time', async () => {
+    // The state the acceptance tick leaves behind: connected target, cursor on
+    // the message step, nextStepAt out in the future.
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
+    const p = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.target.setStage(TGT, 'connected');
+    await store.sequence.advanceTargetProgress(p.id, { nextStepAt: FUTURE });
+
+    const executor = new RecordingExecutor();
+    const enqueued: Array<{ req: ActRequest; draftBody?: string }> = [];
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeSupervisedGate(executor, enqueued),
+    });
+
+    const res = await tick.runTick(NOW);
+
+    expect(res.ran).toBe(0); // nothing was due
+    expect(executor.calls).toHaveLength(0); // nothing sent
+    expect(enqueued).toHaveLength(1); // the draft reached the approval queue NOW
+    expect(enqueued[0]!.req).toMatchObject({ type: 'message', targetId: TGT });
+    expect(res.outcomes[0]).toMatchObject({ kind: 'held', reason: 'queued' });
+
+    const [after] = await store.sequence.listTargetProgress(CAMP);
+    expect(after.state).toBe('awaiting_approval');
+    expect(after.nextStepAt?.getTime()).toBe(FUTURE.getTime()); // the send time survives
+
+    // Parked: a second tick does not enqueue a duplicate draft.
+    await tick.runTick(NOW);
+    expect(enqueued).toHaveLength(1);
+  });
+
+  it('holds an approved message with a future nextStepAt, then sends once it is due', async () => {
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
+    const p = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.target.setStage(TGT, 'connected');
+    // The pre-draft pass parked it awaiting_approval; the operator approved.
+    await store.sequence.advanceTargetProgress(p.id, {
+      state: 'awaiting_approval',
+      nextStepAt: FUTURE,
+    });
+    const req: ActRequest = {
+      type: 'message',
+      accountId: ACCT,
+      targetId: TGT,
+      campaignId: CAMP,
+      payload: 'hi',
+    };
+    const msg = await store.message.create({
+      accountId: ACCT,
+      targetId: TGT,
+      direction: 'outbound',
+      body: 'hi',
+      threadRef: `pending:${ACCT}:${TGT}`,
+      status: 'approved',
+      pendingReq: req as unknown as Json,
+    });
+
+    const executor = new RecordingExecutor();
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
+
+    await tick.runTick(NOW); // before the due time: held, still approved
+    expect(executor.calls).toHaveLength(0);
+    expect((await store.message.findById(msg.id))!.status).toBe('approved');
+
+    await tick.runTick(FUTURE); // at the due time: sent
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0]).toMatchObject({ type: 'message', payload: 'hi' });
+    expect((await store.message.findById(msg.id))!.status).toBe('sent');
+  });
+
+  it('does not pre-draft (or execute early) an upcoming message on an autonomous campaign', async () => {
+    // Autonomous executes messages directly: an early step() call would SEND
+    // now, so the pre-draft pass must skip it and leave due-time behavior.
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
+    const p = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.target.setStage(TGT, 'connected');
+    await store.sequence.advanceTargetProgress(p.id, { nextStepAt: FUTURE });
+
+    const executor = new RecordingExecutor();
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }), // autonomous
+    });
+
+    const res = await tick.runTick(NOW);
+
+    expect(executor.calls).toHaveLength(0); // never sent early
+    expect(res.outcomes).toHaveLength(0); // never even stepped
+    let [after] = await store.sequence.listTargetProgress(CAMP);
+    expect(after.state).toBe('in_progress');
+    expect(after.nextStepAt?.getTime()).toBe(FUTURE.getTime());
+
+    // At the due time the normal due path executes it.
+    await tick.runTick(FUTURE);
+    expect(executor.calls).toHaveLength(1);
+    [after] = await store.sequence.listTargetProgress(CAMP);
+    expect(after.state).toBe('completed');
+  });
+
+  it('leaves an upcoming connect-step cursor untouched (staggered invites never fire early)', async () => {
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+      note: 'hello',
+    });
+    const p = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.sequence.advanceTargetProgress(p.id, { nextStepAt: FUTURE });
+
+    const executor = new RecordingExecutor();
+    const enqueued: Array<{ req: ActRequest; draftBody?: string }> = [];
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeSupervisedGate(executor, enqueued),
+    });
+
+    const res = await tick.runTick(NOW);
+
+    expect(executor.calls).toHaveLength(0);
+    expect(enqueued).toHaveLength(0); // not drafted early
+    expect(res.outcomes).toHaveLength(0);
+    const [after] = await store.sequence.listTargetProgress(CAMP);
+    expect(after.state).toBe('in_progress');
+    expect(after.currentStep).toBe(0);
+    expect(after.nextStepAt?.getTime()).toBe(FUTURE.getTime());
   });
 });

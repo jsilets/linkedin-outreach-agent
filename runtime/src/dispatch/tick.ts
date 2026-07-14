@@ -249,6 +249,30 @@ export class DispatchTick {
       outcomes.push(outcome);
       this.onOutcome?.(outcome);
     }
+
+    // Pre-draft pass: a message step scheduled for later (nextStepAt in the
+    // future, typically set by the acceptance tick) is drafted for approval NOW
+    // via the same step() guard/personalize/gate path, so the operator sees it
+    // as soon as it is scheduled. The gate parks the cursor awaiting_approval
+    // without touching nextStepAt, and sendApproved holds the approved row
+    // until nextStepAt — the SEND still waits for the due time.
+    // ONLY message steps: connect/react/follow/delay cursors with a future
+    // nextStepAt are deliberately staggered and must not fire early. And ONLY
+    // when the campaign cannot execute a message directly: under autonomous
+    // autonomy step() would SEND immediately, not draft, so those keep
+    // due-time behavior.
+    for (const progress of await this.sequence.upcomingTargetProgress(now)) {
+      const steps = (await this.sequence.listCampaignSteps(progress.campaignId)).filter(
+        (s) => s.enabled,
+      );
+      if (steps[progress.currentStep]?.stepType !== 'message') continue;
+      const campaign = await this.gate.safety.getCampaign(progress.campaignId);
+      if (mayExecuteDirectly(campaign.autonomyLevel, 'message')) continue;
+      const outcome = await this.step(progress, now);
+      outcomes.push(outcome);
+      this.onOutcome?.(outcome);
+    }
+
     return { ran: due.length, outcomes };
   }
 
@@ -279,6 +303,13 @@ export class DispatchTick {
                 ? 'suppressed'
                 : null;
       if (cancelReason) return this.cancelApproved(msg, progress?.id, cancelReason);
+      // notBefore hold: a draft created ahead of schedule by the pre-draft pass
+      // keeps its future nextStepAt through approval, and the send must still
+      // wait for it. Leave the row 'approved' to retry next tick, exactly like
+      // the working-window deferral — and hold BEFORE the reply probe, so we do
+      // not burn live inbox reads days early. In the old late-draft flow
+      // nextStepAt has always passed by approval time, so this is a no-op there.
+      if (progress?.nextStepAt && progress.nextStepAt.getTime() > now.getTime()) return undefined;
       // Send-time reply probe: catch a reply that landed AFTER approval. A true
       // result means the probe already routed it (pulling the funnel and
       // cancelling this row), so hold — do not send. A throw fails closed: leave
