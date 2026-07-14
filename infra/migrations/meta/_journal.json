@@ -85,6 +85,13 @@
       "when": 1783823674451,
       "tag": "0011_canonical_urn_dedup",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784071133217,
+      "tag": "0012_shiny_stone_men",
+      "breakpoints": true
     }
   ]
 }

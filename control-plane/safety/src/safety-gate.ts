@@ -406,8 +406,13 @@ export function activeHoursDefer(now: Date, cfg: SafetyConfig): Date | null {
 }
 
 /** The schedule that applies to an account: its own when set, else the global
- * config's hour window run every day. */
-export function effectiveSchedule(acct: Account, cfg: SafetyConfig): AccountSchedule {
+ * config's hour window run every day. Takes only the `limits` slice so a read
+ * model holding a limits blob (not a hydrated Account) can resolve the same
+ * window the gate will enforce rather than re-deriving the fallback. */
+export function effectiveSchedule(
+  acct: Pick<Account, 'limits'>,
+  cfg: SafetyConfig,
+): AccountSchedule {
   return (
     acct.limits?.schedule ?? {
       hoursStart: cfg.activeHoursStart,

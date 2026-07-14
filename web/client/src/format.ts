@@ -76,6 +76,24 @@ export function formatRelative(iso: string | null | undefined): string {
   return future ? `in ${mag}` : `${mag} ago`;
 }
 
+// Clock time only, e.g. "8:00 AM". For copy that names the time of day without
+// implying a date ("sends after 8:00 AM").
+export function formatClock(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+// Weekday plus clock time, e.g. "Thu 9:00 AM". Composed rather than taken from a
+// single toLocaleString call, which inserts a comma between the two parts.
+export function formatDayClock(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${formatClock(iso)}`;
+}
+
 // Absolute short timestamp for hover/detail, e.g. "Jul 10, 21:34".
 export function formatStamp(iso: string | null | undefined): string {
   if (!iso) return '';

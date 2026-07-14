@@ -1,6 +1,7 @@
 // The volume query is asserted at the SQL level: postgres.js does not open a
 // connection until a query actually runs, and drizzle's .toSQL() only builds
 // the statement, so no live DB is needed here.
+import { nextDay, scheduleDefer } from '@loa/safety';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 process.env.DATABASE_URL ??= 'postgres://loa:loa@localhost:5432/loa';
@@ -21,7 +22,14 @@ let deriveApprovedQueued: typeof import('./queries.js').deriveApprovedQueued;
 let readLeadContext: typeof import('./queries.js').readLeadContext;
 let groupInboxRows: typeof import('./queries.js').groupInboxRows;
 let deriveReplyDetectorHealth: typeof import('./queries.js').deriveReplyDetectorHealth;
+let buildReplyDetectorBootEventsQuery: typeof import('./queries.js').buildReplyDetectorBootEventsQuery;
+let buildReplyDetectorScanEventsQuery: typeof import('./queries.js').buildReplyDetectorScanEventsQuery;
 let projectScheduledSends: typeof import('./queries.js').projectScheduledSends;
+let deriveMessageTiming: typeof import('./queries.js').deriveMessageTiming;
+let derivePausedAccountIds: typeof import('./queries.js').derivePausedAccountIds;
+let buildPauseEventsQuery: typeof import('./queries.js').buildPauseEventsQuery;
+let deriveDispatchHealth: typeof import('./queries.js').deriveDispatchHealth;
+let buildDispatchBootEventsQuery: typeof import('./queries.js').buildDispatchBootEventsQuery;
 let db: typeof import('./db.js').db;
 
 beforeAll(async () => {
@@ -41,7 +49,14 @@ beforeAll(async () => {
     readLeadContext,
     groupInboxRows,
     deriveReplyDetectorHealth,
+    buildReplyDetectorBootEventsQuery,
+    buildReplyDetectorScanEventsQuery,
     projectScheduledSends,
+    deriveMessageTiming,
+    derivePausedAccountIds,
+    buildPauseEventsQuery,
+    deriveDispatchHealth,
+    buildDispatchBootEventsQuery,
   } = await import('./queries.js'));
   ({ db } = await import('./db.js'));
 });
@@ -76,6 +91,15 @@ describe('buildVolumeQuery', () => {
 
 describe('groupInboxRows', () => {
   const at = (value: string) => new Date(value);
+  // Grouping is independent of the gate, so these tests hand it empty inputs and
+  // let deriveMessageTiming's own suite cover the branches.
+  const noTiming = {
+    now: at('2026-07-14T12:00:00.000Z'),
+    configById: new Map(),
+    stateById: new Map(),
+    pausedAccountIds: new Set<string>(),
+    messagesUsedToday: new Map(),
+  };
 
   it('joins local pending and LinkedIn thread refs into one person-centric conversation', () => {
     const rows = [
@@ -91,6 +115,8 @@ describe('groupInboxRows', () => {
         intent: null,
         pendingReq: { type: 'message' },
         createdAt: at('2026-07-14T10:00:00.000Z'),
+        updatedAt: at('2026-07-14T10:00:00.000Z'),
+        sentAt: null,
       },
       {
         messageId: 'reply',
@@ -104,9 +130,11 @@ describe('groupInboxRows', () => {
         intent: 'Interested',
         pendingReq: null,
         createdAt: at('2026-07-14T11:00:00.000Z'),
+        updatedAt: at('2026-07-14T11:00:00.000Z'),
+        sentAt: null,
       },
     ];
-    const inbox = groupInboxRows(rows);
+    const inbox = groupInboxRows(rows, noTiming);
     expect(inbox).toHaveLength(1);
     expect(inbox[0]).toMatchObject({
       id: 'acct-1:target-1',
@@ -118,43 +146,458 @@ describe('groupInboxRows', () => {
     expect(inbox[0]?.messages.map((message) => message.id)).toEqual(['draft', 'reply']);
   });
 
+  it('omits rejected drafts from the operator inbox entirely', () => {
+    // A rejected draft is as terminal as a cancelled one: the operator declined it
+    // and it never reached LinkedIn, so it must not become a transcript bubble nor
+    // the thread's latest preview.
+    const inbox = groupInboxRows(
+      [
+        {
+          messageId: 'sent',
+          accountId: 'acct-1',
+          targetId: 'target-1',
+          externalContext: {},
+          campaignGoal: null,
+          direction: 'outbound' as const,
+          body: 'Hi there',
+          status: 'sent',
+          intent: null,
+          pendingReq: null,
+          createdAt: at('2026-07-14T10:00:00.000Z'),
+          updatedAt: at('2026-07-14T10:00:00.000Z'),
+          sentAt: null,
+        },
+        {
+          messageId: 'rejected',
+          accountId: 'acct-1',
+          targetId: 'target-1',
+          externalContext: {},
+          campaignGoal: null,
+          direction: 'outbound' as const,
+          body: 'Operator declined this',
+          status: 'rejected',
+          intent: null,
+          pendingReq: { type: 'message' },
+          createdAt: at('2026-07-14T11:00:00.000Z'),
+          updatedAt: at('2026-07-14T11:00:00.000Z'),
+          sentAt: null,
+        },
+      ],
+      noTiming,
+    );
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]?.messages.map((m) => m.id)).toEqual(['sent']);
+    expect(inbox[0]?.latestPreview).toBe('Hi there');
+    expect(inbox[0]?.needsApproval).toBe(false);
+  });
+
   it('omits cancelled drafts from the operator inbox entirely', () => {
-    const inbox = groupInboxRows([
-      {
-        messageId: 'cancelled',
-        accountId: 'acct-1',
-        targetId: 'target-1',
-        externalContext: {},
-        campaignGoal: null,
-        direction: 'outbound' as const,
-        body: 'Never send this',
-        status: 'cancelled',
-        intent: null,
-        pendingReq: { type: 'message' },
-        createdAt: at('2026-07-14T10:00:00.000Z'),
-      },
-    ]);
+    const inbox = groupInboxRows(
+      [
+        {
+          messageId: 'cancelled',
+          accountId: 'acct-1',
+          targetId: 'target-1',
+          externalContext: {},
+          campaignGoal: null,
+          direction: 'outbound' as const,
+          body: 'Never send this',
+          status: 'cancelled',
+          intent: null,
+          pendingReq: { type: 'message' },
+          createdAt: at('2026-07-14T10:00:00.000Z'),
+          updatedAt: at('2026-07-14T10:00:00.000Z'),
+          sentAt: null,
+        },
+      ],
+      noTiming,
+    );
     expect(inbox).toEqual([]);
   });
 
   it('carries a pending follow-up eligibility time into the inbox', () => {
-    const inbox = groupInboxRows([
-      {
-        messageId: 'draft',
-        accountId: 'acct-1',
-        targetId: 'target-1',
-        externalContext: {},
-        campaignGoal: null,
-        direction: 'outbound' as const,
-        body: 'Follow up',
-        status: 'draft',
-        intent: null,
-        pendingReq: { type: 'message' },
-        nextStepAt: at('2026-07-15T10:00:00.000Z'),
-        createdAt: at('2026-07-14T10:00:00.000Z'),
-      },
-    ]);
+    const inbox = groupInboxRows(
+      [
+        {
+          messageId: 'draft',
+          accountId: 'acct-1',
+          targetId: 'target-1',
+          externalContext: {},
+          campaignGoal: null,
+          direction: 'outbound' as const,
+          body: 'Follow up',
+          status: 'draft',
+          intent: null,
+          pendingReq: { type: 'message' },
+          nextStepAt: at('2026-07-15T10:00:00.000Z'),
+          createdAt: at('2026-07-14T10:00:00.000Z'),
+          updatedAt: at('2026-07-14T10:00:00.000Z'),
+          sentAt: null,
+        },
+      ],
+      noTiming,
+    );
     expect(inbox[0]?.messages[0]?.eligibleAt).toBe('2026-07-15T10:00:00.000Z');
+    // timing.readyAt is the same instant, by construction: the two must never
+    // disagree about when a draft becomes eligible.
+    expect(inbox[0]?.messages[0]?.timing).toEqual({
+      kind: 'awaiting_approval',
+      readyAt: '2026-07-15T10:00:00.000Z',
+    });
+  });
+});
+
+describe('deriveMessageTiming', () => {
+  const at = (value: string) => new Date(value);
+  // A Tuesday, 10:00 local: inside the default 8-20 window on an active day.
+  const now = at('2026-07-14T10:00:00.000Z');
+  const acct = 'acct-1';
+
+  // Local-time schedules make these assertions TZ-dependent; pin the window to
+  // one that is open at every hour so only the branch under test can move.
+  const alwaysOpen = { hoursStart: 0, hoursEnd: 0, days: [0, 1, 2, 3, 4, 5, 6] };
+  const alwaysShut = { hoursStart: 8, hoursEnd: 20, days: [] as number[] };
+
+  const inputs = (
+    over: {
+      caps?: Record<string, number>;
+      schedule?: { hoursStart: number; hoursEnd: number; days: number[] };
+      used?: number;
+      state?: string;
+      paused?: boolean;
+    } = {},
+  ) => ({
+    now,
+    configById: new Map([
+      [acct, { caps: over.caps ?? { message: 20 }, schedule: over.schedule ?? alwaysOpen }],
+    ]),
+    stateById: new Map([[acct, over.state ?? 'Active']]),
+    pausedAccountIds: new Set(over.paused ? [acct] : []),
+    messagesUsedToday: new Map([[acct, over.used ?? 0]]),
+  });
+
+  const row = (over: Partial<Parameters<typeof deriveMessageTiming>[0]> = {}) => ({
+    direction: 'outbound' as const,
+    status: 'approved',
+    accountId: acct,
+    createdAt: at('2026-07-14T08:00:00.000Z'),
+    updatedAt: at('2026-07-14T09:00:00.000Z'),
+    sentAt: null,
+    eligibleAt: null,
+    ...over,
+  });
+
+  it('reads an inbound row as received at LinkedIn source time', () => {
+    expect(
+      deriveMessageTiming(
+        row({ direction: 'inbound', status: 'sent', createdAt: at('2026-07-14T07:30:00.000Z') }),
+        inputs(),
+      ),
+    ).toEqual({ kind: 'received', at: '2026-07-14T07:30:00.000Z' });
+  });
+
+  it('reads a sent row as sent at its real send time, not its draft time', () => {
+    expect(
+      deriveMessageTiming(
+        row({ status: 'sent', sentAt: at('2026-07-14T09:45:00.000Z') }),
+        inputs(),
+      ),
+    ).toEqual({ kind: 'sent', at: '2026-07-14T09:45:00.000Z' });
+  });
+
+  it('falls back to updatedAt for a legacy sent row predating sent_at', () => {
+    expect(deriveMessageTiming(row({ status: 'sent', sentAt: null }), inputs())).toEqual({
+      kind: 'sent',
+      at: '2026-07-14T09:00:00.000Z',
+    });
+  });
+
+  it('reads an approved row inside an open window with cap to spare as queued_soon', () => {
+    const timing = deriveMessageTiming(row(), inputs({ used: 5, caps: { message: 20 } }));
+    expect(timing).toEqual({ kind: 'queued_soon' });
+    // The anti-burst pacer re-rolls its gap every tick, so there is no instant to
+    // promise. Asserted structurally: queued_soon must never grow a timestamp.
+    expect(Object.keys(timing)).toEqual(['kind']);
+  });
+
+  it('reads an approved row outside the window as queued_window at the next open instant', () => {
+    const timing = deriveMessageTiming(row(), inputs({ schedule: alwaysShut }));
+    expect(timing.kind).toBe('queued_window');
+    // Matches the gate: scheduleDefer parks a no-active-day schedule a week out.
+    expect(timing).toEqual({
+      kind: 'queued_window',
+      at: scheduleDefer(now, alwaysShut)?.toISOString(),
+    });
+  });
+
+  it('reads an approved row at its daily message cap as queued_capped at the day boundary', () => {
+    expect(deriveMessageTiming(row(), inputs({ used: 20, caps: { message: 20 } }))).toEqual({
+      kind: 'queued_capped',
+      at: nextDay(now).toISOString(),
+    });
+  });
+
+  it('reads an approved row on a paused account as blocked, not as sending soon', () => {
+    // The live shape of the bug: window open, cap to spare, so every check the
+    // old branch made passed and it promised a send. The gate denies on pause
+    // before reaching either, dispatch drops the send, and the row sits at
+    // 'approved' indefinitely.
+    const timing = deriveMessageTiming(row(), inputs({ paused: true, used: 0 }));
+    expect(timing).toEqual({ kind: 'queued_blocked', reason: 'paused' });
+  });
+
+  it('reads an approved row on a Restricted account as blocked', () => {
+    expect(deriveMessageTiming(row(), inputs({ state: 'Restricted' }))).toEqual({
+      kind: 'queued_blocked',
+      reason: 'restricted',
+    });
+  });
+
+  it('reads an approved row on a Cooldown account as blocked', () => {
+    expect(deriveMessageTiming(row(), inputs({ state: 'Cooldown' }))).toEqual({
+      kind: 'queued_blocked',
+      reason: 'cooldown',
+    });
+  });
+
+  it('names no instant for a blocked row: nothing here clears on a clock', () => {
+    const timing = deriveMessageTiming(row(), inputs({ paused: true }));
+    expect(Object.keys(timing).sort()).toEqual(['kind', 'reason']);
+  });
+
+  it('leaves an Active, unpaused account on the cap and window path', () => {
+    expect(deriveMessageTiming(row(), inputs({ state: 'Active' }))).toEqual({
+      kind: 'queued_soon',
+    });
+    // A state the gate does not deny must not be swept in by the blocked branch.
+    expect(deriveMessageTiming(row(), inputs({ state: 'Throttled' }))).toEqual({
+      kind: 'queued_soon',
+    });
+  });
+
+  it('checks pause before both the cap and the window, matching SafetyGate.canAct order', () => {
+    // Paused AND capped AND shut: pause is the gate's first check and a hard
+    // deny, so neither of the other two answers may surface.
+    expect(
+      deriveMessageTiming(
+        row(),
+        inputs({ paused: true, used: 20, caps: { message: 20 }, schedule: alwaysShut }),
+      ),
+    ).toEqual({ kind: 'queued_blocked', reason: 'paused' });
+  });
+
+  it('checks pause before account state, matching SafetyGate.canAct order', () => {
+    expect(deriveMessageTiming(row(), inputs({ paused: true, state: 'Restricted' }))).toEqual({
+      kind: 'queued_blocked',
+      reason: 'paused',
+    });
+  });
+
+  it('checks the cap before the window, matching SafetyGate.canAct order', () => {
+    // Capped AND outside the window: the gate defers on the cap first, so the
+    // honest answer is tomorrow, not "when the window reopens".
+    expect(
+      deriveMessageTiming(row(), inputs({ used: 20, caps: { message: 20 }, schedule: alwaysShut })),
+    ).toEqual({ kind: 'queued_capped', at: nextDay(now).toISOString() });
+  });
+
+  it('reads a draft that is eligible now as awaiting approval with no ready time', () => {
+    expect(deriveMessageTiming(row({ status: 'draft', eligibleAt: null }), inputs())).toEqual({
+      kind: 'awaiting_approval',
+      readyAt: null,
+    });
+  });
+
+  it('reads a future-dated draft as awaiting approval with its ready time', () => {
+    expect(
+      deriveMessageTiming(
+        row({ status: 'draft', eligibleAt: '2026-07-15T10:00:00.000Z' }),
+        inputs(),
+      ),
+    ).toEqual({ kind: 'awaiting_approval', readyAt: '2026-07-15T10:00:00.000Z' });
+  });
+
+  it('falls back to the gate defaults for an account with no config row', () => {
+    // A missing config must not read as an unlimited cap.
+    expect(
+      deriveMessageTiming(row(), {
+        now,
+        configById: new Map(),
+        stateById: new Map(),
+        pausedAccountIds: new Set(),
+        messagesUsedToday: new Map(),
+      }),
+    ).toMatchObject({ kind: expect.stringMatching(/^queued_/) });
+  });
+});
+
+describe('deriveDispatchHealth', () => {
+  it('reports a running tick and its configured interval', () => {
+    expect(
+      deriveDispatchHealth([
+        {
+          kind: 'dispatch_tick_started',
+          ts: new Date('2026-07-14T09:00:00.000Z'),
+          payload: { intervalMs: 60_000 },
+        },
+      ]),
+    ).toEqual({
+      status: 'running',
+      intervalMs: 60_000,
+      lastStartedAt: '2026-07-14T09:00:00.000Z',
+    });
+  });
+
+  it('reports never_run when the runtime has never recorded a boot', () => {
+    expect(deriveDispatchHealth([])).toEqual({
+      status: 'never_run',
+      intervalMs: null,
+      lastStartedAt: null,
+    });
+  });
+
+  it('lets a newer idle boot outrank an older start', () => {
+    // The interval was removed and the process restarted: approved messages are
+    // now going nowhere, and the previous boot's start must not mask that.
+    expect(
+      deriveDispatchHealth([
+        {
+          kind: 'dispatch_tick_started',
+          ts: new Date('2026-07-13T09:00:00.000Z'),
+          payload: { intervalMs: 60_000 },
+        },
+        {
+          kind: 'dispatch_tick_idle',
+          ts: new Date('2026-07-14T09:00:00.000Z'),
+          payload: { reason: 'LOA_DISPATCH_INTERVAL_MS unset' },
+        },
+      ]),
+    ).toEqual({
+      status: 'disabled',
+      intervalMs: null,
+      lastStartedAt: '2026-07-13T09:00:00.000Z',
+    });
+  });
+
+  it('lets a newer start outrank an older idle boot', () => {
+    expect(
+      deriveDispatchHealth([
+        {
+          kind: 'dispatch_tick_idle',
+          ts: new Date('2026-07-13T09:00:00.000Z'),
+          payload: { reason: 'LOA_DISPATCH_INTERVAL_MS unset' },
+        },
+        {
+          kind: 'dispatch_tick_started',
+          ts: new Date('2026-07-14T09:00:00.000Z'),
+          payload: { intervalMs: 60_000 },
+        },
+      ]),
+    ).toEqual({ status: 'running', intervalMs: 60_000, lastStartedAt: '2026-07-14T09:00:00.000Z' });
+  });
+});
+
+describe('buildDispatchBootEventsQuery', () => {
+  it('reads the newest row per kind so a boot event can never be evicted', () => {
+    // The bug this guards: dispatch's lifecycle events are written once per boot
+    // and compete with the whole event stream for recency. A windowed read drops
+    // them after enough unrelated events and a running tick reads 'never_run'.
+    const { sql, params } = buildDispatchBootEventsQuery().toSQL();
+    expect(sql).toContain('distinct on');
+    expect(sql).not.toContain('limit');
+    expect(params).toContain('dispatch_tick_started');
+    expect(params).toContain('dispatch_tick_idle');
+  });
+});
+
+describe('derivePausedAccountIds', () => {
+  const at = (value: string) => new Date(value);
+  const A = 'acct-1';
+  const B = 'acct-2';
+  const paused = (accountId: string, ts: string) => ({
+    accountId,
+    kind: 'account_paused',
+    ts: at(ts),
+  });
+  const resumed = (accountId: string, ts: string) => ({
+    accountId,
+    kind: 'account_resumed',
+    ts: at(ts),
+  });
+
+  // The rule under test is PauseRegistry.rehydrate's, in
+  // runtime/src/adapters/safety-state.ts. These cases mirror its branches so the
+  // read model cannot drift from the gate the dispatch tick actually consults.
+  it('pauses an account whose newest pause is newer than its newest resume', () => {
+    expect([
+      ...derivePausedAccountIds([
+        resumed(A, '2026-07-14T09:00:00.000Z'),
+        paused(A, '2026-07-14T19:34:00.000Z'),
+      ]),
+    ]).toEqual([A]);
+  });
+
+  it('does not pause an account whose newest resume is newer than its newest pause', () => {
+    expect([
+      ...derivePausedAccountIds([
+        paused(A, '2026-07-14T09:00:00.000Z'),
+        resumed(A, '2026-07-14T10:00:00.000Z'),
+      ]),
+    ]).toEqual([]);
+  });
+
+  it('pauses on an unmatched pause and ignores an unmatched resume', () => {
+    const ids = derivePausedAccountIds([
+      paused(A, '2026-07-14T09:00:00.000Z'),
+      resumed(B, '2026-07-14T09:00:00.000Z'),
+    ]);
+    expect([...ids]).toEqual([A]);
+  });
+
+  it('reads each account independently', () => {
+    const ids = derivePausedAccountIds([
+      paused(A, '2026-07-14T19:34:00.000Z'),
+      paused(B, '2026-07-14T08:00:00.000Z'),
+      resumed(B, '2026-07-14T08:30:00.000Z'),
+    ]);
+    expect([...ids]).toEqual([A]);
+  });
+
+  it('takes the newest of several events of one kind, whatever their row order', () => {
+    // Guards against reading whichever row happened to arrive first.
+    expect([
+      ...derivePausedAccountIds([
+        resumed(A, '2026-07-14T18:00:00.000Z'),
+        paused(A, '2026-07-14T07:00:00.000Z'),
+        paused(A, '2026-07-14T19:34:00.000Z'),
+      ]),
+    ]).toEqual([A]);
+  });
+
+  it('ignores unrelated kinds and account-less rows', () => {
+    expect([
+      ...derivePausedAccountIds([
+        { accountId: A, kind: 'dispatch_tick_started', ts: at('2026-07-14T20:00:00.000Z') },
+        { accountId: null, kind: 'account_paused', ts: at('2026-07-14T20:00:00.000Z') },
+      ]),
+    ]).toEqual([]);
+  });
+
+  it('is empty with no events at all', () => {
+    expect([...derivePausedAccountIds([])]).toEqual([]);
+  });
+});
+
+describe('buildPauseEventsQuery', () => {
+  it('reads the newest row per account and kind so a pause can never be evicted', () => {
+    // A pause has no expiry: if a windowed read dropped the account_paused row,
+    // a frozen queue would read back as sending in the next few minutes.
+    const { sql, params } = buildPauseEventsQuery(['acct-1']).toSQL();
+    expect(sql).toContain('distinct on');
+    expect(sql).not.toContain('limit');
+    expect(params).toContain('account_paused');
+    expect(params).toContain('account_resumed');
+    expect(params).toContain('acct-1');
   });
 });
 
@@ -226,6 +669,107 @@ describe('deriveReplyDetectorHealth', () => {
       now,
     );
     expect(health.status).toBe('stale');
+  });
+
+  it('reports disabled when a restart left the detector idle after a healthy run', () => {
+    // The detector ran for a week, then came back up with the poll interval unset.
+    // The last scan is minutes old and well inside staleAfterMs, so reading health
+    // off it would show a green "checked 5 minutes ago" for a detector that is not
+    // running at all.
+    const health = deriveReplyDetectorHealth(
+      [
+        {
+          kind: 'reply_detector_idle',
+          ts: new Date('2026-07-14T19:50:00.000Z'),
+          payload: { reason: 'poll_interval_unset' },
+        },
+        {
+          kind: 'reply_scan_succeeded',
+          ts: new Date('2026-07-14T19:45:00.000Z'),
+          payload: { accounts: 1, listedThreads: 20 },
+        },
+        {
+          kind: 'reply_detector_started',
+          ts: new Date('2026-07-07T19:00:00.000Z'),
+          payload: { intervalMs: 1_800_000 },
+        },
+      ],
+      now,
+    );
+    expect(health.status).toBe('disabled');
+    // The last real scan stays visible; only the health verdict changes.
+    expect(health.lastSuccessfulScanAt).toBe('2026-07-14T19:45:00.000Z');
+    expect(health.coverage).toMatchObject({ accounts: 1, listedThreads: 20 });
+  });
+
+  it('stays healthy when a restart re-enabled the detector after an idle boot', () => {
+    const health = deriveReplyDetectorHealth(
+      [
+        {
+          kind: 'reply_scan_succeeded',
+          ts: new Date('2026-07-14T19:45:00.000Z'),
+          payload: {},
+        },
+        {
+          kind: 'reply_detector_started',
+          ts: new Date('2026-07-14T19:40:00.000Z'),
+          payload: { intervalMs: 1_800_000 },
+        },
+        {
+          kind: 'reply_detector_idle',
+          ts: new Date('2026-07-14T19:00:00.000Z'),
+          payload: { reason: 'poll_interval_unset' },
+        },
+      ],
+      now,
+    );
+    expect(health.status).toBe('healthy');
+  });
+
+  it('honors a long configured interval even once started ages out of the scan window', () => {
+    // reply_detector_started is written once per boot; reply_scan_succeeded lands
+    // every tick. Read from a shared window it is evicted, intervalMs falls back to
+    // 0, and staleAfterMs collapses to the 1h default — calling a 2h-interval
+    // detector stale on every scan after the 32nd.
+    const rows = [
+      {
+        kind: 'reply_scan_succeeded',
+        ts: new Date('2026-07-14T18:30:00.000Z'), // 90m old: fine for a 2h interval
+        payload: {},
+      },
+      {
+        kind: 'reply_detector_started',
+        ts: new Date('2026-06-01T00:00:00.000Z'), // an old boot, far outside a 32-tick window
+        payload: { intervalMs: 7_200_000 },
+      },
+    ];
+    expect(deriveReplyDetectorHealth(rows, now).status).toBe('healthy');
+    // Guard the derivation itself: without the started row it wrongly reads stale.
+    expect(deriveReplyDetectorHealth([rows[0]!], now).status).toBe('stale');
+  });
+});
+
+describe('buildReplyDetectorBootEventsQuery', () => {
+  it('reads the newest boot event per kind, unwindowed by tick volume', () => {
+    const { sql, params } = buildReplyDetectorBootEventsQuery().toSQL();
+    expect(sql).toContain('"events"');
+    // distinct-on kind + ts desc is what keeps intervalMs from being evicted, so
+    // there is no LIMIT to age reply_detector_started out.
+    expect(sql.toLowerCase()).toContain('distinct on');
+    expect(params).toContain('reply_detector_started');
+    expect(params).toContain('reply_detector_idle');
+    expect(sql.toLowerCase()).not.toContain('limit');
+  });
+});
+
+describe('buildReplyDetectorScanEventsQuery', () => {
+  it('windows only the per-tick scan trail', () => {
+    const { sql, params } = buildReplyDetectorScanEventsQuery().toSQL();
+    expect(params).toContain('reply_scan_succeeded');
+    expect(params).toContain('reply_scan_failed');
+    // Boot events are read separately and must not share this window.
+    expect(params).not.toContain('reply_detector_started');
+    expect(sql.toLowerCase()).toContain('limit');
   });
 });
 
@@ -519,6 +1063,26 @@ describe('buildCampaignPerformanceActionsQuery', () => {
     expect(sql).toContain('group by');
     expect(sql).toContain('"campaign_id"');
     expect(sql).toContain('"type"');
+    // No campaign filter when the id is omitted.
+    expect(sql).not.toContain('"campaign_id" =');
+  });
+
+  it('counts distinct messaged targets alongside raw action volume', () => {
+    // `replies` counts distinct PEOPLE, so the reply-rate denominator has to as
+    // well. count(*) alone mixes populations: a 3-step sequence to 10 targets is 30
+    // actions, and an invite-note reply with no message step has no action at all.
+    const { sql } = buildCampaignPerformanceActionsQuery().toSQL();
+    expect(sql).toContain('count(distinct "target_id")');
+    // Raw volume is kept as its own projection, not replaced.
+    expect(sql).toContain('count(*)');
+  });
+
+  it('scopes to one campaign when given', () => {
+    const campaignId = '63f1cd27-4444-4444-4444-444444444444';
+    const { sql, params } = buildCampaignPerformanceActionsQuery(campaignId).toSQL();
+    expect(sql).toContain('"campaign_id" =');
+    expect(params).toContain(campaignId);
+    expect(params).toContain('success');
   });
 });
 

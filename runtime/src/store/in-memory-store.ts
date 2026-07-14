@@ -244,6 +244,7 @@ class InMemMessageRepo implements MessageRepoPort {
       pendingReq: row.pendingReq ?? null,
       createdAt: row.createdAt ?? now,
       updatedAt: now,
+      sentAt: row.sentAt ?? null,
     };
     this.rows.set(full.id, full);
     return full;
@@ -254,7 +255,8 @@ class InMemMessageRepo implements MessageRepoPort {
   async setStatus(id: string, status: MessageRow['status']): Promise<MessageRow> {
     const cur = this.rows.get(id);
     if (!cur) throw new Error(`no message: ${id}`);
-    const next = { ...cur, status, updatedAt: new Date() };
+    const at = new Date();
+    const next = { ...cur, status, updatedAt: at, ...(status === 'sent' ? { sentAt: at } : {}) };
     this.rows.set(id, next);
     return next;
   }

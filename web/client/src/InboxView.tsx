@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, type InboxMessage, type InboxThread, type ReplyDetectorHealth } from './api';
-import { formatRelative, formatStamp } from './format';
+import {
+  api,
+  type DispatchHealth,
+  type InboxMessage,
+  type InboxThread,
+  type MessageTiming,
+  type ReplyDetectorHealth,
+} from './api';
+import { formatClock, formatDayClock, formatRelative, formatStamp } from './format';
 
 type InboxFilter = 'all' | 'approval' | 'replies' | 'sent';
 
@@ -11,16 +18,20 @@ const FILTERS: Array<{ id: InboxFilter; label: string; accessibleLabel: string }
   { id: 'sent', label: 'Sent', accessibleLabel: 'Sent' },
 ];
 
-function filterThreads(threads: InboxThread[], filter: InboxFilter): InboxThread[] {
+/** Inbound rows are persisted with status 'sent' too, so direction is what
+ * separates "we sent this" from "they replied". */
+export function isOutboundSend(message: InboxMessage): boolean {
+  return message.direction === 'outbound' && message.status === 'sent';
+}
+
+export function filterThreads(threads: InboxThread[], filter: InboxFilter): InboxThread[] {
   switch (filter) {
     case 'approval':
       return threads.filter((thread) => thread.needsApproval);
     case 'replies':
       return threads.filter((thread) => thread.hasInbound);
     case 'sent':
-      return threads.filter((thread) =>
-        thread.messages.some((message) => message.status === 'sent'),
-      );
+      return threads.filter((thread) => thread.messages.some(isOutboundSend));
     default:
       return threads;
   }
@@ -34,11 +45,111 @@ function matchesSearch(thread: InboxThread, query: string): boolean {
     .some((value) => value.toLowerCase().includes(needle));
 }
 
-function statusLabel(message: InboxMessage): string {
-  if (message.pendingMessageId) return 'Needs approval';
-  if (message.direction === 'inbound')
-    return message.intent ? `Reply · ${message.intent}` : 'Reply';
-  return message.status === 'sent' ? 'Sent' : message.status;
+/** Timing copy, plus the instant it names. `at` is null when the copy names no
+ * instant, so the caller renders a plain span rather than a lying <time>. */
+export interface TimingLabel {
+  text: string;
+  at: string | null;
+}
+
+/** Whole local calendar days from today to `iso`. Built from Date.UTC over local
+ * date parts so a DST boundary inside the span cannot round the answer off. */
+function calendarDayDelta(iso: string): number {
+  const then = new Date(iso);
+  const now = new Date();
+  const thenDay = Date.UTC(then.getFullYear(), then.getMonth(), then.getDate());
+  const nowDay = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((thenDay - nowDay) / 86_400_000);
+}
+
+/** Why a queue is frozen, phrased so it cannot be read as a wait that ends on its
+ * own. Each of these clears only when a human resumes or unblocks the account. */
+const BLOCKED_REASON_TEXT: Record<'paused' | 'restricted' | 'cooldown', string> = {
+  paused: 'sending is paused for this account',
+  restricted: 'account restricted — nothing will send',
+  cooldown: 'account in cooldown — nothing will send',
+};
+
+const BLOCKED_REASON_TERSE: Record<'paused' | 'restricted' | 'cooldown', string> = {
+  paused: 'Paused',
+  restricted: 'Restricted',
+  cooldown: 'Cooldown',
+};
+
+/** The operator's question is "if it's sent, how long ago; if it's queued, when
+ * will it go; if it needs approval, is it ready now or by when". */
+export function timingLabel(timing: MessageTiming): TimingLabel {
+  switch (timing.kind) {
+    case 'received':
+      return { text: `Received ${formatRelative(timing.at)}`, at: timing.at };
+    case 'sent':
+      return { text: `Sent ${formatRelative(timing.at)}`, at: timing.at };
+    case 'queued_soon':
+      // Never a countdown here. The remaining wait is the safety gate's
+      // anti-burst pacer, minActionGapMs + rand(0, jitter), re-rolled every
+      // tick, so no honest number exists to show.
+      return { text: 'Queued · sends in the next few minutes', at: null };
+    case 'queued_window':
+      return { text: `Queued · sends after ${formatClock(timing.at)}`, at: timing.at };
+    case 'queued_capped':
+      return {
+        text:
+          calendarDayDelta(timing.at) === 1
+            ? 'Queued · sends tomorrow (daily cap reached)'
+            : `Queued · sends ${formatDayClock(timing.at)} (daily cap reached)`,
+        at: timing.at,
+      };
+    case 'queued_blocked':
+      // No instant, and deliberately no "soon": the gate denies these outright,
+      // so the queue is frozen until a person acts on the account.
+      return { text: `Queued · ${BLOCKED_REASON_TEXT[timing.reason]}`, at: null };
+    case 'awaiting_approval':
+      return timing.readyAt === null
+        ? { text: 'Ready to send · needs approval', at: null }
+        : { text: `Needs approval before ${formatDayClock(timing.readyAt)}`, at: timing.readyAt };
+  }
+}
+
+/** The same reading, terse enough for the thread list. A queued thread must read
+ * as pending rather than as the age of its draft. */
+export function threadTimingLabel(timing: MessageTiming): TimingLabel {
+  switch (timing.kind) {
+    case 'received':
+    case 'sent':
+      return { text: formatRelative(timing.at), at: timing.at };
+    case 'queued_soon':
+      return { text: 'Queued', at: null };
+    case 'queued_window':
+      return { text: `Queued · ${formatClock(timing.at)}`, at: timing.at };
+    case 'queued_capped':
+      return {
+        text:
+          calendarDayDelta(timing.at) === 1
+            ? 'Queued · tomorrow'
+            : `Queued · ${formatDayClock(timing.at)}`,
+        at: timing.at,
+      };
+    case 'queued_blocked':
+      // Terse, but never bare 'Queued': in the list this row must not sit among
+      // the genuinely-moving ones looking like one of them.
+      return { text: `Queued · ${BLOCKED_REASON_TERSE[timing.reason]}`, at: null };
+    case 'awaiting_approval':
+      return timing.readyAt === null
+        ? { text: 'Ready now', at: null }
+        : { text: `Ready ${formatRelative(timing.readyAt)}`, at: timing.readyAt };
+  }
+}
+
+/** The message `latestAt`/`latestPreview` were taken from. The server keeps the
+ * last row at the max createdAt, so ties resolve here the same way they did
+ * there — otherwise the row's timing could describe a different message than
+ * its own preview text. */
+export function latestMessage(thread: InboxThread): InboxMessage | null {
+  let latest: InboxMessage | null = null;
+  for (const message of thread.messages) {
+    if (!latest || new Date(message.createdAt) >= new Date(latest.createdAt)) latest = message;
+  }
+  return latest;
 }
 
 function detectorSummary(health: ReplyDetectorHealth): string {
@@ -60,6 +171,19 @@ function detectorSummary(health: ReplyDetectorHealth): string {
   }
 }
 
+/** Null while dispatch is running: the "Queued" labels speak for themselves.
+ * Any other state means nothing is being sent and they would be a lie. */
+function dispatchSummary(health: DispatchHealth): string | null {
+  switch (health.status) {
+    case 'running':
+      return null;
+    case 'disabled':
+      return 'Sending is turned off. Nothing queued will go out until it is running again.';
+    case 'never_run':
+      return 'Sending has never run. Nothing queued will go out until it starts.';
+  }
+}
+
 /** A local message workspace: a conversation list, chronological transcript,
  * and recipient context. It intentionally reads the durable audit trail rather
  * than opening LinkedIn from the browser. */
@@ -72,6 +196,7 @@ export function InboxView({
 } = {}) {
   const [threads, setThreads] = useState<InboxThread[]>([]);
   const [detectorHealth, setDetectorHealth] = useState<ReplyDetectorHealth | null>(null);
+  const [dispatchHealth, setDispatchHealth] = useState<DispatchHealth | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<InboxFilter>('all');
   const [query, setQuery] = useState('');
@@ -81,9 +206,14 @@ export function InboxView({
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const [next, health] = await Promise.all([api.inbox(), api.inboxHealth()]);
+    const [next, health, dispatch] = await Promise.all([
+      api.inbox(),
+      api.inboxHealth(),
+      api.dispatchHealth(),
+    ]);
     setThreads(next);
     setDetectorHealth(health);
+    setDispatchHealth(dispatch);
     setLoaded(true);
     return next;
   }, []);
@@ -103,9 +233,7 @@ export function InboxView({
   );
   const selected = visible.find((thread) => thread.id === selectedId) ?? visible[0] ?? null;
   const transcript = selected?.messages.filter((message) => !message.pendingMessageId) ?? [];
-  const lastOutboundAt = [...transcript]
-    .reverse()
-    .find((message) => message.direction === 'outbound' && message.status === 'sent')?.createdAt;
+  const lastOutboundAt = [...transcript].reverse().find(isOutboundSend)?.createdAt;
 
   useEffect(() => {
     const focused = focusTargetId
@@ -144,7 +272,7 @@ export function InboxView({
             <p>{threads.length ? `${threads.length} conversations` : 'Your message history'}</p>
             {detectorHealth && (
               <p
-                className={`reply-detector-status ${detectorHealth.status}`}
+                className={`inbox-health-note ${detectorHealth.status}`}
                 role={detectorHealth.status === 'failing' ? 'alert' : 'status'}
                 title={detectorHealth.error?.message}
               >
@@ -156,6 +284,12 @@ export function InboxView({
                     {detectorHealth.coverage.unmatchedThreads === 1 ? '' : 's'}
                   </small>
                 )}
+              </p>
+            )}
+            {dispatchHealth && dispatchSummary(dispatchHealth) && (
+              <p className={`inbox-health-note ${dispatchHealth.status}`} role="alert">
+                <span aria-hidden="true" />
+                {dispatchSummary(dispatchHealth)}
               </p>
             )}
           </div>
@@ -202,7 +336,7 @@ export function InboxView({
             >
               <span className="thread-row-top">
                 <span className="thread-name">{thread.name ?? 'Unknown contact'}</span>
-                <time dateTime={thread.latestAt}>{formatRelative(thread.latestAt)}</time>
+                <ThreadWhen thread={thread} />
               </span>
               <span className="thread-preview">{thread.latestPreview}</span>
               <span className="thread-signals">
@@ -338,18 +472,73 @@ function ProfileName({ name, profileUrl }: { name: string | null; profileUrl: st
   );
 }
 
+function ThreadWhen({ thread }: { thread: InboxThread }) {
+  const latest = latestMessage(thread);
+  const label = latest
+    ? threadTimingLabel(latest.timing)
+    : { text: formatRelative(thread.latestAt), at: thread.latestAt };
+  if (!label.at) return <span className="thread-when">{label.text}</span>;
+  return (
+    <time className="thread-when" dateTime={label.at}>
+      {label.text}
+    </time>
+  );
+}
+
 function MessageBubble({ message }: { message: InboxMessage }) {
+  const label = timingLabel(message.timing);
   return (
     <article className={`message-bubble ${message.direction}`}>
       <p>{message.body}</p>
       <footer>
-        <span className={`msg-tag ${message.pendingMessageId ? 'approval' : message.direction}`}>
-          {statusLabel(message)}
-        </span>
-        <time dateTime={message.createdAt}>{formatRelative(message.createdAt)}</time>
+        {message.intent && <span className={`msg-tag ${message.direction}`}>{message.intent}</span>}
+        {label.at ? (
+          <time className="msg-timing" dateTime={label.at}>
+            {label.text}
+          </time>
+        ) : (
+          <span className="msg-timing">{label.text}</span>
+        )}
       </footer>
     </article>
   );
+}
+
+/** Outcome of a composer action. 'stale' means the runtime accepted the action
+ * (a send may already be dispatching) but the inbox re-read failed: the action
+ * must never be offered for retry from that state. */
+export type ComposerOutcome =
+  | { phase: 'done' }
+  | { phase: 'stale'; notice: string }
+  | { phase: 'error'; notice: string };
+
+export type ComposerPhase = 'idle' | 'working' | ComposerOutcome['phase'];
+
+/** Anything the runtime already accepted stays locked even while this composer
+ * is still mounted: a second click is a second real send. */
+export function composerLocked(phase: ComposerPhase): boolean {
+  return phase === 'working' || phase === 'done' || phase === 'stale';
+}
+
+export async function runComposerAction(
+  act: () => Promise<unknown>,
+  reload: () => Promise<unknown>,
+  failureNotice: string,
+): Promise<ComposerOutcome> {
+  try {
+    await act();
+  } catch (err) {
+    return { phase: 'error', notice: err instanceof Error ? err.message : failureNotice };
+  }
+  try {
+    await reload();
+  } catch {
+    return {
+      phase: 'stale',
+      notice: 'Done, but the inbox could not refresh. Do not retry; it updates on the next check.',
+    };
+  }
+  return { phase: 'done' };
 }
 
 function ApprovalComposer({
@@ -365,8 +554,10 @@ function ApprovalComposer({
   const [rejecting, setRejecting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [phase, setPhase] = useState<ComposerPhase>('idle');
+  const [notice, setNotice] = useState<string | null>(null);
+  const busy = phase === 'working';
+  const locked = composerLocked(phase);
   const dirty = draft !== message.body;
   const eligibleInFuture =
     message.eligibleAt !== null && new Date(message.eligibleAt).getTime() > Date.now();
@@ -379,28 +570,33 @@ function ApprovalComposer({
       ? `Follow-up became eligible ${formatRelative(message.eligibleAt)}.`
       : 'No scheduled wait remains.';
 
+  function settle(outcome: ComposerOutcome) {
+    setPhase(outcome.phase);
+    setNotice(outcome.phase === 'done' ? null : outcome.notice);
+  }
+
   async function approve() {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.approve(message.pendingMessageId!, dirty ? draft : undefined);
-      await reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not approve this draft.');
-      setBusy(false);
-    }
+    setPhase('working');
+    setNotice(null);
+    settle(
+      await runComposerAction(
+        () => api.approve(message.pendingMessageId!, dirty ? draft : undefined),
+        reload,
+        'Could not approve this draft.',
+      ),
+    );
   }
 
   async function reject() {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.reject(message.pendingMessageId!, reason.trim());
-      await reload();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not reject this draft.');
-      setBusy(false);
-    }
+    setPhase('working');
+    setNotice(null);
+    settle(
+      await runComposerAction(
+        () => api.reject(message.pendingMessageId!, reason.trim()),
+        reload,
+        'Could not reject this draft.',
+      ),
+    );
   }
 
   return (
@@ -422,7 +618,7 @@ function ApprovalComposer({
         aria-label="Draft message"
         rows={5}
       />
-      {error && <p className="error">{error}</p>}
+      {notice && <p className={phase === 'error' ? 'error' : 'muted'}>{notice}</p>}
       {rejecting ? (
         <div className="inbox-reject">
           <input
@@ -433,7 +629,7 @@ function ApprovalComposer({
           <button
             type="button"
             className="btn ghost tiny"
-            disabled={busy || !reason.trim()}
+            disabled={locked || !reason.trim()}
             onClick={reject}
           >
             {busy ? 'Rejecting…' : 'Confirm reject'}
@@ -441,7 +637,7 @@ function ApprovalComposer({
           <button
             type="button"
             className="btn ghost tiny"
-            disabled={busy}
+            disabled={locked}
             onClick={() => setRejecting(false)}
           >
             Cancel
@@ -450,13 +646,13 @@ function ApprovalComposer({
       ) : confirming ? (
         <div className="approval-confirm">
           <span>Ready to approve this version?</span>
-          <button type="button" className="btn approve" disabled={busy} onClick={approve}>
+          <button type="button" className="btn approve" disabled={locked} onClick={approve}>
             {busy ? 'Approving…' : 'Approve & queue'}
           </button>
           <button
             type="button"
             className="btn ghost"
-            disabled={busy}
+            disabled={locked}
             onClick={() => setConfirming(false)}
           >
             Keep editing
@@ -467,7 +663,7 @@ function ApprovalComposer({
           <button
             type="button"
             className="btn approve"
-            disabled={busy || !draft.trim()}
+            disabled={locked || !draft.trim()}
             onClick={() => setConfirming(true)}
           >
             {dirty ? 'Review edited draft' : 'Approve & queue'}
@@ -475,7 +671,7 @@ function ApprovalComposer({
           <button
             type="button"
             className="btn ghost"
-            disabled={busy}
+            disabled={locked}
             onClick={() => setRejecting(true)}
           >
             Reject

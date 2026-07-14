@@ -5,7 +5,9 @@
 //
 // Covered: an inbound reply from an enrolled target is classified and routed,
 // pulling the target out of the funnel; a sender that is not an enrolled target
-// is left alone; an already-seen message is not re-routed on the next tick.
+// is left alone; an already-seen message is not re-routed on the next tick; only
+// the newest message in a thread routes, while older ones still reach the
+// transcript.
 
 import type { SchedulerLikePort } from '@loa/orchestrator';
 import type { Intent, LLMProvider, Message } from '@loa/shared';
@@ -13,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import type { InboundMessage, InboxReaderPort, InboxThread } from '../adapters/observe-live.js';
 import { makeOrchestratorServices } from '../adapters/orchestrator.js';
 import { InMemoryStore } from '../store/in-memory-store.js';
-import { type ReplyScan, ReplyTick } from './reply-tick.js';
+import { type ReplyOutcome, type ReplyScan, ReplyTick } from './reply-tick.js';
 
 const CAMP = 'camp-1';
 const ACCT = 'acct-1';
@@ -52,6 +54,18 @@ class HistoryInbox implements InboxReaderPort {
   async readThreadHistory(_accountId: string, threadUrn: string): Promise<InboundMessage[]> {
     this.historyCalls.push(threadUrn);
     return this.history;
+  }
+}
+
+/** Classifies each message by its body, so one thread can carry two intents. */
+class ScriptedLLM implements Partial<LLMProvider> {
+  readonly seen: Message[] = [];
+  constructor(private readonly byBody: Record<string, Intent>) {}
+  async classifyReply(msg: Message): Promise<Intent> {
+    this.seen.push(msg);
+    const intent = this.byBody[msg.body];
+    if (!intent) throw new Error(`no scripted intent for: ${msg.body}`);
+    return intent;
   }
 }
 
@@ -249,6 +263,137 @@ describe('ReplyTick', () => {
     const result = await tick2.runTick();
     expect(result.outcomes[0]).toMatchObject({ kind: 'routed', targetId: TGT });
     expect((await store2.sequence.getTargetProgressByTarget(TGT))!.state).toBe('replied');
+  });
+
+  it('routes only the newest message in a thread history, and records the rest', async () => {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    const followUps: { targetId: string; reason: string }[] = [];
+    const orchestrator = makeOrchestratorServices(store, {
+      async enqueueFollowUp(input) {
+        followUps.push({ targetId: input.targetId, reason: input.reason });
+      },
+    });
+
+    // The prospect put us off, then changed their mind five minutes later. The
+    // history read hands both back newest-first.
+    const scriptedLlm = new ScriptedLLM({
+      'not right now, ping me in Q3': 'NotNow',
+      "actually, I'm interested": 'Interested',
+    });
+    const outcomes: ReplyOutcome[] = [];
+    const tick = new ReplyTick({
+      inbox: new HistoryInbox([
+        inbound({ text: "actually, I'm interested", receivedAt: new Date('2026-07-06T10:05:00Z') }),
+        inbound({
+          text: 'not right now, ping me in Q3',
+          receivedAt: new Date('2026-07-06T10:00:00Z'),
+        }),
+      ]),
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: scriptedLlm as unknown as LLMProvider,
+      messages: store.message,
+      onOutcome: (o) => outcomes.push(o),
+    });
+
+    await tick.runTick();
+
+    // Only the newest message reached the classifier and the router, so the
+    // stage is the one the prospect's latest message asked for.
+    expect(scriptedLlm.seen.map((m) => m.body)).toEqual(["actually, I'm interested"]);
+    expect((await store.target.findById(TGT))!.stage).toBe('in_conversation');
+    // The stale NotNow does not get to schedule an automated ping at someone who
+    // has since said they are interested.
+    expect(followUps).toEqual([]);
+    expect(outcomes).toEqual([
+      { kind: 'recorded', targetId: TGT, threadUrn: 'urn:li:msg_conversation:t1' },
+      {
+        kind: 'routed',
+        targetId: TGT,
+        threadUrn: 'urn:li:msg_conversation:t1',
+        intent: 'Interested',
+      },
+    ]);
+    // Not routing the older message must not lose it: the transcript still holds
+    // the whole conversation, in the order the prospect wrote it.
+    const recorded = await store.message.listByThread('urn:li:msg_conversation:t1');
+    expect(recorded.map((row) => row.body)).toEqual([
+      'not right now, ping me in Q3',
+      "actually, I'm interested",
+    ]);
+    expect(recorded.map((row) => row.createdAt)).toEqual([
+      new Date('2026-07-06T10:00:00Z'),
+      new Date('2026-07-06T10:05:00Z'),
+    ]);
+  });
+
+  it('still enqueues the paced follow-up when the newest message is the NotNow', async () => {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    const followUps: { targetId: string; reason: string }[] = [];
+    const orchestrator = makeOrchestratorServices(store, {
+      async enqueueFollowUp(input) {
+        followUps.push({ targetId: input.targetId, reason: input.reason });
+      },
+    });
+
+    const tick = new ReplyTick({
+      inbox: new HistoryInbox([inbound({ text: 'not right now, ping me in Q3' })]),
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: llm('NotNow'),
+      messages: store.message,
+    });
+
+    await tick.runTick();
+
+    expect((await store.target.findById(TGT))!.stage).toBe('replied');
+    expect(followUps).toEqual([{ targetId: TGT, reason: 'not_now_followup' }]);
+  });
+
+  it('probeTarget reports a reply and routes only the newest of a thread history', async () => {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    const followUps: { targetId: string; reason: string }[] = [];
+    const orchestrator = makeOrchestratorServices(store, {
+      async enqueueFollowUp(input) {
+        followUps.push({ targetId: input.targetId, reason: input.reason });
+      },
+    });
+    const target = (await store.target.findById(TGT))!;
+
+    const scriptedLlm = new ScriptedLLM({
+      'not right now, ping me in Q3': 'NotNow',
+      "actually, I'm interested": 'Interested',
+    });
+    const tick = new ReplyTick({
+      inbox: new HistoryInbox([
+        inbound({ text: "actually, I'm interested", receivedAt: new Date('2026-07-06T10:05:00Z') }),
+        inbound({
+          text: 'not right now, ping me in Q3',
+          receivedAt: new Date('2026-07-06T10:00:00Z'),
+        }),
+      ]),
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: scriptedLlm as unknown as LLMProvider,
+      messages: store.message,
+    });
+
+    // Fail-closed: any inbound in the mapped thread blocks the due send, whether
+    // or not it routed.
+    expect(await tick.probeTarget(ACCT, target, null)).toBe(true);
+    expect(scriptedLlm.seen.map((m) => m.body)).toEqual(["actually, I'm interested"]);
+    expect(followUps).toEqual([]);
+    const recorded = await store.message.listByThread('urn:li:msg_conversation:t1');
+    expect(recorded.map((row) => row.body)).toEqual([
+      'not right now, ping me in Q3',
+      "actually, I'm interested",
+    ]);
   });
 
   it('routes a message once and marks a repeat of it as already-seen', async () => {

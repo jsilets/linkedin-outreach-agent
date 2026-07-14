@@ -11,9 +11,17 @@
 //      / profile url against the target's linkedinUrn (see matchesTarget).
 //   4. skip messages already handled on a prior tick (an in-memory seen-set,
 //      keyed by thread+timestamp+text — see the dedupe note below).
-//   5. classify each NEW inbound via LLMProvider.classifyReply, then route it
-//      through ReplyRouter.route, which pulls the target from the funnel
-//      (terminal 'replied' progress state) and does per-intent follow-up.
+//   5. persist every NEW inbound to the local transcript, then classify the
+//      NEWEST one per thread via LLMProvider.classifyReply and route it through
+//      ReplyRouter.route, which pulls the target from the funnel (terminal
+//      'replied' progress state) and does per-intent follow-up.
+//
+// ROUTING IS NEWEST-ONLY: ReplyRouter.route acts per intent with no notion of a
+// thread — it sets the stage and, for NotNow/OutOfOffice, unconditionally
+// enqueues a paced follow-up. Routing every unseen message in a history read
+// would therefore let an older "ping me in Q3" schedule a follow-up to someone
+// whose newer message says they are interested. Older messages are still
+// persisted: they are real conversation the operator must see in the Inbox.
 //
 // Mirrors DispatchTick: runTick(now) does one pass; start(intervalMs) wraps it
 // in a self-skipping setInterval so a host runs it unattended. Host-agnostic and
@@ -46,6 +54,7 @@ const INBOX_CACHE_TTL_MS = 60_000;
 /** How one inbound message resolved in a tick. Returned for observability + tests. */
 export type ReplyOutcome =
   | { kind: 'routed'; targetId: string; threadUrn: string; intent: Intent }
+  | { kind: 'recorded'; targetId: string; threadUrn: string } // transcript only; a newer message routes
   | { kind: 'unmatched'; threadUrn: string } // sender not an enrolled target
   | { kind: 'seen'; threadUrn: string }; // already processed on a prior tick
 
@@ -70,6 +79,7 @@ export type ReplyScan =
       historyReads: number;
       inboundMessages: number;
       routed: number;
+      recorded: number;
       seen: number;
       unmatchedInboundMessages: number;
     }
@@ -122,6 +132,13 @@ export interface ReplyTickDeps {
  */
 function matchesTarget(msg: InboundMessage, target: TargetRow): boolean {
   return matchesIdentity(msg.senderUrn, msg.profileUrl, target);
+}
+
+/** readThreadHistory returns newest-first and its callers keep that contract.
+ * Sorting here gives both a chronological transcript and a last element that is
+ * the newest message — the only one allowed to route. */
+function oldestFirst(history: InboundMessage[]): InboundMessage[] {
+  return [...history].sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime());
 }
 
 /** Stable identity for a single inbound message, for the seen-set. */
@@ -232,8 +249,14 @@ export class ReplyTick {
             historyReads += 1;
             inboundMessages += history.length;
             failurePhase = 'route';
-            for (const msg of history) {
-              const outcome = await this.handle(accountId, [progress], msg);
+            const chronological = oldestFirst(history);
+            for (const [index, msg] of chronological.entries()) {
+              const outcome = await this.handle(
+                accountId,
+                [progress],
+                msg,
+                index === chronological.length - 1,
+              );
               outcomes.push(outcome);
               this.onOutcome?.(outcome);
             }
@@ -280,6 +303,7 @@ export class ReplyTick {
         historyReads,
         inboundMessages,
         routed: outcomes.filter((outcome) => outcome.kind === 'routed').length,
+        recorded: outcomes.filter((outcome) => outcome.kind === 'recorded').length,
         seen: outcomes.filter((outcome) => outcome.kind === 'seen').length,
         unmatchedInboundMessages: outcomes.filter((outcome) => outcome.kind === 'unmatched').length,
       });
@@ -349,11 +373,14 @@ export class ReplyTick {
         // automated funnel and blocks the send.
         const matches = await this.inbox.readThreadHistory(accountId, thread.threadUrn);
         if (matches.length === 0) return false;
-        for (const msg of matches) {
+        const chronological = oldestFirst(matches);
+        for (const [index, msg] of chronological.entries()) {
           const key = messageKey(msg);
           if (this.seen.has(key)) continue;
           this.seen.add(key);
-          await this.classifyAndRoute(accountId, target, target.campaignId, msg);
+          if (index === chronological.length - 1)
+            await this.classifyAndRoute(accountId, target, target.campaignId, msg);
+          else await this.record(accountId, target, msg);
         }
         return true;
       }
@@ -373,11 +400,13 @@ export class ReplyTick {
     return true;
   }
 
-  /** Map, dedupe, classify, and route one inbound message. */
+  /** Map, dedupe, and persist one inbound message, routing it only when it is the
+   * newest in its thread (see the newest-only note in the header). */
   private async handle(
     _accountId: string,
     enrolled: TargetProgressRow[],
     msg: InboundMessage,
+    route = true,
   ): Promise<ReplyOutcome> {
     // Map the sender to one of this account's enrolled targets. Load each
     // target row (the linkedinUrn is the match key) and take the first hit.
@@ -400,30 +429,26 @@ export class ReplyTick {
     // above covers the restart case).
     this.seen.add(key);
 
+    if (!route) {
+      await this.record(_accountId, target, msg);
+      return { kind: 'recorded', targetId: target.id, threadUrn: msg.threadUrn };
+    }
     const intent = await this.classifyAndRoute(_accountId, target, progress.campaignId, msg);
     return { kind: 'routed', targetId: target.id, threadUrn: msg.threadUrn, intent };
   }
 
-  /** Classify one inbound message and route it (pulling the funnel + cancelling
-   * outstanding messages via the router). Shared by handle() and probeTarget().
-   * Returns the classified intent. */
-  private async classifyAndRoute(
-    accountId: string,
-    target: TargetRow,
-    campaignId: string,
-    msg: InboundMessage,
-  ): Promise<Intent> {
-    // This is an observation, never a send: persist it in the same local audit
-    // trail as outbound messages so the unified inbox has the actual incoming
-    // text rather than merely a lifecycle state. The caller's seen-set ensures
-    // a running process records a given message once.
+  /** Persist one observed inbound in the local transcript. This is an
+   * observation, never a send: it belongs in the same local audit trail as
+   * outbound messages so the unified inbox has the actual incoming text rather
+   * than merely a lifecycle state. The caller's seen-set ensures a running
+   * process records a given message once. */
+  private async record(accountId: string, target: TargetRow, msg: InboundMessage): Promise<void> {
     const recorded = this.messages ? await this.messages.listByThread(msg.threadUrn) : [];
     // LinkedIn does not expose a stable event id in every response shape. This
     // conservative local key prevents a runtime restart from duplicating the
     // same observed body in the unified inbox; the in-memory seen-set still
     // handles the normal, same-process case precisely.
-    if (recorded.some((row) => row.direction === 'inbound' && row.body === msg.text))
-      return this.classifyAndRouteOnly(target, campaignId, msg);
+    if (recorded.some((row) => row.direction === 'inbound' && row.body === msg.text)) return;
     await this.messages?.create({
       accountId,
       targetId: target.id,
@@ -437,6 +462,18 @@ export class ReplyTick {
       // in reverse after rows are persisted.
       createdAt: msg.receivedAt,
     });
+  }
+
+  /** Persist one inbound message, then classify and route it (pulling the funnel
+   * + cancelling outstanding messages via the router). Shared by handle() and
+   * probeTarget(). Returns the classified intent. */
+  private async classifyAndRoute(
+    accountId: string,
+    target: TargetRow,
+    campaignId: string,
+    msg: InboundMessage,
+  ): Promise<Intent> {
+    await this.record(accountId, target, msg);
     return this.classifyAndRouteOnly(target, campaignId, msg);
   }
 

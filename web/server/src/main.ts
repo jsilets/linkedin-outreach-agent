@@ -17,6 +17,7 @@ import {
   getActivity,
   getCampaign,
   getCampaignLeads,
+  getDispatchHealth,
   getErrors,
   getInbox,
   getList,
@@ -403,6 +404,16 @@ api.get('/inbox', async (_req, res, next) => {
 api.get('/inbox/health', async (_req, res, next) => {
   try {
     res.json(await getReplyDetectorHealth());
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Whether the send side is actually running. Without this a host that booted
+// without LOA_DISPATCH_INTERVAL_MS still renders approved messages as queued.
+api.get('/dispatch/health', async (_req, res, next) => {
+  try {
+    res.json(await getDispatchHealth());
   } catch (err) {
     next(err);
   }

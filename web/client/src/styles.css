@@ -1243,7 +1243,7 @@ textarea.draft {
 /* Small but explicit operational state: an empty reply list is only reassuring
  * after a completed scan. This sits with the Inbox heading rather than taking
  * attention from the conversation list. */
-.inbox-list-head .reply-detector-status {
+.inbox-list-head .inbox-health-note {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1254,30 +1254,30 @@ textarea.draft {
   line-height: 1.35;
 }
 
-.reply-detector-status > span {
+.inbox-health-note > span {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--st-idle);
 }
 
-.reply-detector-status.healthy > span {
+.inbox-health-note.healthy > span {
   background: var(--st-done);
 }
-.reply-detector-status.failing,
-.reply-detector-status.stale {
+.inbox-health-note.failing,
+.inbox-health-note.stale {
   color: color-mix(in srgb, var(--st-failed) 78%, var(--ink-1));
 }
-.reply-detector-status.failing > span,
-.reply-detector-status.stale > span {
+.inbox-health-note.failing > span,
+.inbox-health-note.stale > span {
   background: var(--st-failed);
 }
-.reply-detector-status.disabled > span,
-.reply-detector-status.never_run > span {
+.inbox-health-note.disabled > span,
+.inbox-health-note.never_run > span {
   background: var(--st-approval);
 }
 
-.reply-detector-status small {
+.inbox-health-note small {
   width: 100%;
   margin-left: 12px;
   color: var(--ink-3);
@@ -1376,14 +1376,17 @@ textarea.draft {
   color: var(--accent);
 }
 
-.thread-row time,
-.message-bubble time {
+.thread-when,
+.msg-timing {
   margin-left: auto;
-  flex: none;
   color: var(--ink-3);
-  font-family: var(--font-mono);
   font-size: var(--text-caption);
   font-variant-numeric: tabular-nums;
+}
+
+.thread-when {
+  flex: none;
+  font-family: var(--font-mono);
 }
 
 .thread-preview {
@@ -1530,6 +1533,7 @@ textarea.draft {
 
 .message-bubble footer {
   margin-top: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .msg-tag {

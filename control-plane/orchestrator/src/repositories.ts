@@ -206,10 +206,13 @@ export class MessageRepo {
     return out!;
   }
 
+  /** The single status write path. 'sent' also stamps `sentAt`: it is the only
+   * transition that reaches LinkedIn, and it is stamped nowhere else. */
   async setStatus(id: string, status: MessageRow['status']): Promise<MessageRow> {
+    const at = new Date();
     const [out] = await this.db.handle
       .update(messages)
-      .set({ status, updatedAt: new Date() })
+      .set({ status, updatedAt: at, ...(status === 'sent' ? { sentAt: at } : {}) })
       .where(eq(messages.id, id))
       .returning();
     return out!;

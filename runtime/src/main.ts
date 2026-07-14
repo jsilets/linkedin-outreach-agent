@@ -41,9 +41,18 @@ async function main(): Promise<void> {
         `[@loa/runtime] reclaimed ${reclaimed} stale pending action(s) orphaned by a prior restart`,
       );
     }
+    await runtime.orchestrator.eventLog.recordEvent('dispatch_tick_started', null, {
+      intervalMs: config.dispatchIntervalMs,
+    });
     runtime.dispatch.start(config.dispatchIntervalMs);
     console.log(`[@loa/runtime] dispatch tick started: every ${config.dispatchIntervalMs}ms`);
   } else {
+    // Recorded, not just logged: with no tick running, approved messages sit
+    // queued forever and the inbox would otherwise still render them as going
+    // out shortly. The health read turns that silence into a visible state.
+    await runtime.orchestrator.eventLog.recordEvent('dispatch_tick_idle', null, {
+      reason: 'LOA_DISPATCH_INTERVAL_MS unset',
+    });
     console.log('[@loa/runtime] dispatch tick idle (set LOA_DISPATCH_INTERVAL_MS to run it)');
   }
 

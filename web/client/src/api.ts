@@ -24,6 +24,18 @@ export interface Step {
 
 type CampaignStatus = 'draft' | 'active' | 'done';
 
+interface CampaignPerformance {
+  invitesSent: number;
+  invitesAccepted: number;
+  /** Total message VOLUME: every successful message action, including follow-ups
+   * to the same person. Not a population — do not divide replies by it. */
+  messagesSent: number;
+  /** Distinct targets that received at least one message. The denominator for
+   * reply rate: `replies` counts distinct repliers, so both are populations. */
+  messagedTargets: number;
+  replies: number;
+}
+
 export interface CampaignSummary {
   id: string;
   goal: string;
@@ -37,12 +49,7 @@ export interface CampaignSummary {
   pendingCount: number;
   // Headline funnel counts for the campaign's stat chips. Optional on the wire so
   // the UI renders before the server side lands; read defensively.
-  performance: {
-    invitesSent: number;
-    invitesAccepted: number;
-    messagesSent: number;
-    replies: number;
-  };
+  performance: CampaignPerformance;
 }
 
 export interface CampaignDetail extends CampaignSummary {
@@ -89,6 +96,20 @@ export interface Pending {
   profileUrl: string | null;
 }
 
+/** What has actually happened to a message, and when it will happen if it
+ * hasn't yet. `createdAt` is the draft's birth time regardless of status, so it
+ * answers none of those questions on its own. */
+export type MessageTiming =
+  | { kind: 'received'; at: string }
+  | { kind: 'sent'; at: string }
+  | { kind: 'queued_soon' }
+  | { kind: 'queued_window'; at: string }
+  | { kind: 'queued_capped'; at: string }
+  /** The gate denies this account outright: nothing sends until a human resumes
+   * it or lifts the state. No timestamp — none of these clear on a schedule. */
+  | { kind: 'queued_blocked'; reason: 'paused' | 'restricted' | 'cooldown' }
+  | { kind: 'awaiting_approval'; readyAt: string | null };
+
 export interface InboxMessage {
   id: string;
   direction: 'inbound' | 'outbound';
@@ -102,6 +123,7 @@ export interface InboxMessage {
    * means it is eligible now; actual delivery remains subject to approval and
    * the account's pacing window. */
   eligibleAt: string | null;
+  timing: MessageTiming;
 }
 
 export interface InboxThread {
@@ -131,6 +153,14 @@ export interface ReplyDetectorHealth {
     unmatchedThreads: number;
     unmatchedInboundMessages: number;
   } | null;
+}
+
+/** Whether the dispatch tick — the loop that actually sends queued messages — is
+ * running. When it is not, every "Queued" label in the inbox is a lie. */
+export interface DispatchHealth {
+  status: 'running' | 'disabled' | 'never_run';
+  intervalMs: number | null;
+  lastStartedAt: string | null;
 }
 
 export interface ActivityItem {
@@ -301,6 +331,7 @@ export const api = {
   },
   inbox: () => get<InboxThread[]>('/api/inbox'),
   inboxHealth: () => get<ReplyDetectorHealth>('/api/inbox/health'),
+  dispatchHealth: () => get<DispatchHealth>('/api/dispatch/health'),
   activity: (opts: { campaignId?: string; limit?: number } = {}) => {
     const params = new URLSearchParams();
     if (opts.campaignId) params.set('campaignId', opts.campaignId);
