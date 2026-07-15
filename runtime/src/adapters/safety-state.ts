@@ -17,6 +17,7 @@
 
 import type {
   DailyUsageCounter,
+  OutstandingInviteCounter,
   PauseState,
   RecentActionClock,
   WeeklyInviteCounter,
@@ -25,7 +26,21 @@ import type { Account, ActionType, Signal, SignalKind } from '@loa/shared';
 import type { RuntimeStore } from '../store/index.js';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The local midnight that starts the calendar day `at` falls in.
+ *
+ * HOST-local, deliberately: it must agree to the millisecond with the web read
+ * model's `midnight.setHours(0, 0, 0, 0)` (queries.ts loadGateInputs), which is
+ * what the operator is shown. The same host-local basis the working-hours window
+ * already uses. A cap the UI and the gate disagree about is worse than either
+ * boundary being wrong.
+ */
+function startOfLocalDay(at: Date): number {
+  const midnight = new Date(at);
+  midnight.setHours(0, 0, 0, 0);
+  return midnight.getTime();
+}
 
 function emptyDailyUsed(): Record<ActionType, number> {
   return { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 };
@@ -47,12 +62,20 @@ export class StoreBackedWeeklyInviteCounter implements WeeklyInviteCounter {
     this.now = opts.now ?? (() => new Date());
   }
 
-  /** Rebuild the window for every account from persisted connect action rows. */
+  /**
+   * Rebuild the window for every account from persisted connect action rows.
+   *
+   * SUCCESSES ONLY, matching what record() counts on the live path ("the weekly
+   * ceiling counts connects that actually went out") and what the daily counter
+   * rehydrates. Without the filter a restart silently re-counted failed invites
+   * — attempts LinkedIn never saw — and burned real ceiling with them, so an
+   * account's headroom shrank every time it rebooted after a bad connect.
+   */
   async rehydrate(store: RuntimeStore, accountIds: string[]): Promise<void> {
     for (const accountId of accountIds) {
       const rows = await store.action.listByAccount(accountId);
       const stamps = rows
-        .filter((r) => r.type === 'connect')
+        .filter((r) => r.type === 'connect' && r.result === 'success')
         .map((r) => (r.executedAt ?? r.scheduledAt).getTime());
       this.connects.set(accountId, stamps);
     }
@@ -81,13 +104,27 @@ export class StoreBackedWeeklyInviteCounter implements WeeklyInviteCounter {
  * successfully-executed action timestamps per account, per type. The gate reads
  * usedToday synchronously inside budget()/canAct to enforce the daily caps.
  *
- * The window is ROLLING 24h, not a calendar day, so the cap cannot reset at the
- * UTC-midnight boundary partway through the operator's local day (a calendar-day
- * cap would allow ~2x the intended volume around the rollover). rehydrate() fills
- * it from persisted action rows so the cap survives a restart — which is the
- * whole point: the gate must NOT fall back to the persisted acct.budget.used,
- * which is never written with today's live count, so relying on it silently
- * disables the daily cap.
+ * The window is the operator's LOCAL CALENDAR DAY: "20 a day" means what the
+ * Activity graph says it means, and capacity resets at local midnight rather than
+ * dribbling back one slot at a time on yesterday's schedule.
+ *
+ * This replaced a rolling 24h window, whose stated reason was that a cap keyed to
+ * UTC midnight would reset partway through the operator's day. That reason is
+ * answered by keying to LOCAL midnight instead (startOfLocalDay), which is also
+ * exactly what the web read model already counted — so the gate and the UI now
+ * agree, where before the UI would offer capacity the gate refused.
+ *
+ * The rolling window's other argument survives and is accepted deliberately: a
+ * calendar cap allows up to ~2x the daily number across a rollover (a full
+ * evening batch, then a full batch after midnight). The working-hours window is
+ * what makes that tolerable — sends cannot happen at 00:01, so the two batches
+ * are hours apart, not a burst — and the weekly invite ceiling still bounds the
+ * total well below 7x the daily cap.
+ *
+ * rehydrate() fills it from persisted action rows so the cap survives a restart —
+ * which is the whole point: the gate must NOT fall back to the persisted
+ * acct.budget.used, which is never written with today's live count, so relying on
+ * it silently disables the daily cap.
  */
 export class StoreBackedDailyUsage implements DailyUsageCounter {
   private readonly stamps = new Map<string, Partial<Record<ActionType, number[]>>>();
@@ -97,16 +134,18 @@ export class StoreBackedDailyUsage implements DailyUsageCounter {
     this.now = opts.now ?? (() => new Date());
   }
 
-  /** Rebuild each account's 24h window from persisted, successfully-executed rows. */
+  /** Rebuild today's counts from persisted, successfully-executed rows. */
   async rehydrate(store: RuntimeStore, accountIds: string[]): Promise<void> {
-    const cutoff = this.now().getTime() - DAY_MS;
+    const dayStart = startOfLocalDay(this.now());
     for (const accountId of accountIds) {
       const rows = await store.action.listByAccount(accountId);
       const byType: Partial<Record<ActionType, number[]>> = {};
       for (const r of rows) {
         if (r.result !== 'success') continue;
         const t = (r.executedAt ?? r.scheduledAt).getTime();
-        if (t <= cutoff) continue;
+        // Inclusive, matching the read model's gte(executedAt, midnight): an
+        // action stamped exactly at midnight belongs to the day it starts.
+        if (t < dayStart) continue;
         let stamps = byType[r.type];
         if (!stamps) {
           stamps = [];
@@ -131,17 +170,65 @@ export class StoreBackedDailyUsage implements DailyUsageCounter {
   }
 
   usedToday(accountId: string): Record<ActionType, number> {
-    const cutoff = this.now().getTime() - DAY_MS;
+    const dayStart = startOfLocalDay(this.now());
     const out = emptyDailyUsed();
     const byType = this.stamps.get(accountId);
     if (!byType) return out;
     for (const k of Object.keys(byType) as ActionType[]) {
-      // Prune aged-out stamps opportunistically so each window stays bounded.
-      const fresh = (byType[k] ?? []).filter((t) => t > cutoff);
+      // Drop yesterday's stamps opportunistically: this is also what resets the
+      // cap at local midnight without a scheduled job.
+      const fresh = (byType[k] ?? []).filter((t) => t >= dayStart);
       byType[k] = fresh;
       out[k] = fresh.length;
     }
     return out;
+  }
+}
+
+/**
+ * Synchronous counter of invitations sent but not yet accepted, per account.
+ *
+ * The pile is read from the enrollment cursors parked at 'awaiting_connection',
+ * which is our own record of "invited, still waiting". That undercounts invites
+ * a human sent outside a campaign; it is a backstop, and the operator's own
+ * manual invites are not what a runaway automation looks like.
+ *
+ * rehydrate() is the accurate read at boot; record() adds a fresh invite and
+ * release() removes one the acceptance tick has seen accepted. Both ends are
+ * wired precisely so this number tracks the same rows the web read model counts
+ * live — a gate that denies at 500 while the Settings card reads 460 is the same
+ * UI-versus-gate disagreement this change set exists to remove, just inverted.
+ *
+ * Residual drift is upward-only and self-correcting: a cursor that leaves
+ * 'awaiting_connection' by some path other than acceptance (a removed target)
+ * is not released here, so the count can sit high until the next boot. Upward is
+ * the safe direction for a ceiling, and boot re-derives from the rows.
+ */
+export class StoreBackedOutstandingInvites implements OutstandingInviteCounter {
+  private readonly pending = new Map<string, number>();
+
+  /** Count each account's parked invites from persisted enrollment cursors. */
+  async rehydrate(store: RuntimeStore, accountIds: string[]): Promise<void> {
+    const rows = await store.sequence.awaitingConnectionEnrollments();
+    const counts = new Map<string, number>();
+    for (const r of rows) counts.set(r.accountId, (counts.get(r.accountId) ?? 0) + 1);
+    for (const id of accountIds) this.pending.set(id, counts.get(id) ?? 0);
+  }
+
+  /** Note that an invite went out and is now pending. */
+  record(accountId: string): void {
+    this.pending.set(accountId, (this.pending.get(accountId) ?? 0) + 1);
+  }
+
+  /** Note that a pending invite was accepted and has left the pile. Floors at 0:
+   * an acceptance for an invite sent before this process booted is already
+   * absent from the rehydrated count, and must not push it negative. */
+  release(accountId: string): void {
+    this.pending.set(accountId, Math.max(0, (this.pending.get(accountId) ?? 0) - 1));
+  }
+
+  outstandingInvites(accountId: string): number {
+    return this.pending.get(accountId) ?? 0;
   }
 }
 

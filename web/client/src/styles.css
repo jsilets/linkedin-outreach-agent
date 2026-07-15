@@ -2036,6 +2036,79 @@ textarea.draft {
   font-size: var(--text-meta);
 }
 
+/* Read-only invite limiters (weekly ceiling, outstanding pile). Deliberately
+   quieter than the editable cap above — same column, no input affordance — until
+   one is near or at its ceiling, at which point it is the reason nothing is
+   sending and earns the color. */
+.limit-readouts {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.limit-readout-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.limit-readout-value {
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.limit-readout-bar {
+  height: 4px;
+  margin-top: var(--space-1);
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+/* Filled by scaling a full-width block on the X axis rather than animating
+   `width`, so a refreshed count does not trigger layout. */
+.limit-readout-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ink-3);
+  transform-origin: left center;
+  transition: transform var(--dur) var(--ease);
+}
+
+.limit-readout-hint {
+  margin: var(--space-1) 0 0;
+  color: var(--ink-3);
+  font-size: var(--text-caption);
+  line-height: 1.35;
+}
+
+/* State overrides follow their base rules above, per noDescendingSpecificity. */
+.limit-readout.near .limit-readout-value,
+.limit-readout.near .limit-readout-hint {
+  color: var(--st-approval-ink);
+}
+
+.limit-readout.near .limit-readout-fill {
+  background: var(--st-approval);
+}
+
+.limit-readout.at .limit-readout-value,
+.limit-readout.at .limit-readout-hint {
+  color: var(--st-failed);
+}
+
+.limit-readout.at .limit-readout-value {
+  font-weight: var(--weight-semibold);
+}
+
+.limit-readout.at .limit-readout-fill {
+  background: var(--st-failed);
+}
+
 @media (max-width: 700px) {
   .account-row-header {
     flex-direction: column;

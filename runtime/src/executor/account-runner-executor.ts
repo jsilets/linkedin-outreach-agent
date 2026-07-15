@@ -34,6 +34,7 @@ import { SafetyDeferredError } from '@loa/shared';
 import type {
   StoreBackedActionPacer,
   StoreBackedDailyUsage,
+  StoreBackedOutstandingInvites,
   StoreBackedWeeklyInviteCounter,
 } from '../adapters/safety-state.js';
 import { rowToAccount, rowToTarget } from '../mappers.js';
@@ -52,6 +53,7 @@ export interface AccountRunnerExecutorDeps {
   /** Weekly-invite counter kept warm on each successful connect (matches the
    * fake executor). Optional so a wiring test can omit it. */
   weekly?: StoreBackedWeeklyInviteCounter;
+  outstanding?: StoreBackedOutstandingInvites;
   /** Per-type daily-usage counter kept warm on each successful action so the
    * gate's daily caps see today's real count. Optional so a wiring test can
    * omit it. */
@@ -72,6 +74,7 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
   private readonly runnerSafety: RunnerSafetyPort;
   private readonly session: SessionProvider;
   private readonly weekly?: StoreBackedWeeklyInviteCounter;
+  private readonly outstanding?: StoreBackedOutstandingInvites;
   private readonly daily?: StoreBackedDailyUsage;
   private readonly pacer?: StoreBackedActionPacer;
   private readonly now: () => Date;
@@ -83,6 +86,7 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     this.runnerSafety = deps.runnerSafety;
     this.session = deps.session;
     this.weekly = deps.weekly;
+    this.outstanding = deps.outstanding;
     this.daily = deps.daily;
     this.pacer = deps.pacer;
     this.now = deps.now ?? (() => new Date());
@@ -249,7 +253,11 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     // Keep the in-memory safety state warm exactly like the fake executor: the
     // weekly ceiling counts connects that actually went out, and the daily caps
     // count every successful action by type.
-    if (type === 'connect') this.weekly?.record(accountId, executedAt);
+    if (type === 'connect') {
+      this.weekly?.record(accountId, executedAt);
+      // The invite is now pending until the person accepts it.
+      this.outstanding?.record(accountId);
+    }
     this.daily?.record(accountId, type, executedAt);
     await this.store.event.append({
       accountId,

@@ -42,6 +42,25 @@ export interface DailyUsageCounter {
 }
 
 /**
+ * Port for reading how many invitations this account has sent that the
+ * recipient has neither accepted nor ignored away — the PENDING pile.
+ *
+ * This is a different limit from the weekly ceiling, and LinkedIn documents it
+ * as carrying the harshest penalty they list: an account restricted for "too
+ * many outstanding invitations" can wait up to a month, versus about a week for
+ * the ordinary invite limit. LinkedIn publishes no threshold, so the ceiling
+ * here is a backstop against an obviously-unhealthy pile, not a model of their
+ * rule.
+ *
+ * It grows structurally: every invite that is never accepted stays in the pile
+ * forever unless it is withdrawn. At a 38% acceptance rate roughly six of every
+ * ten invites sent are permanent additions.
+ */
+export interface OutstandingInviteCounter {
+  outstandingInvites(accountId: string): number;
+}
+
+/**
  * Port for reading the timestamp of the most recent outbound action on an
  * account, across ALL action types. The runtime owns this state (kept warm as
  * actions execute, rehydrated from action rows on boot); the gate only reads it
@@ -76,6 +95,8 @@ export interface SafetyGateOptions {
   weeklyInvites?: WeeklyInviteCounter;
   /** Today's per-type usage. Without it the daily cap is not enforced. */
   dailyUsage?: DailyUsageCounter;
+  /** Pending-invite pile. Without it the outstanding ceiling is not enforced. */
+  outstandingInvites?: OutstandingInviteCounter;
   clock?: Clock;
   recentActions?: RecentActionClock;
   /** Operator pause flag. When wired, a paused account is denied every action. */
@@ -129,6 +150,7 @@ export class DefaultSafetyGate implements SafetyGate {
   private readonly cfg: SafetyConfig;
   private readonly weeklyInvites?: WeeklyInviteCounter;
   private readonly dailyUsage?: DailyUsageCounter;
+  private readonly outstandingInvites?: OutstandingInviteCounter;
   private readonly clock: Clock;
   private readonly recentActions?: RecentActionClock;
   private readonly pause?: PauseState;
@@ -141,19 +163,21 @@ export class DefaultSafetyGate implements SafetyGate {
   constructor(opts: SafetyGateOptions = {}) {
     if (
       !opts.allowMissingCounters &&
-      (!opts.dailyUsage || !opts.weeklyInvites || !opts.recentActions)
+      (!opts.dailyUsage || !opts.weeklyInvites || !opts.recentActions || !opts.outstandingInvites)
     ) {
       // Fail closed at construction: a gate without its counters silently
       // enforces nothing (daily caps read a never-updated fallback, the weekly
-      // ceiling can never fire cross-day, and pacing is skipped entirely).
+      // ceiling can never fire cross-day, pacing is skipped entirely, and the
+      // outstanding-invite pile is unbounded).
       throw new Error(
-        'DefaultSafetyGate requires dailyUsage, weeklyInvites, and recentActions; ' +
-          'pass allowMissingCounters: true only in tests',
+        'DefaultSafetyGate requires dailyUsage, weeklyInvites, recentActions, and ' +
+          'outstandingInvites; pass allowMissingCounters: true only in tests',
       );
     }
     this.cfg = opts.config ?? DEFAULT_CONFIG;
     this.weeklyInvites = opts.weeklyInvites;
     this.dailyUsage = opts.dailyUsage;
+    this.outstandingInvites = opts.outstandingInvites;
     this.clock = opts.clock ?? REAL_CLOCK;
     this.recentActions = opts.recentActions;
     this.pause = opts.pause;
@@ -256,6 +280,29 @@ export class DefaultSafetyGate implements SafetyGate {
       const weekInvites = this.invitesLast7d(acct, used);
       if (weekInvites >= this.cfg.weeklyInviteCeiling) {
         return { kind: 'defer', until: nextDay(this.clock.now()) };
+      }
+    }
+
+    // Outstanding-invite ceiling: a third, independent constraint on connects,
+    // and the one LinkedIn punishes hardest (their docs put "too many
+    // outstanding invitations" at up to a month, against about a week for the
+    // ordinary limit).
+    //
+    // Deliberately a DENY with a reason, not a defer. The pile does not drain by
+    // waiting — an invite nobody accepts is outstanding forever — so deferring to
+    // tomorrow would retry, silently, every day, forever. A deny names the
+    // condition. The remedy is withdrawing stale invites (withdraw_invite exists
+    // and is not yet driven by anything), or accepting that this account is done
+    // inviting until its pile clears.
+    if (type === 'connect' && this.outstandingInvites) {
+      const pending = this.outstandingInvites.outstandingInvites(acct.id);
+      if (pending >= this.cfg.outstandingInviteCeiling) {
+        return {
+          kind: 'deny',
+          reason:
+            `${pending} outstanding invitations (ceiling ${this.cfg.outstandingInviteCeiling}); ` +
+            'withdraw stale invites before sending more',
+        };
       }
     }
 

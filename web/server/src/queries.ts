@@ -838,6 +838,15 @@ export interface AccountGateConfig {
   enabled: Partial<Record<ActionType, boolean>>;
   schedule: AccountSchedule;
   schedules: Partial<Record<ActionType, AccountSchedule>>;
+  /** Rolling 7-day ceiling on successful connects. Global, not per-account:
+   * SafetyConfig owns it and AccountLimits has no override, so this is always
+   * DEFAULT_CONFIG's value. Resolved here anyway so a future per-account
+   * override has one seam to land in, and the UI reads the same number the gate
+   * checks against. */
+  weeklyInviteCeiling: number;
+  /** Ceiling on invites sent but not yet accepted. Same global-only story as
+   * weeklyInviteCeiling, and the one that DENIES rather than defers. */
+  outstandingInviteCeiling: number;
 }
 
 /**
@@ -859,6 +868,8 @@ export function accountGateConfig(limits: unknown): AccountGateConfig {
     enabled: resolved.enabled ?? {},
     schedule: effectiveSchedule({ limits: resolved }, DEFAULT_CONFIG),
     schedules: resolved.schedules ?? {},
+    weeklyInviteCeiling: DEFAULT_CONFIG.weeklyInviteCeiling,
+    outstandingInviteCeiling: DEFAULT_CONFIG.outstandingInviteCeiling,
   };
 }
 
@@ -930,9 +941,14 @@ export function buildPauseEventsQuery(accountIds: string[]) {
 /**
  * The safety inputs a send prediction needs: each account's resolved gate config
  * and state, whether an operator has it paused, plus its successful action count
- * since local midnight keyed `${accountId}:${type}` (the same day boundary and
- * success-only rule the gate's daily counter uses). Shared by the scheduled-send
- * forecast and the inbox timing.
+ * since local midnight keyed `${accountId}:${type}`.
+ *
+ * The local-midnight boundary and the success-only rule both mirror the gate's
+ * daily counter (StoreBackedDailyUsage). That claim was false until the gate
+ * moved off a rolling 24h window: this view would show capacity the gate then
+ * refused, which is precisely how an operator ends up asking why nothing is
+ * sending. If one side's day boundary moves, the other has to move with it.
+ * Shared by the scheduled-send forecast and the inbox timing.
  */
 async function loadGateInputs(
   accountIds: string[],
@@ -2079,6 +2095,71 @@ export interface AccountRow {
   /** Approved outbound messages waiting on the sender. While paused this is
    * exactly what the pause is holding back, so the UI can name the consequence. */
   queuedMessageCount: number;
+  /** Successful connects in the trailing 7 days — what the gate's rolling weekly
+   * ceiling is checked against. The daily cap is not the only limiter on
+   * invites, and a UI that models only the cap shows capacity the gate refuses. */
+  weeklyInvitesUsed: number;
+  /** The ceiling weeklyInvitesUsed is measured against. */
+  weeklyInviteCeiling: number;
+  /** Invites sent but not yet accepted, counted from enrollment cursors parked
+   * at 'awaiting_connection'. Hitting its ceiling DENIES connects rather than
+   * deferring them: the pile does not drain by waiting. */
+  outstandingInvites: number;
+  /** The ceiling outstandingInvites is measured against. */
+  outstandingInviteCeiling: number;
+}
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Successful connects per account inside the gate's rolling 7-day invite window.
+//
+// Mirrors StoreBackedWeeklyInvites in runtime/src/adapters/safety-state.ts:
+// connects only, SUCCESSES only (a failed invite LinkedIn never saw burns no
+// ceiling), rolling from now rather than a calendar week. If that window moves,
+// this must move with it — the whole point of surfacing the number is that the
+// UI and the gate agree on it.
+export function buildWeeklyInviteCountsQuery(accountIds: string[], now = new Date()) {
+  const cutoff = new Date(now.getTime() - SEVEN_DAYS_MS);
+  return db
+    .select({ accountId: actions.accountId, count: sql<number>`count(*)::int` })
+    .from(actions)
+    .where(
+      and(
+        eq(actions.type, 'connect'),
+        eq(actions.result, 'success'),
+        gte(actions.executedAt, cutoff),
+        inArray(actions.accountId, accountIds),
+      ),
+    )
+    .groupBy(actions.accountId);
+}
+
+// Outstanding (sent, unaccepted) invites per account, read from the enrollment
+// cursors parked at 'awaiting_connection'.
+//
+// Same source as StoreBackedOutstandingInvites.rehydrate: campaign invites only,
+// so an invite the operator sent by hand is not counted here or by the gate.
+// Ungrouped by campaign on purpose — the ceiling is per account, across all of
+// them.
+export function buildOutstandingInviteCountsQuery(accountIds: string[]) {
+  return db
+    .select({ accountId: targetProgress.accountId, count: sql<number>`count(*)::int` })
+    .from(targetProgress)
+    .where(
+      and(
+        eq(targetProgress.state, 'awaiting_connection'),
+        inArray(targetProgress.accountId, accountIds),
+      ),
+    )
+    .groupBy(targetProgress.accountId);
+}
+
+/** The two invite-only limiter counts, keyed by account id. */
+export interface InviteCounts {
+  /** Successful connects in the trailing 7 days (see buildWeeklyInviteCountsQuery). */
+  weeklyByAccount: ReadonlyMap<string, number>;
+  /** Cursors parked at 'awaiting_connection' (see buildOutstandingInviteCountsQuery). */
+  outstandingByAccount: ReadonlyMap<string, number>;
 }
 
 // Approved-but-unsent outbound messages per account: everything already through
@@ -2094,15 +2175,18 @@ export function buildApprovedMessageCountsQuery() {
 }
 
 /**
- * Fold an account row together with the two derived reads. Pure so the wiring —
- * which account is paused, and how many messages that pause is holding — is
- * assertable without a database.
+ * Fold an account row together with its derived reads. Pure so the wiring —
+ * which account is paused, how many messages that pause is holding, and which
+ * of the three invite limiters is actually stopping connects — is assertable
+ * without a database.
  */
 export function toAccountRow(
   row: { id: string; handle: string; state: string; limits: unknown },
   pausedAccountIds: ReadonlySet<string>,
   queuedByAccount: ReadonlyMap<string, number>,
+  invites: InviteCounts,
 ): AccountRow {
+  const gate = accountGateConfig(row.limits);
   return {
     id: row.id,
     handle: row.handle,
@@ -2112,6 +2196,10 @@ export function toAccountRow(
     limits: (row.limits as AccountLimits | null) ?? defaultLimits(),
     paused: pausedAccountIds.has(row.id),
     queuedMessageCount: queuedByAccount.get(row.id) ?? 0,
+    weeklyInvitesUsed: invites.weeklyByAccount.get(row.id) ?? 0,
+    weeklyInviteCeiling: gate.weeklyInviteCeiling,
+    outstandingInvites: invites.outstandingByAccount.get(row.id) ?? 0,
+    outstandingInviteCeiling: gate.outstandingInviteCeiling,
   };
 }
 
@@ -2137,7 +2225,19 @@ export async function listAccounts(): Promise<AccountRow[]> {
     (await buildApprovedMessageCountsQuery()).map((r) => [r.accountId, r.count]),
   );
 
-  return rows.map((r) => toAccountRow(r, pausedAccountIds, queuedByAccount));
+  // Batched by account id, not one read per card: the invite limiters are shown
+  // on every account row.
+  const accountIds = rows.map((r) => r.id);
+  const [weeklyRows, outstandingRows] = await Promise.all([
+    buildWeeklyInviteCountsQuery(accountIds),
+    buildOutstandingInviteCountsQuery(accountIds),
+  ]);
+  const invites: InviteCounts = {
+    weeklyByAccount: new Map(weeklyRows.map((r) => [r.accountId, r.count])),
+    outstandingByAccount: new Map(outstandingRows.map((r) => [r.accountId, r.count])),
+  };
+
+  return rows.map((r) => toAccountRow(r, pausedAccountIds, queuedByAccount, invites));
 }
 
 /** Thrown when a limits patch fails validation. The route maps this to a 400. */

@@ -1,7 +1,7 @@
 // The volume query is asserted at the SQL level: postgres.js does not open a
 // connection until a query actually runs, and drizzle's .toSQL() only builds
 // the statement, so no live DB is needed here.
-import { nextDay, scheduleDefer } from '@loa/safety';
+import { DEFAULT_CONFIG, nextDay, scheduleDefer } from '@loa/safety';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 process.env.DATABASE_URL ??= 'postgres://loa:loa@localhost:5432/loa';
@@ -31,6 +31,8 @@ let derivePausedAccountIds: typeof import('./queries.js').derivePausedAccountIds
 let buildPauseEventsQuery: typeof import('./queries.js').buildPauseEventsQuery;
 let buildApprovedMessageCountsQuery: typeof import('./queries.js').buildApprovedMessageCountsQuery;
 let toAccountRow: typeof import('./queries.js').toAccountRow;
+let buildWeeklyInviteCountsQuery: typeof import('./queries.js').buildWeeklyInviteCountsQuery;
+let buildOutstandingInviteCountsQuery: typeof import('./queries.js').buildOutstandingInviteCountsQuery;
 let deriveDispatchHealth: typeof import('./queries.js').deriveDispatchHealth;
 let buildDispatchBootEventsQuery: typeof import('./queries.js').buildDispatchBootEventsQuery;
 let db: typeof import('./db.js').db;
@@ -60,6 +62,8 @@ beforeAll(async () => {
     buildPauseEventsQuery,
     buildApprovedMessageCountsQuery,
     toAccountRow,
+    buildWeeklyInviteCountsQuery,
+    buildOutstandingInviteCountsQuery,
     deriveDispatchHealth,
     buildDispatchBootEventsQuery,
     accountGateConfig,
@@ -645,9 +649,12 @@ describe('buildApprovedMessageCountsQuery', () => {
 
 describe('toAccountRow', () => {
   const row = { id: 'acct-1', handle: 'josh', state: 'Active', limits: null };
+  const NO_INVITES = { weeklyByAccount: new Map(), outstandingByAccount: new Map() };
 
   it('marks an account in the paused set as paused and carries its held count', () => {
-    expect(toAccountRow(row, new Set(['acct-1']), new Map([['acct-1', 11]]))).toMatchObject({
+    expect(
+      toAccountRow(row, new Set(['acct-1']), new Map([['acct-1', 11]]), NO_INVITES),
+    ).toMatchObject({
       id: 'acct-1',
       handle: 'josh',
       paused: true,
@@ -656,7 +663,7 @@ describe('toAccountRow', () => {
   });
 
   it('reads an account outside the paused set as sending', () => {
-    expect(toAccountRow(row, new Set(['other']), new Map())).toMatchObject({
+    expect(toAccountRow(row, new Set(['other']), new Map(), NO_INVITES)).toMatchObject({
       paused: false,
       queuedMessageCount: 0,
     });
@@ -673,12 +680,110 @@ describe('toAccountRow', () => {
           ['acct-2', 7],
           ['acct-1', 11],
         ]),
+        NO_INVITES,
       ).queuedMessageCount,
     ).toBe(11);
   });
 
   it('backfills legacy null limits so the caps UI always has values', () => {
-    expect(toAccountRow(row, new Set(), new Map()).limits.caps).toBeDefined();
+    expect(toAccountRow(row, new Set(), new Map(), NO_INVITES).limits.caps).toBeDefined();
+  });
+
+  it('carries both invite limiters with the ceilings the gate checks them against', () => {
+    // The daily cap is not the only limiter on connects. A card that reported
+    // only the cap showed headroom the gate refused, which is indistinguishable
+    // from sends stopping for no reason.
+    expect(
+      toAccountRow(row, new Set(), new Map(), {
+        weeklyByAccount: new Map([['acct-1', 98]]),
+        outstandingByAccount: new Map([['acct-1', 60]]),
+      }),
+    ).toMatchObject({
+      weeklyInvitesUsed: 98,
+      weeklyInviteCeiling: DEFAULT_CONFIG.weeklyInviteCeiling,
+      outstandingInvites: 60,
+      outstandingInviteCeiling: DEFAULT_CONFIG.outstandingInviteCeiling,
+    });
+  });
+
+  it('reads an account with no invite rows as zero used, not as missing', () => {
+    // A rendered 0/100 is a claim of full headroom; undefined would render as
+    // blank and read as "unknown".
+    expect(toAccountRow(row, new Set(), new Map(), NO_INVITES)).toMatchObject({
+      weeklyInvitesUsed: 0,
+      outstandingInvites: 0,
+    });
+  });
+
+  it('does not read another account invite counts as this one', () => {
+    expect(
+      toAccountRow(row, new Set(), new Map(), {
+        weeklyByAccount: new Map([
+          ['acct-2', 99],
+          ['acct-1', 4],
+        ]),
+        outstandingByAccount: new Map([
+          ['acct-2', 480],
+          ['acct-1', 7],
+        ]),
+      }),
+    ).toMatchObject({ weeklyInvitesUsed: 4, outstandingInvites: 7 });
+  });
+
+  it('reports the gate ceilings even for an account with its own caps set', () => {
+    // The ceilings live in the gate's SafetyConfig, not in the account's limits
+    // blob: editing a daily cap must not appear to move either of them.
+    const withCaps = { ...row, limits: { caps: { connect: 5, message: 5 } } };
+    const built = toAccountRow(withCaps, new Set(), new Map(), NO_INVITES);
+    expect(built.weeklyInviteCeiling).toBe(DEFAULT_CONFIG.weeklyInviteCeiling);
+    expect(built.outstandingInviteCeiling).toBe(DEFAULT_CONFIG.outstandingInviteCeiling);
+  });
+});
+
+describe('buildWeeklyInviteCountsQuery', () => {
+  it('counts only successful connects, per account, inside a 7-day window', () => {
+    const now = new Date('2026-07-15T12:00:00.000Z');
+    const { sql, params } = buildWeeklyInviteCountsQuery(['acct-1', 'acct-2'], now).toSQL();
+    expect(sql).toContain('"actions"');
+    expect(sql).toContain('count(*)');
+    expect(sql).toContain('group by');
+    // Both filters bound, not inlined. 'connect' is what makes this the invite
+    // ceiling rather than a count of all outbound activity; 'success' matches the
+    // gate, which does not burn ceiling on an invite LinkedIn never saw.
+    expect(params).toContain('connect');
+    expect(params).toContain('success');
+    // The cutoff is exactly 7 days back from now, matching the gate's rolling
+    // window rather than a calendar week.
+    expect(params).toContain('2026-07-08T12:00:00.000Z');
+    expect(params).toContain('acct-1');
+    expect(params).toContain('acct-2');
+  });
+
+  it('does not limit the count', () => {
+    // A limit would understate the ceiling and offer invites the gate refuses.
+    const { sql } = buildWeeklyInviteCountsQuery(['acct-1']).toSQL();
+    expect(sql).not.toContain('limit');
+  });
+});
+
+describe('buildOutstandingInviteCountsQuery', () => {
+  it('counts awaiting_connection cursors per account', () => {
+    const { sql, params } = buildOutstandingInviteCountsQuery(['acct-1']).toSQL();
+    expect(sql).toContain('"target_progress"');
+    expect(sql).toContain('count(*)');
+    expect(sql).toContain('group by');
+    // The parked-invite state is the whole definition of "outstanding": the same
+    // source StoreBackedOutstandingInvites rehydrates from.
+    expect(params).toContain('awaiting_connection');
+    expect(params).toContain('acct-1');
+  });
+
+  it('is not windowed by time', () => {
+    // An invite nobody accepts is outstanding forever, which is exactly the pile
+    // the ceiling is about. Any window would hide the oldest ones.
+    const { sql } = buildOutstandingInviteCountsQuery(['acct-1']).toSQL();
+    expect(sql).not.toContain('limit');
+    expect(sql).not.toContain('"created_at"');
   });
 });
 
@@ -1091,8 +1196,17 @@ describe('buildReplyActivityQuery', () => {
 describe('projectScheduledSends', () => {
   // Every-day schedule so day assertions don't depend on which weekday the test runs.
   const schedule = { hoursStart: 8, hoursEnd: 20, days: [0, 1, 2, 3, 4, 5, 6] };
+  // The invite ceilings are not what these cases exercise; take the gate's own
+  // values rather than restating numbers this file would have to chase.
+  const ceilings = {
+    weeklyInviteCeiling: DEFAULT_CONFIG.weeklyInviteCeiling,
+    outstandingInviteCeiling: DEFAULT_CONFIG.outstandingInviteCeiling,
+  };
   const configById = new Map([
-    ['acct', { caps: { connect: 20, message: 20 }, enabled: {}, schedule, schedules: {} }],
+    [
+      'acct',
+      { caps: { connect: 20, message: 20 }, enabled: {}, schedule, schedules: {}, ...ceilings },
+    ],
   ]);
   const now = new Date(2026, 6, 14, 12, 0, 0); // local noon, a fixed day
   const backlog = (n: number) =>
@@ -1137,6 +1251,7 @@ describe('projectScheduledSends', () => {
           enabled: {},
           schedule,
           schedules: { message: messageSchedule },
+          ...ceilings,
         },
       ],
     ]);
