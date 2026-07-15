@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api, type ListDetail, type ListMember, type ListSummary } from './api';
 import { type Column, DataTable } from './DataTable';
 
@@ -51,17 +51,16 @@ function ListDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
 
-  function load() {
+  const load = useCallback(() => {
     api
       .getList(id)
       .then(setDetail)
       .catch((e) => setError(String(e)));
-  }
+  }, [id]);
 
   useEffect(() => {
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [load]);
 
   async function remove(m: ListMember) {
     if (!window.confirm(`Remove ${m.name ?? 'this lead'} from the list?`)) return;

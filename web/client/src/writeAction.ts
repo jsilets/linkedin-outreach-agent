@@ -11,8 +11,6 @@ export type WriteOutcome =
   | { phase: 'stale'; notice: string }
   | { phase: 'error'; notice: string };
 
-export type WritePhase = 'idle' | 'working' | WriteOutcome['phase'];
-
 export async function runWriteAction(
   act: () => Promise<unknown>,
   reload: () => Promise<unknown>,

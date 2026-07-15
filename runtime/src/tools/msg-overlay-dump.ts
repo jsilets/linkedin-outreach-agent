@@ -154,7 +154,7 @@ async function main(): Promise<void> {
     // exactly what the fixed runner will use: scope box + send to the overlay
     // that provably links to the target's profile, so a wrong conversation is
     // impossible.
-    const pid = 'ericmccrum';
+    const pid = 'example-profile-id';
     const convo = `.msg-overlay-conversation-bubble:has(a[href*="/in/${pid}/"])`;
     for (const [label, sel] of [
       ['scoped convo', convo],

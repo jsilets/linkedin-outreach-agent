@@ -706,9 +706,9 @@ describe('normalizeConnectionsResponse (modern dash shape)', () => {
     const body = dashConnectionsPayload([
       {
         id: 'AAA',
-        publicId: 'daniel-fanavoll',
-        first: 'Daniel',
-        last: 'Fanavoll',
+        publicId: 'jordan-avery',
+        first: 'Jordan',
+        last: 'Avery',
         headline: 'Head of Ops',
         at: 1_783_697_318_000,
       },
@@ -717,8 +717,8 @@ describe('normalizeConnectionsResponse (modern dash shape)', () => {
     expect(conns).toHaveLength(1);
     expect(conns[0]).toMatchObject({
       entityUrn: 'urn:li:fsd_profile:AAA',
-      profileUrl: 'https://www.linkedin.com/in/daniel-fanavoll/',
-      name: 'Daniel Fanavoll',
+      profileUrl: 'https://www.linkedin.com/in/jordan-avery/',
+      name: 'Jordan Avery',
       headline: 'Head of Ops',
     });
     expect(conns[0]!.connectedAt?.getTime()).toBe(1_783_697_318_000);

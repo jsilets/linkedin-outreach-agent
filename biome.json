@@ -24,12 +24,12 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "style": {
         "noNonNullAssertion": "off"
       },
       "a11y": {
-        "recommended": false,
+        "preset": "none",
         "useButtonType": "error"
       },
       "suspicious": {

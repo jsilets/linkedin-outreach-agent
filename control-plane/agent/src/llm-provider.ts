@@ -14,7 +14,6 @@ import type {
 } from '@loa/shared';
 import { REPLY_INTENTS } from '@loa/shared';
 import type { AnthropicSeam, SeamTool } from './anthropic-seam.js';
-import { AnthropicClientSeam } from './anthropic-seam.js';
 
 const DEFAULT_MODEL = 'claude-fable-5';
 
@@ -116,16 +115,26 @@ export interface ClaudeLLMProviderOptions {
 }
 
 export class ClaudeLLMProvider implements LLMProvider {
-  private readonly seam: AnthropicSeam;
+  private seam?: AnthropicSeam;
+  private readonly apiKey?: string;
   private readonly model: string;
 
   constructor(opts: ClaudeLLMProviderOptions = {}) {
     this.model = opts.model ?? process.env.LOA_LLM_MODEL ?? DEFAULT_MODEL;
-    this.seam = opts.seam ?? new AnthropicClientSeam({ apiKey: opts.apiKey, model: this.model });
+    this.seam = opts.seam;
+    this.apiKey = opts.apiKey;
+  }
+
+  private async getSeam(): Promise<AnthropicSeam> {
+    if (!this.seam) {
+      const { AnthropicClientSeam } = await import('./anthropic-seam.js');
+      this.seam = new AnthropicClientSeam({ apiKey: this.apiKey, model: this.model });
+    }
+    return this.seam;
   }
 
   async personalize(ctx: TargetContext): Promise<Draft> {
-    const res = await this.seam.send({
+    const res = await (await this.getSeam()).send({
       system: `You are drafting outbound LinkedIn openers. ${STYLE_RULES}`,
       user: personalizeUserPrompt(ctx),
       maxTokens: 512,
@@ -137,7 +146,7 @@ export class ClaudeLLMProvider implements LLMProvider {
   }
 
   async classifyReply(msg: Message): Promise<Intent> {
-    const res = await this.seam.send({
+    const res = await (await this.getSeam()).send({
       system:
         'You classify inbound LinkedIn replies into exactly one intent. Always call the record_intent tool.',
       user: `Classify this inbound message.\n\nMessage:\n${msg.body}`,
@@ -157,7 +166,7 @@ export class ClaudeLLMProvider implements LLMProvider {
   }
 
   async draftReply(thread: Thread, intent: Intent): Promise<Draft> {
-    const res = await this.seam.send({
+    const res = await (await this.getSeam()).send({
       system: `You are drafting replies in an ongoing LinkedIn conversation. ${STYLE_RULES}`,
       user: draftReplyUserPrompt(thread, intent),
       maxTokens: 512,

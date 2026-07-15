@@ -205,9 +205,7 @@ describe('message(): truncated recipient names', () => {
   });
 
   it('strips a credential suffix rather than treating it as truncation', async () => {
-    const page = new CardsPage([
-      card('Priya Raman', ['https://www.linkedin.com/in/priya-raman/']),
-    ]);
+    const page = new CardsPage([card('Priya Raman', ['https://www.linkedin.com/in/priya-raman/'])]);
     const res = await message(ctx(page), {
       profileUrl: 'https://www.linkedin.com/in/priya-raman',
       recipientName: 'Priya Raman, P.Eng.',
