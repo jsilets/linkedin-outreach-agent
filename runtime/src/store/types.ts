@@ -43,6 +43,20 @@ export interface ActionStorePort {
    * (e.g. a message whose recipient overlay never matches) is abandoned after a
    * bounded number of attempts instead of retried on every tick forever. */
   countFailedSince(targetId: string, type: string, since: Date): Promise<number>;
+  /**
+   * How one action type is faring for one account over a window: how many
+   * DISTINCT targets it has failed for, and how many times it has succeeded.
+   *
+   * The per-target give-up cap cannot tell "this person cannot be messaged" from
+   * "our selector is broken for everyone" — and under the second it would cancel
+   * every queued lead, five attempts at a time. This is the evidence that tells
+   * them apart: many distinct targets failing with zero successes is us, not them.
+   */
+  laneHealthSince(
+    accountId: string,
+    type: string,
+    since: Date,
+  ): Promise<{ distinctFailedTargets: number; successes: number }>;
   /** Reclaim actions abandoned mid-flight by a crash or restart: rows still
    * 'pending' with no executed_at, created before `olderThan`. Deletes them —
    * freeing the dedup key so the owning step can be re-created and retried — and

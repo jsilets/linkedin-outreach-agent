@@ -927,6 +927,169 @@ describe('DispatchTick pre-draft pass — draft at schedule time, send at due ti
     expect(after.state).toBe('failed');
   });
 
+  // The give-up cap assumes a failing send means an unreachable recipient. That
+  // assumption is safe for one lead and catastrophic for a broken selector: it
+  // would cancel every queued lead, five attempts at a time. When several
+  // DISTINCT targets are failing with nothing succeeding, the fault is ours, so
+  // the lane must hold rather than destroy the queue.
+  it('halts the lane instead of cancelling when the whole send lane is failing', async () => {
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
+    const p = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.target.setStage(TGT, 'connected');
+    await store.sequence.advanceTargetProgress(p.id, {
+      state: 'awaiting_approval',
+      nextStepAt: null,
+    });
+    const req: ActRequest = {
+      type: 'message',
+      accountId: ACCT,
+      targetId: TGT,
+      campaignId: CAMP,
+      payload: 'hi',
+    };
+    const msg = await store.message.create({
+      accountId: ACCT,
+      targetId: TGT,
+      direction: 'outbound',
+      body: 'hi',
+      threadRef: `pending:${ACCT}:${TGT}`,
+      status: 'approved',
+      pendingReq: req as unknown as Json,
+    });
+    // This target is over the cap...
+    for (let i = 0; i < 5; i++) {
+      await store.action.create({
+        accountId: ACCT,
+        targetId: TGT,
+        campaignId: CAMP,
+        type: 'message',
+        scheduledAt: NOW,
+        executedAt: NOW,
+        result: 'failed',
+        dedupKey: `fail-${i}`,
+      });
+    }
+    // ...but so are two OTHERS, and nothing has sent. That is us, not them.
+    for (const other of ['tgt-other-1', 'tgt-other-2']) {
+      await store.action.create({
+        accountId: ACCT,
+        targetId: other,
+        campaignId: CAMP,
+        type: 'message',
+        scheduledAt: NOW,
+        executedAt: NOW,
+        result: 'failed',
+        dedupKey: `fail-${other}`,
+      });
+    }
+
+    const executor = new RecordingExecutor();
+    const events: string[] = [];
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      actions: store.action,
+      gate: makeGate(executor, { kind: 'allow' }),
+      log: {
+        async recordEvent(kind: string) {
+          events.push(kind);
+          return undefined;
+        },
+      },
+    });
+
+    await tick.runTick(NOW);
+
+    // The lead survives: still approved, cursor untouched, ready to send once
+    // the defect is fixed. No live attempt was burned either.
+    expect(executor.calls).toHaveLength(0);
+    expect((await store.message.findById(msg.id))!.status).toBe('approved');
+    const [after] = await store.sequence.listTargetProgress(CAMP);
+    expect(after.state).toBe('awaiting_approval');
+    expect(events).toContain('send_lane_halted');
+    expect(events).not.toContain('approved_send_exhausted');
+  });
+
+  it('still gives up on ONE failing lead while others are sending fine', async () => {
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'message',
+      body: 'hi',
+    });
+    const p = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.target.setStage(TGT, 'connected');
+    await store.sequence.advanceTargetProgress(p.id, {
+      state: 'awaiting_approval',
+      nextStepAt: null,
+    });
+    const req: ActRequest = {
+      type: 'message',
+      accountId: ACCT,
+      targetId: TGT,
+      campaignId: CAMP,
+      payload: 'hi',
+    };
+    await store.message.create({
+      accountId: ACCT,
+      targetId: TGT,
+      direction: 'outbound',
+      body: 'hi',
+      threadRef: `pending:${ACCT}:${TGT}`,
+      status: 'approved',
+      pendingReq: req as unknown as Json,
+    });
+    for (let i = 0; i < 5; i++) {
+      await store.action.create({
+        accountId: ACCT,
+        targetId: TGT,
+        campaignId: CAMP,
+        type: 'message',
+        scheduledAt: NOW,
+        executedAt: NOW,
+        result: 'failed',
+        dedupKey: `fail-${i}`,
+      });
+    }
+    // Other people ARE receiving messages, so the lane is healthy and this lead
+    // really is the problem.
+    await store.action.create({
+      accountId: ACCT,
+      targetId: 'tgt-happy',
+      campaignId: CAMP,
+      type: 'message',
+      scheduledAt: NOW,
+      executedAt: NOW,
+      result: 'success',
+      dedupKey: 'ok-1',
+    });
+
+    const events: string[] = [];
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      actions: store.action,
+      gate: makeGate(new RecordingExecutor(), { kind: 'allow' }),
+      log: {
+        async recordEvent(kind: string) {
+          events.push(kind);
+          return undefined;
+        },
+      },
+    });
+
+    await tick.runTick(NOW);
+
+    expect(events).toContain('approved_send_exhausted');
+    expect(events).not.toContain('send_lane_halted');
+  });
   it('does not pre-draft (or execute early) an upcoming message on an autonomous campaign', async () => {
     // Autonomous executes messages directly: an early step() call would SEND
     // now, so the pre-draft pass must skip it and leave due-time behavior.
