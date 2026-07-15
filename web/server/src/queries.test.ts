@@ -25,6 +25,7 @@ let deriveReplyDetectorHealth: typeof import('./queries.js').deriveReplyDetector
 let buildReplyDetectorBootEventsQuery: typeof import('./queries.js').buildReplyDetectorBootEventsQuery;
 let buildReplyDetectorScanEventsQuery: typeof import('./queries.js').buildReplyDetectorScanEventsQuery;
 let projectScheduledSends: typeof import('./queries.js').projectScheduledSends;
+let accountGateConfig: typeof import('./queries.js').accountGateConfig;
 let deriveMessageTiming: typeof import('./queries.js').deriveMessageTiming;
 let derivePausedAccountIds: typeof import('./queries.js').derivePausedAccountIds;
 let buildPauseEventsQuery: typeof import('./queries.js').buildPauseEventsQuery;
@@ -61,6 +62,7 @@ beforeAll(async () => {
     toAccountRow,
     deriveDispatchHealth,
     buildDispatchBootEventsQuery,
+    accountGateConfig,
   } = await import('./queries.js'));
   ({ db } = await import('./db.js'));
 });
@@ -269,11 +271,19 @@ describe('deriveMessageTiming', () => {
       used?: number;
       state?: string;
       paused?: boolean;
+      enabled?: Partial<Record<'message', boolean>>;
     } = {},
   ) => ({
     now,
     configById: new Map([
-      [acct, { caps: over.caps ?? { message: 20 }, schedule: over.schedule ?? alwaysOpen }],
+      [
+        acct,
+        accountGateConfig({
+          caps: over.caps ?? { message: 20 },
+          schedule: over.schedule ?? alwaysOpen,
+          enabled: over.enabled,
+        }),
+      ],
     ]),
     stateById: new Map([[acct, over.state ?? 'Active']]),
     pausedAccountIds: new Set(over.paused ? [acct] : []),
@@ -361,6 +371,13 @@ describe('deriveMessageTiming', () => {
     expect(deriveMessageTiming(row(), inputs({ state: 'Cooldown' }))).toEqual({
       kind: 'queued_blocked',
       reason: 'cooldown',
+    });
+  });
+
+  it('reads an approved row with messages disabled as blocked', () => {
+    expect(deriveMessageTiming(row(), inputs({ enabled: { message: false } }))).toEqual({
+      kind: 'queued_blocked',
+      reason: 'disabled',
     });
   });
 
@@ -1074,7 +1091,9 @@ describe('buildReplyActivityQuery', () => {
 describe('projectScheduledSends', () => {
   // Every-day schedule so day assertions don't depend on which weekday the test runs.
   const schedule = { hoursStart: 8, hoursEnd: 20, days: [0, 1, 2, 3, 4, 5, 6] };
-  const configById = new Map([['acct', { caps: { connect: 20, message: 20 }, schedule }]]);
+  const configById = new Map([
+    ['acct', { caps: { connect: 20, message: 20 }, enabled: {}, schedule, schedules: {} }],
+  ]);
   const now = new Date(2026, 6, 14, 12, 0, 0); // local noon, a fixed day
   const backlog = (n: number) =>
     Array.from({ length: n }, () => ({
@@ -1106,6 +1125,26 @@ describe('projectScheduledSends', () => {
     expect(out[0]?.getTime()).toBe(future.getTime()); // passed through
     // 20 backlog with a full today budget all land today (null), not pushed by the fixed one.
     expect(out.slice(1).every((x) => x === null)).toBe(true);
+  });
+
+  it('uses the action-specific schedule for the cursor type', () => {
+    const messageSchedule = { hoursStart: 10, hoursEnd: 16, days: [0, 1, 2, 3, 4, 5, 6] };
+    const byAction = new Map([
+      [
+        'acct',
+        {
+          caps: { connect: 0, message: 0 },
+          enabled: {},
+          schedule,
+          schedules: { message: messageSchedule },
+        },
+      ],
+    ]);
+    const [out] = projectScheduledSends(
+      [{ accountId: 'acct', type: 'message', state: 'in_progress', nextStepAt: null }],
+      { now, configById: byAction, usedToday: new Map() },
+    );
+    expect(out?.getHours()).toBe(10);
   });
 
   it('leaves awaiting_approval cursors on their own next_step_at (never laddered)', () => {

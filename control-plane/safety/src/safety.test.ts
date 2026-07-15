@@ -179,6 +179,18 @@ describe('budget by state', () => {
     expect(gate.budget(account({ state: 'Throttled', limits: { caps } })).caps.connect).toBe(4);
   });
 
+  it('operator action toggles disable only that action type', () => {
+    const acct = account({
+      state: 'Active',
+      limits: { caps: DEFAULT_CONFIG.active, enabled: { connect: false, message: true } },
+    });
+    expect(gate.canAct(acct, action('connect'))).toEqual({
+      kind: 'deny',
+      reason: 'action connect disabled by operator',
+    });
+    expect(gate.canAct(acct, action('message'))).toEqual({ kind: 'allow' });
+  });
+
   it('resets used when the stored budget is from another day', () => {
     const stale: DailyBudget = { ...budget('Active', { connect: 5 }), date: '2020-01-01' };
     const b = gate.budget(account({ state: 'Active', budget: stale }));
@@ -637,5 +649,30 @@ describe('working schedule (hours + days)', () => {
     const d = gate.canAct(acct, action('message'));
     expect(d.kind).toBe('defer');
     if (d.kind === 'defer') expect(d.until.getDay()).toBe(0); // Sunday
+  });
+
+  it('uses an action-specific schedule without closing other action types', () => {
+    const satClock: Clock = { now: () => at(2026, 6, 11, 12) };
+    const gate = new DefaultSafetyGate({ allowMissingCounters: true, clock: satClock });
+    const caps = {
+      connect: 20,
+      message: 20,
+      view_profile: 60,
+      follow: 20,
+      withdraw_invite: 50,
+      react: 30,
+    };
+    const acct = account({
+      state: 'Active',
+      limits: {
+        caps,
+        schedule: { hoursStart: 8, hoursEnd: 20, days: [0, 1, 2, 3, 4, 5, 6] },
+        schedules: { message: satOff },
+      },
+    });
+    expect(gate.canAct(acct, action('connect'))).toEqual({ kind: 'allow' });
+    const d = gate.canAct(acct, action('message'));
+    expect(d.kind).toBe('defer');
+    if (d.kind === 'defer') expect(d.until.getDay()).toBe(0);
   });
 });

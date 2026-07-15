@@ -65,16 +65,18 @@ function calendarDayDelta(iso: string): number {
 
 /** Why a queue is frozen, phrased so it cannot be read as a wait that ends on its
  * own. Each of these clears only when a human resumes or unblocks the account. */
-const BLOCKED_REASON_TEXT: Record<'paused' | 'restricted' | 'cooldown', string> = {
+const BLOCKED_REASON_TEXT: Record<'paused' | 'restricted' | 'cooldown' | 'disabled', string> = {
   paused: 'sending is paused for this account',
   restricted: 'account restricted — nothing will send',
   cooldown: 'account in cooldown — nothing will send',
+  disabled: 'messages are turned off for this account',
 };
 
-const BLOCKED_REASON_TERSE: Record<'paused' | 'restricted' | 'cooldown', string> = {
+const BLOCKED_REASON_TERSE: Record<'paused' | 'restricted' | 'cooldown' | 'disabled', string> = {
   paused: 'Paused',
   restricted: 'Restricted',
   cooldown: 'Cooldown',
+  disabled: 'Messages off',
 };
 
 /** The operator's question is "if it's sent, how long ago; if it's queued, when

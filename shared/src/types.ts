@@ -167,13 +167,16 @@ export const DEFAULT_SCHEDULE: AccountSchedule = {
  * Operator-set automation limits for one account. Kept separate from the daily
  * budget (which tracks today's counters) so editing a limit never collides with
  * usage accounting. `caps` is the per-action-type daily ceiling the SafetyGate
- * enforces. A cap of 0 disables that action entirely. `schedule` is the optional
- * per-account working-hours/days window; when absent the gate uses its global
- * config default.
+ * enforces. A cap of 0 disables that action entirely. `enabled` is an explicit
+ * operator toggle that preserves the cap while stopping a type. `schedule` is
+ * the legacy account-wide working-hours/days window; `schedules` can override it
+ * for a specific action type.
  */
 export interface AccountLimits {
   caps: Record<ActionType, number>;
+  enabled?: Partial<Record<ActionType, boolean>>;
   schedule?: AccountSchedule;
+  schedules?: Partial<Record<ActionType, AccountSchedule>>;
 }
 
 /**

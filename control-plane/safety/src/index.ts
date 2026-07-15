@@ -11,6 +11,7 @@ export type {
   WeeklyInviteCounter,
 } from './safety-gate.js';
 export {
+  actionEnabled,
   activeHoursDefer,
   DefaultSafetyGate,
   effectiveSchedule,

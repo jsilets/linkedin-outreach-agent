@@ -1,22 +1,16 @@
-import { useCallback, useEffect, useId, useState } from 'react';
-import {
-  ACTION_TYPES,
-  type Account,
-  type AccountSchedule,
-  type ActionType,
-  api,
-  DEFAULT_SCHEDULE,
-} from './api';
-import { runWriteAction, type WriteOutcome, type WritePhase } from './writeAction';
+import { useCallback, useEffect, useState } from 'react';
+import { type Account, type AccountSchedule, type ActionType, api, DEFAULT_SCHEDULE } from './api';
 
-// Human-readable labels for the per-action daily caps.
-const CAP_LABELS: Record<ActionType, string> = {
-  connect: 'Connection requests',
+const OUTBOUND_ACTIONS = ['connect', 'message'] as const satisfies readonly ActionType[];
+
+const ACTION_LABELS: Record<(typeof OUTBOUND_ACTIONS)[number], string> = {
+  connect: 'Invites',
   message: 'Messages',
-  view_profile: 'Profile views',
-  follow: 'Follows',
-  withdraw_invite: 'Withdraw invites',
-  react: 'Reactions',
+};
+
+const ACTION_NOUNS: Record<(typeof OUTBOUND_ACTIONS)[number], string> = {
+  connect: 'invites',
+  message: 'messages',
 };
 
 // Weekday initials, index 0=Sunday … 6=Saturday (JS Date.getDay order).
@@ -47,31 +41,25 @@ function sameSchedule(a: AccountSchedule, b: AccountSchedule): boolean {
   );
 }
 
-// Sentence naming what a pause is actually holding back. An active account stays
-// quiet: there is nothing for the operator to act on.
-export function pauseStatusCopy(paused: boolean, queuedMessageCount: number): string {
-  if (!paused) return 'Sending is active.';
-  if (queuedMessageCount === 0) return 'Sending is paused. Nothing is approved and waiting.';
-  const queued =
-    queuedMessageCount === 1
-      ? '1 approved message is waiting'
-      : `${queuedMessageCount} approved messages are waiting`;
-  return `Sending is paused. ${queued} and will not go out.`;
+function actionEnabled(account: Account, type: ActionType): boolean {
+  return account.limits.enabled?.[type] ?? true;
 }
 
-// The confirm shown before resume, and only before resume: it releases real
-// messages to real people and cannot be undone, so it names the real count.
-// Pacing quoted from the gate's own defaults (minActionGapMs 4m + up to 6m
-// jitter, see control-plane/safety/src/config.ts) — it is meaningless for a
-// single message, so only a plural queue gets the rate.
-export function resumeConfirmCopy(queuedMessageCount: number): string {
-  if (queuedMessageCount === 0) {
-    return 'Resume sending? Nothing is approved right now, but anything approved from here on will go out.';
-  }
-  if (queuedMessageCount === 1) {
-    return 'Resume sending? 1 approved message will begin going out.';
-  }
-  return `Resume sending? ${queuedMessageCount} approved messages will begin going out, roughly one every 4-10 minutes.`;
+function actionSchedule(account: Account, type: ActionType): AccountSchedule {
+  return account.limits.schedules?.[type] ?? account.limits.schedule ?? DEFAULT_SCHEDULE;
+}
+
+function outboundSchedules(account: Account): Partial<Record<ActionType, AccountSchedule>> {
+  return {
+    connect: actionSchedule(account, 'connect'),
+    message: actionSchedule(account, 'message'),
+  };
+}
+
+function scheduleSummary(schedule: AccountSchedule): string {
+  return `${DAY_LABELS.filter((_, day) => schedule.days.includes(day)).join(', ')} | ${hourLabel(
+    schedule.hoursStart,
+  )} to ${hourLabel(schedule.hoursEnd)}`;
 }
 
 export function AccountsView() {
@@ -186,7 +174,7 @@ export function AccountsView() {
         )}
         <div className="grid" style={{ gap: 0, marginTop: 'var(--space-2)' }}>
           {accounts.map((a) => (
-            <AccountCard key={a.id} account={a} reload={reloadAccounts} />
+            <AccountCard key={a.id} account={a} />
           ))}
         </div>
       </div>
@@ -194,92 +182,67 @@ export function AccountsView() {
   );
 }
 
-/**
- * The operator pause: the hardest stop in the system. Paused, the SafetyGate
- * denies every outbound action, so nothing approved can leave.
- *
- * Pausing is instant — it is the safe direction, and a confirm between an
- * operator and "stop sending" is a confirm in the wrong place. Resuming is not
- * undoable: it hands the queue to the sender and those messages reach real
- * people, so it confirms first and names the count.
- */
-function PauseControl({ account, reload }: { account: Account; reload: () => Promise<unknown> }) {
-  const [phase, setPhase] = useState<WritePhase>('idle');
-  const [notice, setNotice] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
-  const labelId = useId();
-  const paused = account.paused;
-  // 'stale' means the runtime accepted the write but the re-read failed, so what
-  // the switch shows is no longer known to be true: lock rather than invite a
-  // second click that would be a second real write.
-  const busy = phase === 'working' || phase === 'stale';
-
-  async function run(act: () => Promise<unknown>, failure: string) {
-    setPhase('working');
-    setNotice(null);
-    const outcome: WriteOutcome = await runWriteAction(act, reload, {
-      failure,
-      stale:
-        'Done, but this page could not refresh. Do not retry — reload to see the current state.',
-    });
-    setPhase(outcome.phase);
-    setNotice(outcome.phase === 'done' ? null : outcome.notice);
-  }
-
-  function toggle() {
-    if (!paused) {
-      run(() => api.pauseAccount(account.id), 'Could not pause sending.');
-      return;
-    }
-    setConfirming(true);
-  }
-
-  function resume() {
-    setConfirming(false);
-    run(() => api.resumeAccount(account.id), 'Could not resume sending.');
-  }
-
+function ScheduleEditor({
+  schedule,
+  label,
+  onToggleDay,
+  onSetHour,
+}: {
+  schedule: AccountSchedule;
+  label: string;
+  onToggleDay: (day: number) => void;
+  onSetHour: (which: 'hoursStart' | 'hoursEnd', value: string) => void;
+}) {
+  const hoursValid = schedule.hoursEnd > schedule.hoursStart;
   return (
-    <div className="pause-control">
-      <div className="pause-switch">
-        <span className="pause-switch-name" id={labelId}>
-          Sending
-        </span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={!paused}
-          aria-labelledby={labelId}
-          className={`switch${paused ? '' : ' on'}`}
-          disabled={busy}
-          onClick={toggle}
-        >
-          <span className="switch-track" aria-hidden="true">
-            <span className="switch-thumb" />
-          </span>
-          <span className="switch-state">{paused ? 'Paused' : 'Active'}</span>
-        </button>
+    <div className="schedule">
+      <div className="schedule-days" role="group" aria-label={`${label} days`}>
+        {DAY_LABELS.map((dayLabel, day) => {
+          const on = schedule.days.includes(day);
+          return (
+            <button
+              // biome-ignore lint/suspicious/noArrayIndexKey: DAY_LABELS is a static, fixed-order list; `day` is the stable day-of-week number.
+              key={day}
+              type="button"
+              className={`day-toggle${on ? ' on' : ''}`}
+              aria-pressed={on}
+              onClick={() => onToggleDay(day)}
+            >
+              {dayLabel}
+            </button>
+          );
+        })}
       </div>
-
-      <p className={paused ? 'pause-note held' : 'pause-note'}>
-        {pauseStatusCopy(paused, account.queuedMessageCount)}
-      </p>
-
-      {confirming && (
-        <div className="pause-confirm" role="group" aria-label="Confirm resume">
-          <p>{resumeConfirmCopy(account.queuedMessageCount)}</p>
-          <div className="toolbar" style={{ margin: 0 }}>
-            <button type="button" className="btn" onClick={resume} disabled={busy}>
-              Resume sending
-            </button>
-            <button type="button" className="btn ghost" onClick={() => setConfirming(false)}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {notice && <div className="error">{notice}</div>}
+      <div className="schedule-hours">
+        <span className="field-label">Window</span>
+        <select
+          className="hour-select"
+          value={schedule.hoursStart}
+          onChange={(e) => onSetHour('hoursStart', e.target.value)}
+          aria-label={`${label} start hour`}
+        >
+          {START_HOURS.map((h) => (
+            <option key={h} value={h}>
+              {hourLabel(h)}
+            </option>
+          ))}
+        </select>
+        <span className="schedule-dash">to</span>
+        <select
+          className="hour-select"
+          value={schedule.hoursEnd}
+          onChange={(e) => onSetHour('hoursEnd', e.target.value)}
+          aria-label={`${label} end hour`}
+        >
+          {END_HOURS.filter((h) => h > schedule.hoursStart).map((h) => (
+            <option key={h} value={h}>
+              {hourLabel(h)}
+            </option>
+          ))}
+        </select>
+        <span className="muted schedule-tz">{LOCAL_TZ}</span>
+      </div>
+      {!hoursValid && <div className="error">End hour must be after start hour.</div>}
     </div>
   );
 }
@@ -287,19 +250,37 @@ function PauseControl({ account, reload }: { account: Account; reload: () => Pro
 // One account's identity plus its editable automation limits: per-action daily
 // caps AND the working-hours/days window the SafetyGate enforces. One Save
 // persists both together.
-function AccountCard({ account, reload }: { account: Account; reload: () => Promise<unknown> }) {
-  const [caps, setCaps] = useState<Record<ActionType, number>>(account.limits.caps);
-  const [schedule, setSchedule] = useState<AccountSchedule>(
-    account.limits.schedule ?? DEFAULT_SCHEDULE,
+function AccountCard({ account }: { account: Account }) {
+  const [savedLimits, setSavedLimits] = useState(account.limits);
+  const savedAccount = { ...account, limits: savedLimits };
+  const [caps, setCaps] = useState<Record<ActionType, number>>(savedLimits.caps);
+  const [enabled, setEnabled] = useState<Partial<Record<ActionType, boolean>>>(
+    savedLimits.enabled ?? {},
+  );
+  const [schedules, setSchedules] = useState<Partial<Record<ActionType, AccountSchedule>>>(
+    outboundSchedules(savedAccount),
   );
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const savedSchedule = account.limits.schedule ?? DEFAULT_SCHEDULE;
+  useEffect(() => {
+    setSavedLimits(account.limits);
+    setCaps(account.limits.caps);
+    setEnabled(account.limits.enabled ?? {});
+    setSchedules(outboundSchedules(account));
+  }, [account]);
+
   const dirty =
-    ACTION_TYPES.some((t) => caps[t] !== account.limits.caps[t]) ||
-    !sameSchedule(schedule, savedSchedule);
+    OUTBOUND_ACTIONS.some((t) => caps[t] !== savedLimits.caps[t]) ||
+    OUTBOUND_ACTIONS.some((t) => (enabled[t] ?? true) !== actionEnabled(savedAccount, t)) ||
+    OUTBOUND_ACTIONS.some(
+      (t) =>
+        !sameSchedule(
+          schedules[t] ?? actionSchedule(savedAccount, t),
+          actionSchedule(savedAccount, t),
+        ),
+    );
 
   function setCap(type: ActionType, value: string) {
     const n = value === '' ? 0 : Math.max(0, Math.floor(Number(value)));
@@ -307,42 +288,72 @@ function AccountCard({ account, reload }: { account: Account; reload: () => Prom
     setSaved(false);
   }
 
-  function toggleDay(day: number) {
-    setSchedule((prev) => {
-      const on = prev.days.includes(day);
-      // Never let the last active day be removed — an empty set means "never
-      // send", which the server rejects anyway.
-      if (on && prev.days.length === 1) return prev;
-      const days = on ? prev.days.filter((d) => d !== day) : [...prev.days, day];
-      days.sort((a, b) => a - b);
-      return { ...prev, days };
-    });
+  function toggleScheduleDay(prev: AccountSchedule, day: number): AccountSchedule {
+    const on = prev.days.includes(day);
+    // Never let the last active day be removed — an empty set means "never
+    // send", which the server rejects anyway.
+    if (on && prev.days.length === 1) return prev;
+    const days = on ? prev.days.filter((d) => d !== day) : [...prev.days, day];
+    days.sort((a, b) => a - b);
+    return { ...prev, days };
+  }
+
+  function setScheduleHour(
+    prev: AccountSchedule,
+    which: 'hoursStart' | 'hoursEnd',
+    n: number,
+  ): AccountSchedule {
+    // Keep the range valid: nudging the start past the end drags the end with
+    // it, so an invalid window can never be selected.
+    if (which === 'hoursStart') {
+      return { ...prev, hoursStart: n, hoursEnd: Math.max(prev.hoursEnd, n + 1) };
+    }
+    return { ...prev, hoursEnd: n };
+  }
+
+  function toggleEnabled(type: ActionType) {
+    setEnabled((prev) => ({ ...prev, [type]: !(prev[type] ?? true) }));
     setSaved(false);
   }
 
-  function setHour(which: 'hoursStart' | 'hoursEnd', value: string) {
+  function toggleActionDay(type: ActionType, day: number) {
+    setSchedules((prev) => ({
+      ...prev,
+      [type]: toggleScheduleDay(prev[type] ?? actionSchedule(savedAccount, type), day),
+    }));
+    setSaved(false);
+  }
+
+  function setActionHour(type: ActionType, which: 'hoursStart' | 'hoursEnd', value: string) {
     const n = Math.max(0, Math.min(24, Math.floor(Number(value) || 0)));
-    setSchedule((prev) => {
-      // Keep the range valid: nudging the start past the end drags the end with
-      // it, so an invalid window can never be selected.
-      if (which === 'hoursStart') {
-        return { ...prev, hoursStart: n, hoursEnd: Math.max(prev.hoursEnd, n + 1) };
-      }
-      return { ...prev, hoursEnd: n };
-    });
+    setSchedules((prev) => ({
+      ...prev,
+      [type]: setScheduleHour(prev[type] ?? actionSchedule(savedAccount, type), which, n),
+    }));
     setSaved(false);
   }
 
-  const hoursValid = schedule.hoursEnd > schedule.hoursStart;
+  const hoursValid = OUTBOUND_ACTIONS.every((t) => {
+    const s = schedules[t] ?? actionSchedule(savedAccount, t);
+    return s.hoursEnd > s.hoursStart;
+  });
+
+  const activeCount = OUTBOUND_ACTIONS.filter((t) => enabled[t] ?? true).length;
 
   async function save() {
     setSaving(true);
     setError(null);
     setSaved(false);
     try {
-      const limits = await api.updateAccountLimits(account.id, caps, schedule);
+      const outbound = {
+        connect: schedules.connect ?? actionSchedule(savedAccount, 'connect'),
+        message: schedules.message ?? actionSchedule(savedAccount, 'message'),
+      };
+      const limits = await api.updateAccountLimits(account.id, caps, undefined, enabled, outbound);
+      setSavedLimits(limits);
       setCaps(limits.caps);
-      if (limits.schedule) setSchedule(limits.schedule);
+      setEnabled(limits.enabled ?? {});
+      setSchedules(outboundSchedules({ ...account, limits }));
       setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed.');
@@ -353,89 +364,66 @@ function AccountCard({ account, reload }: { account: Account; reload: () => Prom
 
   return (
     <div className="subrow">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-        <strong>{account.handle}</strong>
-        <span className="muted">{account.state}</span>
-      </div>
-
-      <PauseControl account={account} reload={reload} />
-
-      <div style={{ marginTop: 6 }}>
-        <label className="muted">Daily limits (max actions per day, 0 disables)</label>
-      </div>
-      <div
-        style={{
-          marginTop: 8,
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-          gap: 10,
-        }}
-      >
-        {ACTION_TYPES.map((t) => (
-          <div key={t}>
-            <label>{CAP_LABELS[t]}</label>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={caps[t]}
-              onChange={(e) => setCap(t, e.target.value)}
-            />
-          </div>
-        ))}
-      </div>
-
-      <div style={{ marginTop: 'var(--space-4)' }}>
-        <label className="muted">Working schedule (the account only acts inside this window)</label>
-      </div>
-      <div className="schedule">
-        <div className="schedule-days" role="group" aria-label="Working days">
-          {DAY_LABELS.map((label, day) => {
-            const on = schedule.days.includes(day);
-            return (
-              <button
-                // biome-ignore lint/suspicious/noArrayIndexKey: DAY_LABELS is a static, fixed-order list; `day` is the stable day-of-week number.
-                key={day}
-                type="button"
-                className={`day-toggle${on ? ' on' : ''}`}
-                aria-pressed={on}
-                onClick={() => toggleDay(day)}
-              >
-                {label}
-              </button>
-            );
-          })}
+      <div className="account-row-header">
+        <div>
+          <strong>{account.handle}</strong>
+          <span className="account-state">{account.state}</span>
         </div>
-        <div className="schedule-hours">
-          <span className="muted">Active hours</span>
-          <select
-            className="hour-select"
-            value={schedule.hoursStart}
-            onChange={(e) => setHour('hoursStart', e.target.value)}
-            aria-label="Start hour"
-          >
-            {START_HOURS.map((h) => (
-              <option key={h} value={h}>
-                {hourLabel(h)}
-              </option>
-            ))}
-          </select>
-          <span className="schedule-dash">to</span>
-          <select
-            className="hour-select"
-            value={schedule.hoursEnd}
-            onChange={(e) => setHour('hoursEnd', e.target.value)}
-            aria-label="End hour"
-          >
-            {END_HOURS.filter((h) => h > schedule.hoursStart).map((h) => (
-              <option key={h} value={h}>
-                {hourLabel(h)}
-              </option>
-            ))}
-          </select>
-          <span className="muted schedule-tz">{LOCAL_TZ}</span>
-        </div>
-        {!hoursValid && <div className="error">End hour must be after start hour.</div>}
+        <span className="account-summary">
+          {activeCount} of {OUTBOUND_ACTIONS.length} gates active
+        </span>
+      </div>
+
+      <div className="outbound-controls">
+        {OUTBOUND_ACTIONS.map((type) => {
+          const on = enabled[type] ?? true;
+          const label = ACTION_LABELS[type];
+          const actionSched = schedules[type] ?? actionSchedule(savedAccount, type);
+          return (
+            <section key={type} className="outbound-control" aria-label={`${label} settings`}>
+              <div className="outbound-control-head">
+                <div>
+                  <h3>{label}</h3>
+                  <p>{on ? scheduleSummary(actionSched) : 'Paused at the gate'}</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={on}
+                  className={`switch compact${on ? ' on' : ''}`}
+                  onClick={() => toggleEnabled(type)}
+                >
+                  <span className="switch-track" aria-hidden="true">
+                    <span className="switch-thumb" />
+                  </span>
+                  <span className="switch-state">{on ? 'Active' : 'Off'}</span>
+                </button>
+              </div>
+
+              <div className="outbound-control-body">
+                <label className="limit-field">
+                  <span className="field-label">Daily cap</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={caps[type]}
+                    onChange={(e) => setCap(type, e.target.value)}
+                    aria-label={`${label} daily cap`}
+                  />
+                  <span className="limit-field-unit">{ACTION_NOUNS[type]} / day</span>
+                </label>
+
+                <ScheduleEditor
+                  schedule={actionSched}
+                  label={label}
+                  onToggleDay={(day) => toggleActionDay(type, day)}
+                  onSetHour={(which, value) => setActionHour(type, which, value)}
+                />
+              </div>
+            </section>
+          );
+        })}
       </div>
 
       <div className="toolbar" style={{ marginTop: 'var(--space-3)' }}>

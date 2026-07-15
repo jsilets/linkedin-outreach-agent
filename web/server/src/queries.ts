@@ -773,7 +773,7 @@ export type MessageTiming =
   /** The gate denies this account outright, so no tick will ever pick the row up.
    * Carries NO timestamp: none of these clear on a schedule, they clear when a
    * human resumes the account or lifts the state. There is no instant to name. */
-  | { kind: 'queued_blocked'; reason: 'paused' | 'restricted' | 'cooldown' }
+  | { kind: 'queued_blocked'; reason: 'paused' | 'restricted' | 'cooldown' | 'disabled' }
   /** readyAt null = eligible to send the moment it is approved. */
   | { kind: 'awaiting_approval'; readyAt: string | null };
 
@@ -835,7 +835,9 @@ type InboxRow = {
 /** Per-account daily caps and working window. */
 export interface AccountGateConfig {
   caps: Record<string, number>;
+  enabled: Partial<Record<ActionType, boolean>>;
   schedule: AccountSchedule;
+  schedules: Partial<Record<ActionType, AccountSchedule>>;
 }
 
 /**
@@ -846,8 +848,26 @@ export interface AccountGateConfig {
  */
 export function accountGateConfig(limits: unknown): AccountGateConfig {
   const lim = (limits ?? {}) as Partial<AccountLimits>;
-  const resolved: AccountLimits = { caps: lim.caps ?? DEFAULT_CAPS, schedule: lim.schedule };
-  return { caps: resolved.caps, schedule: effectiveSchedule({ limits: resolved }, DEFAULT_CONFIG) };
+  const resolved: AccountLimits = {
+    caps: { ...DEFAULT_CAPS, ...(lim.caps ?? {}) },
+    enabled: lim.enabled,
+    schedule: lim.schedule,
+    schedules: lim.schedules,
+  };
+  return {
+    caps: resolved.caps,
+    enabled: resolved.enabled ?? {},
+    schedule: effectiveSchedule({ limits: resolved }, DEFAULT_CONFIG),
+    schedules: resolved.schedules ?? {},
+  };
+}
+
+function actionSchedule(cfg: AccountGateConfig, type: ActionType): AccountSchedule {
+  return cfg.schedules[type] ?? cfg.schedule;
+}
+
+function gateActionEnabled(cfg: AccountGateConfig, type: ActionType): boolean {
+  return cfg.enabled[type] ?? true;
 }
 
 const DEFAULT_GATE_CONFIG = accountGateConfig(null);
@@ -1027,11 +1047,12 @@ export function deriveMessageTiming(row: TimingRow, inputs: MessageTimingInputs)
     if (blocked) return { kind: 'queued_blocked', reason: blocked };
 
     const cfg = inputs.configById.get(row.accountId) ?? DEFAULT_GATE_CONFIG;
+    if (!gateActionEnabled(cfg, 'message')) return { kind: 'queued_blocked', reason: 'disabled' };
     const cap = cfg.caps.message ?? DEFAULT_CAPS.message;
     const used = inputs.messagesUsedToday.get(row.accountId) ?? 0;
     if (used >= cap) return { kind: 'queued_capped', at: nextDay(inputs.now).toISOString() };
 
-    const windowDefer = scheduleDefer(inputs.now, cfg.schedule);
+    const windowDefer = scheduleDefer(inputs.now, actionSchedule(cfg, 'message'));
     if (windowDefer) return { kind: 'queued_window', at: windowDefer.toISOString() };
 
     // Deliberately no ETA. What remains between here and the wire is the gate's
@@ -1617,6 +1638,7 @@ class DaySlotter {
     this.occ.set(k, (this.occ.get(k) ?? 0) + 1);
   }
   next(): Date | null {
+    if (this.cap <= 0) return projWindowStart(this.now, 7 * PROJ_DAY_SECONDS, this.schedule);
     for (let day = 0; ; day += 1) {
       const at =
         day === 0 ? null : projWindowStart(this.now, day * PROJ_DAY_SECONDS, this.schedule);
@@ -1640,7 +1662,7 @@ export interface ProjectableCursor {
 export interface ProjectInputs {
   now: Date;
   /** Per-account caps + working-hours schedule. */
-  configById: Map<string, { caps: Record<string, number>; schedule: AccountSchedule }>;
+  configById: Map<string, AccountGateConfig>;
   /** Already-sent-today count per `${accountId}:${type}`, seeded onto day 0. */
   usedToday: Map<string, number>;
 }
@@ -1683,8 +1705,12 @@ export function projectScheduledSends(
     let s = slotters.get(key);
     if (!s) {
       const cfg = configById.get(acct);
-      const cap = cfg?.caps[type] ?? DEFAULT_CAPS[type as ActionType] ?? 20;
-      const schedule = cfg?.schedule ?? DEFAULT_SCHEDULE;
+      const actionType = type as ActionType;
+      const cap =
+        cfg && !gateActionEnabled(cfg, actionType)
+          ? 0
+          : (cfg?.caps[type] ?? DEFAULT_CAPS[actionType] ?? 20);
+      const schedule = cfg ? actionSchedule(cfg, actionType) : DEFAULT_SCHEDULE;
       s = new DaySlotter(now, cap, schedule, seedByKey.get(key) ?? []);
       slotters.set(key, s);
     }
@@ -2138,6 +2164,27 @@ function validateCaps(input: unknown): Record<ActionType, number> {
   return out;
 }
 
+function validateEnabled(input: unknown, fallback: Partial<Record<ActionType, boolean>> = {}) {
+  if (input === undefined) return fallback;
+  if (typeof input !== 'object' || input === null) {
+    throw new LimitsError('enabled must be an object of action -> boolean.');
+  }
+  const raw = input as Record<string, unknown>;
+  for (const key of Object.keys(raw)) {
+    if (!(ACTION_TYPES as readonly string[]).includes(key)) {
+      throw new LimitsError(`unknown enabled action: ${key}.`);
+    }
+    if (typeof raw[key] !== 'boolean') {
+      throw new LimitsError(`enabled flag for ${key} must be a boolean.`);
+    }
+  }
+  const out: Partial<Record<ActionType, boolean>> = { ...fallback };
+  for (const type of ACTION_TYPES) {
+    if (raw[type] !== undefined) out[type] = raw[type] as boolean;
+  }
+  return out;
+}
+
 /**
  * Coerce arbitrary input into a valid schedule: an 8am-8pm-style local-hour
  * window and a set of active weekdays (0=Sun..6=Sat). Rejects out-of-range
@@ -2173,6 +2220,27 @@ function validateSchedule(input: unknown): AccountSchedule {
   return { hoursStart: start, hoursEnd: end, days };
 }
 
+function validateSchedules(
+  input: unknown,
+  fallback: Partial<Record<ActionType, AccountSchedule>> = {},
+): Partial<Record<ActionType, AccountSchedule>> {
+  if (input === undefined) return fallback;
+  if (typeof input !== 'object' || input === null) {
+    throw new LimitsError('schedules must be an object of action -> schedule.');
+  }
+  const raw = input as Record<string, unknown>;
+  for (const key of Object.keys(raw)) {
+    if (!(ACTION_TYPES as readonly string[]).includes(key)) {
+      throw new LimitsError(`unknown schedule action: ${key}.`);
+    }
+  }
+  const out: Partial<Record<ActionType, AccountSchedule>> = { ...fallback };
+  for (const type of ACTION_TYPES) {
+    if (raw[type] !== undefined) out[type] = validateSchedule(raw[type]);
+  }
+  return out;
+}
+
 /** Patch one account's editable automation limits: daily caps and, when
  * provided, the working-hours/days schedule. An omitted schedule is left
  * unchanged; passing one replaces it wholesale. */
@@ -2180,6 +2248,8 @@ export async function updateAccountLimits(
   accountId: string,
   caps: unknown,
   schedule?: unknown,
+  enabled?: unknown,
+  schedules?: unknown,
 ): Promise<AccountLimits> {
   const [existing] = await db
     .select({ limits: accounts.limits })
@@ -2190,7 +2260,11 @@ export async function updateAccountLimits(
 
   const validated: AccountLimits = { caps: validateCaps(caps) };
   const nextSchedule = schedule !== undefined ? validateSchedule(schedule) : prev.schedule;
+  const nextEnabled = validateEnabled(enabled, prev.enabled);
+  const nextSchedules = validateSchedules(schedules, prev.schedules);
+  if (Object.keys(nextEnabled).length > 0) validated.enabled = nextEnabled;
   if (nextSchedule) validated.schedule = nextSchedule;
+  if (Object.keys(nextSchedules).length > 0) validated.schedules = nextSchedules;
 
   const [row] = await db
     .update(accounts)

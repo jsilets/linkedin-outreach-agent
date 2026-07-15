@@ -298,7 +298,13 @@ api.post('/accounts/link', async (req, res, next) => {
 api.patch('/accounts/:id/limits', async (req, res, next) => {
   try {
     const body = req.body ?? {};
-    const limits = await updateAccountLimits(req.params.id, body.caps, body.schedule);
+    const limits = await updateAccountLimits(
+      req.params.id,
+      body.caps,
+      body.schedule,
+      body.enabled,
+      body.schedules,
+    );
     res.json({ ok: true, limits });
   } catch (err) {
     if (err instanceof LimitsError) {
