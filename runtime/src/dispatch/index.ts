@@ -23,7 +23,7 @@ export interface MakeDispatchTickDeps {
   /** Messages, so the tick sends human-approved drafts when the window opens. */
   messages: MessageRepoPort;
   /** Action failure counter behind the send give-up cap. */
-  actions?: Pick<ActionStorePort, 'countFailedSince'>;
+  actions?: Pick<ActionStorePort, 'countFailedSince' | 'laneHealthSince'>;
   /** Cross-campaign suppression check (person said Stop). */
   suppression?: { isSuppressed(targetId: string): Promise<boolean> };
   /** Send-time reply probe (live inbox); omitted in fake mode. */

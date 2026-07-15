@@ -25,9 +25,20 @@ import {
   runToStop,
 } from '@loa/agent';
 import type { ExecutorPort as McpExecutorPort, ObservePort, Ports } from '@loa/mcp';
-import { DefaultSafetyGate, type SafetyConfig } from '@loa/safety';
-import type { Account, AccountSchedule, Campaign, LLMProvider, Target } from '@loa/shared';
-import { DEFAULT_SCHEDULE } from '@loa/shared';
+import {
+  DEFAULT_CONFIG,
+  DefaultSafetyGate,
+  effectiveSchedule,
+  type SafetyConfig,
+} from '@loa/safety';
+import type {
+  Account,
+  AccountSchedule,
+  ActionType,
+  Campaign,
+  LLMProvider,
+  Target,
+} from '@loa/shared';
 import {
   AccountAdminAdapter,
   ApprovalAdapter,
@@ -260,9 +271,14 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // autonomy, budgets, and the human gate exactly like an agent-driven send.
   // The account's working schedule, read fresh so a UI edit takes effect without
   // a restart. Shared by the dispatch and acceptance ticks to day-align due times.
-  const scheduleFor = async (accountId: string): Promise<AccountSchedule> => {
+  const scheduleFor = async (
+    accountId: string,
+    actionType?: ActionType,
+  ): Promise<AccountSchedule> => {
     const row = await store.account.findById(accountId);
-    return (row ? rowToAccount(row).limits?.schedule : undefined) ?? DEFAULT_SCHEDULE;
+    return row
+      ? effectiveSchedule(rowToAccount(row), DEFAULT_CONFIG, actionType)
+      : effectiveSchedule({}, DEFAULT_CONFIG);
   };
 
   // The send-time reply probe is backed by the ReplyTick, which is built AFTER
@@ -310,6 +326,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       router: orchestrator.replyRouter,
       llm,
       messages: store.message,
+      historyReadDelayMs: config.replyHistoryReadDelayMs,
       // The detector must leave a durable, operator-visible trail. An empty
       // inbox is only meaningful when the most recent scan says it completed.
       onScan: async (scan) => {
@@ -355,6 +372,18 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
             targetId: o.targetId,
             campaignId: o.campaignId,
             name: o.name,
+          })
+          .catch(() => {});
+      },
+      // A lead sourced from search carries the stub LinkedIn shows a stranger
+      // ("R S."); acceptance reveals the real name. Record the swap so the
+      // provenance of a changed name is auditable rather than mysterious.
+      onNameRefreshed: (e) => {
+        void orchestrator.eventLog
+          .recordEvent('lead_name_refreshed', e.accountId, {
+            targetId: e.targetId,
+            from: e.from,
+            to: e.to,
           })
           .catch(() => {});
       },

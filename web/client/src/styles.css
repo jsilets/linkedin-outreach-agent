@@ -546,10 +546,10 @@ textarea {
 
 /* ── Working-schedule editor (Accounts) ───────────────────────────────────── */
 .schedule {
-  margin-top: var(--space-2);
+  margin-top: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .schedule-days {
@@ -561,8 +561,8 @@ textarea {
 /* A weekday chip: hairline + muted when off, accent fill when active. Accent is
  * the selection color, so an "on" day reads as chosen at a glance. */
 .day-toggle {
-  min-width: 48px;
-  min-height: 40px;
+  min-width: 44px;
+  min-height: 36px;
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-1);
@@ -617,6 +617,13 @@ textarea {
 /* Timezone hint after the range: quiet, so it reads as a note, not a field. */
 .schedule-tz {
   font-size: var(--text-meta);
+}
+
+.field-label {
+  display: block;
+  color: var(--ink-3);
+  font-size: var(--text-meta);
+  font-weight: var(--weight-medium);
 }
 
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
@@ -1177,10 +1184,6 @@ textarea.draft {
   grid-template-columns: minmax(268px, 304px) minmax(0, 1fr);
 }
 
-.inbox-workspace.contact-closed .inbox-contact {
-  display: none;
-}
-
 .inbox-threads,
 .inbox-transcript,
 .inbox-contact {
@@ -1438,10 +1441,6 @@ textarea.draft {
   align-items: center;
 }
 
-.transcript-person .contact-avatar {
-  grid-row: span 2;
-}
-
 .transcript-person p {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1656,6 +1655,12 @@ textarea.draft {
   font-weight: var(--weight-semibold);
 }
 
+/* Lives after the .contact-avatar base rule (not with its .transcript-person
+   siblings) so higher-specificity overrides never precede the base. */
+.transcript-person .contact-avatar {
+  grid-row: span 2;
+}
+
 .contact-avatar.compact {
   width: 36px;
   height: 36px;
@@ -1787,6 +1792,12 @@ textarea.draft {
   .details-toggle {
     display: none;
   }
+}
+
+/* Last of the .inbox-contact rules on purpose: the closed-state override must
+   follow every lower-specificity .inbox-contact declaration. */
+.inbox-workspace.contact-closed .inbox-contact {
+  display: none;
 }
 
 @media (max-width: 700px) {
@@ -1931,6 +1942,239 @@ textarea.draft {
 
 .subrow:first-child {
   border-top: none;
+}
+
+.account-row-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.account-row-header strong {
+  display: block;
+  color: var(--ink-1);
+}
+
+.account-state,
+.account-summary {
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+}
+
+.account-state {
+  display: block;
+  margin-top: 2px;
+}
+
+.account-summary {
+  flex: none;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.outbound-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.outbound-control + .outbound-control {
+  border-left: 1px solid var(--line);
+  padding-left: var(--space-4);
+}
+
+.outbound-control-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 48px;
+}
+
+.outbound-control-head h3 {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--text-body);
+  font-weight: var(--weight-semibold);
+}
+
+.outbound-control-head p {
+  margin: 2px 0 0;
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+  line-height: 1.35;
+}
+
+.outbound-control-body {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.limit-field {
+  display: grid;
+  grid-template-columns: minmax(88px, 112px) minmax(0, 1fr);
+  align-items: end;
+  gap: var(--space-2);
+}
+
+.limit-field .field-label {
+  grid-column: 1 / -1;
+}
+
+.limit-field input {
+  min-height: 40px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.limit-field-unit {
+  align-self: center;
+  color: var(--ink-2);
+  font-size: var(--text-meta);
+}
+
+@media (max-width: 700px) {
+  .account-row-header {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .account-summary {
+    flex: initial;
+  }
+
+  .outbound-controls {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-3);
+  }
+
+  .outbound-control + .outbound-control {
+    border-top: 1px solid var(--line);
+    border-left: none;
+    padding-top: var(--space-3);
+    padding-left: 0;
+  }
+
+  .limit-field {
+    grid-template-columns: minmax(104px, 128px) minmax(0, 1fr);
+  }
+}
+
+/* ── Operator pause: the hardest stop in the system ─────────────────────────── */
+
+.pause-control {
+  margin-top: var(--space-3);
+}
+
+.pause-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.pause-switch-name {
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  border: 0;
+  background: none;
+  color: var(--ink-1);
+  font: inherit;
+  font-size: var(--text-meta);
+  cursor: pointer;
+}
+
+.switch:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-1);
+}
+
+/* Track/thumb are painted, not glyphs, so the state reads at a glance in both
+   themes. Paused is the resting look: hairline + muted, no accent fill. */
+.switch-track {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  transition:
+    transform var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+
+.switch-state {
+  font-weight: var(--weight-medium);
+  color: var(--ink-2);
+}
+
+.switch.on .switch-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch.on .switch-thumb {
+  background: var(--accent-ink);
+  transform: translateX(18px);
+}
+
+.switch.on .switch-state {
+  color: var(--ink-1);
+}
+
+.pause-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+
+/* Held queue is the one thing an operator must not miss: amber = "look at this",
+   the same attention hue as approvals. */
+.pause-note.held {
+  color: var(--st-approval-ink);
+}
+
+.pause-confirm {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--st-approval) 35%, var(--line));
+  border-radius: var(--radius-1);
+  background: color-mix(in srgb, var(--st-approval) 8%, var(--surface-1));
+}
+
+.pause-confirm p {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-meta);
+  color: var(--ink-1);
 }
 
 /* Reduced motion: collapse every transition. */

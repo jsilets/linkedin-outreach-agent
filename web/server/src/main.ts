@@ -298,10 +298,50 @@ api.post('/accounts/link', async (req, res, next) => {
 api.patch('/accounts/:id/limits', async (req, res, next) => {
   try {
     const body = req.body ?? {};
-    const limits = await updateAccountLimits(req.params.id, body.caps, body.schedule);
+    const limits = await updateAccountLimits(
+      req.params.id,
+      body.caps,
+      body.schedule,
+      body.enabled,
+      body.schedules,
+    );
     res.json({ ok: true, limits });
   } catch (err) {
     if (err instanceof LimitsError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+// Pause / resume an account's outbound sending. Both go through the runtime's
+// privileged MCP tools rather than writing the event straight to Postgres: the
+// running process holds the pause state in its PauseRegistry, and only the tool
+// updates that. A direct DB write would move this read model and leave the LIVE
+// gate unchanged — the account would read "sending" here and still send nothing,
+// or read "paused" and keep sending.
+api.post('/accounts/:id/pause', async (req, res, next) => {
+  try {
+    await callMcpTool('pause_account', { accountId: req.params.id });
+    res.json({ ok: true, paused: true });
+  } catch (err) {
+    if (err instanceof McpError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+// Releases every approved message on this account to the sender. Real messages
+// to real people; the UI confirms before calling this.
+api.post('/accounts/:id/resume', async (req, res, next) => {
+  try {
+    await callMcpTool('resume_account', { accountId: req.params.id });
+    res.json({ ok: true, paused: false });
+  } catch (err) {
+    if (err instanceof McpError) {
       res.status(400).json({ error: err.message });
       return;
     }

@@ -77,6 +77,29 @@ class PgActionStore implements ActionStorePort {
       );
     return row?.n ?? 0;
   }
+  async laneHealthSince(
+    accountId: string,
+    type: string,
+    since: Date,
+  ): Promise<{ distinctFailedTargets: number; successes: number }> {
+    const [row] = await this.db.handle
+      .select({
+        distinctFailedTargets: sql<number>`count(distinct ${actions.targetId}) filter (where ${actions.result} = 'failed')::int`,
+        successes: sql<number>`count(*) filter (where ${actions.result} = 'success')::int`,
+      })
+      .from(actions)
+      .where(
+        and(
+          eq(actions.accountId, accountId),
+          eq(actions.type, type as shared.ActionRow['type']),
+          gte(actions.createdAt, since),
+        ),
+      );
+    return {
+      distinctFailedTargets: row?.distinctFailedTargets ?? 0,
+      successes: row?.successes ?? 0,
+    };
+  }
   async reclaimStalePending(olderThan: Date): Promise<number> {
     const out = await this.db.handle
       .delete(actions)

@@ -139,3 +139,92 @@ describe('AcceptanceTick', () => {
     expect(progress.state).toBe('completed');
   });
 });
+
+// Acceptance is the moment a lead's real name becomes knowable: LinkedIn shows a
+// stranger a truncated stub ("R S."), and only reveals the full name once the
+// invite is accepted and the person is 1st-degree. The composer addresses people
+// by typing that name into LinkedIn's typeahead, so a stub that survives to the
+// message step cannot be sent to.
+describe('AcceptanceTick: name refresh on acceptance', () => {
+  async function seedNamed(store: InMemoryStore, name: string): Promise<string> {
+    await store.target.create({
+      id: TGT,
+      campaignId: CAMP,
+      prospectRef: 'p1',
+      linkedinUrn: 'urn:li:person:p1',
+      externalContext: { name },
+      stage: 'invited',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'message',
+      body: 'hi',
+    });
+    const prog = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.sequence.advanceTargetProgress(prog.id, {
+      state: 'awaiting_connection',
+      nextStepAt: null,
+    });
+    return prog.id;
+  }
+
+  it('replaces a truncated stub with the full name the connection carries', async () => {
+    const store = new InMemoryStore();
+    await seedNamed(store, 'R S.');
+    const refreshed: Array<{ from: string | null; to: string }> = [];
+    const tick = new AcceptanceTick({
+      connections: new StaticConnectionsReader([
+        { entityUrn: 'urn:li:person:p1', name: 'R Sandoval' },
+      ]),
+      sequence: store.sequence,
+      targets: store.target,
+      onNameRefreshed: (e) => refreshed.push({ from: e.from, to: e.to }),
+    });
+
+    const res = await tick.runTick(new Date('2026-07-06T12:00:00Z'));
+
+    const target = await store.target.findById(TGT);
+    expect((target!.externalContext as { name?: string }).name).toBe('R Sandoval');
+    // The outcome reports the name the lead is NOW known by, not the stale stub.
+    expect(res.outcomes[0]).toMatchObject({ kind: 'connected', name: 'R Sandoval' });
+    expect(refreshed).toEqual([{ from: 'R S.', to: 'R Sandoval' }]);
+  });
+
+  it('leaves a real name alone even when the connection spells it differently', async () => {
+    const store = new InMemoryStore();
+    await seedNamed(store, 'Priya Raman, P.Eng.');
+    const tick = new AcceptanceTick({
+      connections: new StaticConnectionsReader([
+        { entityUrn: 'urn:li:person:p1', name: 'Priya Raman' },
+      ]),
+      sequence: store.sequence,
+      targets: store.target,
+    });
+
+    await tick.runTick(new Date('2026-07-06T12:00:00Z'));
+
+    const target = await store.target.findById(TGT);
+    expect((target!.externalContext as { name?: string }).name).toBe('Priya Raman, P.Eng.');
+  });
+
+  it('keeps the stub when the connection payload is no better', async () => {
+    const store = new InMemoryStore();
+    await seedNamed(store, 'Joe D.');
+    const tick = new AcceptanceTick({
+      connections: new StaticConnectionsReader([{ entityUrn: 'urn:li:person:p1', name: 'Joe D.' }]),
+      sequence: store.sequence,
+      targets: store.target,
+    });
+
+    await tick.runTick(new Date('2026-07-06T12:00:00Z'));
+
+    const target = await store.target.findById(TGT);
+    expect((target!.externalContext as { name?: string }).name).toBe('Joe D.');
+  });
+});

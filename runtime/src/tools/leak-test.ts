@@ -33,16 +33,24 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildLaunchConfig, type LaunchConfigInput, type ProxyIdentity } from '@loa/account-runner';
-import { chromium } from 'patchright';
+import { chromium, type Page } from 'patchright';
 
 // The runtime tsconfig deliberately omits the DOM lib (this is a Node package).
 // The callbacks passed to page.evaluate run in the browser, not in Node, so the
 // browser globals they reference are provided by Chromium at runtime. Declare
-// just the handful we use as ambient `any` so this file typechecks without
-// pulling the whole DOM lib into the runtime build.
-declare const document: any;
-declare const RTCPeerConnection: any;
-type RTCPeerConnection = any;
+// just the shapes we actually touch so this file typechecks without pulling the
+// whole DOM lib into the runtime build.
+declare const document: { body: { innerText: string } };
+interface RtcPeerConnectionLike {
+  onicecandidate: ((e: { candidate?: { candidate?: string } | null }) => void) | null;
+  createDataChannel(label: string): unknown;
+  createOffer(): Promise<unknown>;
+  setLocalDescription(offer: unknown): Promise<unknown>;
+  close(): void;
+}
+declare const RTCPeerConnection: new (config: {
+  iceServers: Array<{ urls: string }>;
+}) => RtcPeerConnectionLike;
 
 /**
  * Build the proxy identity from env, or undefined when no proxy is set.
@@ -130,8 +138,7 @@ interface CheckResult {
   [k: string]: unknown;
 }
 
-/** page is a full patchright Page; typed loosely since we don't import PW types. */
-async function checkPublicIp(page: any, hasProxy: boolean): Promise<CheckResult> {
+async function checkPublicIp(page: Page, hasProxy: boolean): Promise<CheckResult> {
   try {
     await page.goto('https://api.ipify.org?format=json', {
       waitUntil: 'domcontentloaded',
@@ -176,12 +183,12 @@ async function checkPublicIp(page: any, hasProxy: boolean): Promise<CheckResult>
   }
 }
 
-async function checkWebRtc(page: any, hasProxy: boolean): Promise<CheckResult> {
+async function checkWebRtc(page: Page, hasProxy: boolean): Promise<CheckResult> {
   try {
     const candidates: string[] = await page.evaluate(async () => {
       return await new Promise<string[]>((resolve) => {
         const seen: string[] = [];
-        let pc: RTCPeerConnection;
+        let pc: RtcPeerConnectionLike;
         try {
           pc = new RTCPeerConnection({
             iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -190,7 +197,7 @@ async function checkWebRtc(page: any, hasProxy: boolean): Promise<CheckResult> {
           resolve(seen);
           return;
         }
-        pc.onicecandidate = (e: any) => {
+        pc.onicecandidate = (e) => {
           if (e.candidate?.candidate) {
             seen.push(e.candidate.candidate);
           }
@@ -201,7 +208,7 @@ async function checkWebRtc(page: any, hasProxy: boolean): Promise<CheckResult> {
           /* ignore */
         }
         pc.createOffer()
-          .then((offer: any) => pc.setLocalDescription(offer))
+          .then((offer) => pc.setLocalDescription(offer))
           .catch(() => {
             /* ignore */
           });
@@ -259,7 +266,7 @@ async function checkWebRtc(page: any, hasProxy: boolean): Promise<CheckResult> {
   }
 }
 
-async function checkGeo(page: any): Promise<CheckResult> {
+async function checkGeo(page: Page): Promise<CheckResult> {
   const endpoints = ['https://ipapi.co/json/', 'https://ipwho.is/'];
   for (const url of endpoints) {
     try {
@@ -312,7 +319,10 @@ async function main(): Promise<void> {
   // patchright directly so we get a full-API page (with .evaluate()).
   const { options } = buildLaunchConfig(input);
 
-  const context = await chromium.launchPersistentContext(userDataDir, options as any);
+  const context = await chromium.launchPersistentContext(
+    userDataDir,
+    options as Parameters<typeof chromium.launchPersistentContext>[1],
+  );
   let publicIp: CheckResult;
   let webrtc: CheckResult;
   let geo: CheckResult;

@@ -23,9 +23,9 @@ describe('profileUrlForTarget', () => {
   it('prefers the stored /in/ vanity url over the wrapped urn', () => {
     const t = target({
       linkedinUrn: WRAPPED,
-      externalContext: { profileUrl: 'https://www.linkedin.com/in/dfanavoll' },
+      externalContext: { profileUrl: 'https://www.linkedin.com/in/javery' },
     });
-    expect(profileUrlForTarget(t)).toBe('https://www.linkedin.com/in/dfanavoll');
+    expect(profileUrlForTarget(t)).toBe('https://www.linkedin.com/in/javery');
   });
 
   it('never produces the ,SEARCH_SRP,DEFAULT) junk url that 404s', () => {

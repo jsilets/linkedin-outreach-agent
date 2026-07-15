@@ -51,6 +51,10 @@ const DEFAULT_INBOX_LIMIT = 20;
  * several due sends from hammering the messaging endpoint. */
 const INBOX_CACHE_TTL_MS = 60_000;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** How one inbound message resolved in a tick. Returned for observability + tests. */
 export type ReplyOutcome =
   | { kind: 'routed'; targetId: string; threadUrn: string; intent: Intent }
@@ -118,6 +122,8 @@ export interface ReplyTickDeps {
   now?: () => Date;
   /** How many threads to read per account per tick. */
   inboxLimit?: number;
+  /** Minimum gap between per-thread history reads for one account. */
+  historyReadDelayMs?: number;
   /** Optional sink for per-outcome logging (audit / metrics). */
   onOutcome?: (o: ReplyOutcome) => void;
   /** Durable health sink. Failures here are reported to stderr but never alter
@@ -173,6 +179,7 @@ export class ReplyTick {
   private readonly messages?: Pick<MessageRepoPort, 'create' | 'listByThread'>;
   private readonly now: () => Date;
   private readonly inboxLimit: number;
+  private readonly historyReadDelayMs: number;
   private readonly onOutcome?: (o: ReplyOutcome) => void;
   private readonly onScan?: (scan: ReplyScan) => void | Promise<void>;
   /** Messages already routed; keeps a reply from re-routing each tick. */
@@ -182,6 +189,9 @@ export class ReplyTick {
   /** Conversation identities are cached with the same short TTL as snippets so
    * a burst of pre-send probes shares one mailbox-list read. */
   private readonly threadCache = new Map<string, { at: number; threads: InboxThread[] }>();
+  /** Per-account pacing for conversation-detail reads. */
+  private readonly lastHistoryReadAt = new Map<string, number>();
+  private readonly historyReadPace = new Map<string, Promise<void>>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
 
@@ -194,6 +204,7 @@ export class ReplyTick {
     this.messages = deps.messages;
     this.now = deps.now ?? (() => new Date());
     this.inboxLimit = deps.inboxLimit ?? DEFAULT_INBOX_LIMIT;
+    this.historyReadDelayMs = Math.max(0, deps.historyReadDelayMs ?? 0);
     this.onOutcome = deps.onOutcome;
     this.onScan = deps.onScan;
   }
@@ -245,7 +256,7 @@ export class ReplyTick {
               threadUrnsMappedThisAccount.add(thread.threadUrn);
             }
             failurePhase = 'thread_history';
-            const history = await this.inbox.readThreadHistory(accountId, thread.threadUrn);
+            const history = await this.readThreadHistoryPaced(accountId, thread.threadUrn);
             historyReads += 1;
             inboundMessages += history.length;
             failurePhase = 'route';
@@ -349,6 +360,30 @@ export class ReplyTick {
     return threads;
   }
 
+  private async paceHistoryRead(accountId: string): Promise<void> {
+    const prior = this.historyReadPace.get(accountId) ?? Promise.resolve();
+    const next = prior
+      .catch(() => {})
+      .then(async () => {
+        const last = this.lastHistoryReadAt.get(accountId);
+        if (last !== undefined && this.historyReadDelayMs > 0) {
+          const waitMs = Math.max(0, this.historyReadDelayMs - (Date.now() - last));
+          if (waitMs > 0) await sleep(waitMs);
+        }
+        this.lastHistoryReadAt.set(accountId, Date.now());
+      });
+    this.historyReadPace.set(accountId, next);
+    await next;
+  }
+
+  private async readThreadHistoryPaced(
+    accountId: string,
+    threadUrn: string,
+  ): Promise<InboundMessage[]> {
+    await this.paceHistoryRead(accountId);
+    return this.inbox.readThreadHistory!(accountId, threadUrn);
+  }
+
   /**
    * Send-time reply probe for the dispatch tick: has this target sent an inbound
    * message newer than `since`? Reads the same (cached) inbox as runTick, routes
@@ -371,7 +406,7 @@ export class ReplyTick {
         // A human may have replied after them, leaving the prospect's message
         // behind a later outbound. Any inbound in this mapped thread ends the
         // automated funnel and blocks the send.
-        const matches = await this.inbox.readThreadHistory(accountId, thread.threadUrn);
+        const matches = await this.readThreadHistoryPaced(accountId, thread.threadUrn);
         if (matches.length === 0) return false;
         const chronological = oldestFirst(matches);
         for (const [index, msg] of chronological.entries()) {

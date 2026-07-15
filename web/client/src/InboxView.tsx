@@ -8,6 +8,7 @@ import {
   type ReplyDetectorHealth,
 } from './api';
 import { formatClock, formatDayClock, formatRelative, formatStamp } from './format';
+import { runWriteAction, type WriteOutcome } from './writeAction';
 
 type InboxFilter = 'all' | 'approval' | 'replies' | 'sent';
 
@@ -64,16 +65,18 @@ function calendarDayDelta(iso: string): number {
 
 /** Why a queue is frozen, phrased so it cannot be read as a wait that ends on its
  * own. Each of these clears only when a human resumes or unblocks the account. */
-const BLOCKED_REASON_TEXT: Record<'paused' | 'restricted' | 'cooldown', string> = {
+const BLOCKED_REASON_TEXT: Record<'paused' | 'restricted' | 'cooldown' | 'disabled', string> = {
   paused: 'sending is paused for this account',
   restricted: 'account restricted — nothing will send',
   cooldown: 'account in cooldown — nothing will send',
+  disabled: 'messages are turned off for this account',
 };
 
-const BLOCKED_REASON_TERSE: Record<'paused' | 'restricted' | 'cooldown', string> = {
+const BLOCKED_REASON_TERSE: Record<'paused' | 'restricted' | 'cooldown' | 'disabled', string> = {
   paused: 'Paused',
   restricted: 'Restricted',
   cooldown: 'Cooldown',
+  disabled: 'Messages off',
 };
 
 /** The operator's question is "if it's sent, how long ago; if it's queued, when
@@ -507,10 +510,7 @@ function MessageBubble({ message }: { message: InboxMessage }) {
 /** Outcome of a composer action. 'stale' means the runtime accepted the action
  * (a send may already be dispatching) but the inbox re-read failed: the action
  * must never be offered for retry from that state. */
-export type ComposerOutcome =
-  | { phase: 'done' }
-  | { phase: 'stale'; notice: string }
-  | { phase: 'error'; notice: string };
+export type ComposerOutcome = WriteOutcome;
 
 export type ComposerPhase = 'idle' | 'working' | ComposerOutcome['phase'];
 
@@ -525,20 +525,10 @@ export async function runComposerAction(
   reload: () => Promise<unknown>,
   failureNotice: string,
 ): Promise<ComposerOutcome> {
-  try {
-    await act();
-  } catch (err) {
-    return { phase: 'error', notice: err instanceof Error ? err.message : failureNotice };
-  }
-  try {
-    await reload();
-  } catch {
-    return {
-      phase: 'stale',
-      notice: 'Done, but the inbox could not refresh. Do not retry; it updates on the next check.',
-    };
-  }
-  return { phase: 'done' };
+  return runWriteAction(act, reload, {
+    failure: failureNotice,
+    stale: 'Done, but the inbox could not refresh. Do not retry; it updates on the next check.',
+  });
 }
 
 function ApprovalComposer({

@@ -229,6 +229,9 @@ export class DefaultSafetyGate implements SafetyGate {
     if (acct.state === 'Cooldown') {
       return { kind: 'deny', reason: 'account in cooldown; no outbound actions' };
     }
+    if (!actionEnabled(acct, type)) {
+      return { kind: 'deny', reason: `action ${type} disabled by operator` };
+    }
 
     const b = this.budget(acct);
     // Fail closed on a missing cap entry: an undefined cap would sail past both
@@ -259,8 +262,9 @@ export class DefaultSafetyGate implements SafetyGate {
     // Working schedule (hours + days): a self-running engine should not send
     // overnight or on the account's days off. Outside the window, defer to the
     // next active day's start (coarser than the daily cap, so it runs before
-    // pacing). The account's own schedule wins; absent one, the global config.
-    const windowDefer = scheduleDefer(this.clock.now(), effectiveSchedule(acct, this.cfg));
+    // pacing). An action-specific schedule wins, then the account-wide schedule,
+    // then the global config.
+    const windowDefer = scheduleDefer(this.clock.now(), effectiveSchedule(acct, this.cfg, type));
     if (windowDefer) {
       return { kind: 'defer', until: windowDefer };
     }
@@ -412,14 +416,21 @@ export function activeHoursDefer(now: Date, cfg: SafetyConfig): Date | null {
 export function effectiveSchedule(
   acct: Pick<Account, 'limits'>,
   cfg: SafetyConfig,
+  actionType?: ActionType,
 ): AccountSchedule {
   return (
+    (actionType ? acct.limits?.schedules?.[actionType] : undefined) ??
     acct.limits?.schedule ?? {
       hoursStart: cfg.activeHoursStart,
       hoursEnd: cfg.activeHoursEnd,
       days: DEFAULT_SCHEDULE.days,
     }
   );
+}
+
+/** Whether an operator toggle allows this action type. Missing means enabled. */
+export function actionEnabled(acct: Pick<Account, 'limits'>, type: ActionType): boolean {
+  return acct.limits?.enabled?.[type] ?? true;
 }
 
 /**

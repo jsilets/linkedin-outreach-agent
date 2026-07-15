@@ -3,6 +3,7 @@
 // selectors with human typing/click delays and randomized between-step gaps.
 
 import type { Action } from '@loa/shared';
+import { isTruncatedName } from '@loa/shared';
 import { actionGapMs, clickDelayMs, realSleep, type Sleeper } from '../human.js';
 import type { AllowToken, LocatorPort, PagePort } from '../ports.js';
 import { SELECTORS } from '../selectors.js';
@@ -324,6 +325,56 @@ const THREAD_OPEN_TIMEOUT_MS = 10000;
 // (a paste-like insert does not populate suggestions).
 const TYPEAHEAD_KEY_DELAY_MS = 70;
 
+/** How many profile links a refusal will quote, and how much of each. Enough to
+ * identify the href format; bounded so a failure detail stays a line, not a dump. */
+const DIAG_HREF_LIMIT = 5;
+const DIAG_HREF_MAX_LEN = 120;
+
+/**
+ * The /in/ profile links actually present on the page, for a refusal detail.
+ *
+ * The wrong-recipient guard can only say which id it wanted; without this, every
+ * refusal is a hypothesis about what the page rendered — a query-string href, a
+ * member-id href, or genuinely nothing. Quoting what we saw makes the next
+ * failure self-diagnosing. Best-effort: a diagnostic must never turn a clean
+ * refusal into a throw.
+ */
+async function profileHrefsOnPage(ctx: ActionContext): Promise<string[]> {
+  try {
+    const links = ctx.page.locator('a[href*="/in/"]');
+    const n = Math.min(await links.count(), DIAG_HREF_LIMIT);
+    const out: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const href = await links.nth(i).getAttribute('href');
+      if (href) out.push(href.slice(0, DIAG_HREF_MAX_LEN));
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether `text` contains `wanted` starting at a word boundary.
+ *
+ * A raw substring test is wrong here: the typeahead card text is matched against
+ * the recipient's name, and a short name substring-matches a stranger — "r s."
+ * is inside "pete(r s.)johnson". Requiring the match to begin at a non-letter (or
+ * at the start) keeps "r sandoval" matching its own card while refusing to see a
+ * recipient inside someone else's surname. Both sides arrive lowercased.
+ */
+function containsNameAtWordBoundary(text: string, wanted: string): boolean {
+  if (!wanted) return false;
+  let from = 0;
+  for (;;) {
+    const i = text.indexOf(wanted, from);
+    if (i === -1) return false;
+    const before = i === 0 ? '' : text[i - 1]!;
+    if (!/[a-z]/.test(before)) return true;
+    from = i + 1;
+  }
+}
+
 /** Build a selector that scopes `inner` to whichever thread container provably
  * links to the recipient (`:has(anchor)`), across every container/inner OR-part.
  * This keeps the compose box + Send bound to the ONE thread for this recipient,
@@ -373,8 +424,23 @@ export async function message(
       detail: 'no recipient name; refusing to send (cannot address the composer)',
     };
   }
-  // Drop a trailing credential suffix ("Daniel Valadares, P.Eng." -> "Daniel
-  // Valadares"): LinkedIn's typeahead search and result cards use the plain name,
+  // A name LinkedIn truncated for a stranger ("R S.") is not a name we can
+  // search. Typing it finds nobody, and it is short enough to substring-match a
+  // stranger's card ("R S." is inside "Peter S. Johnson"), which would put us one
+  // failed identity check away from messaging the wrong person. Refuse before
+  // touching the typeahead. The name should have been refreshed from the
+  // 1st-degree connections payload at acceptance; if we are here, it was not.
+  if (isTruncatedName(name)) {
+    return {
+      ok: false,
+      detail:
+        `recipient name "${name}" is a LinkedIn-truncated stub, not a real name; ` +
+        'refusing to send (needs a name refresh from the accepted connection)',
+    };
+  }
+
+  // Drop a trailing credential suffix ("Priya Raman, P.Eng." -> "Priya
+  // Raman"): LinkedIn's typeahead search and result cards use the plain name,
   // so the suffix breaks both the query and the card match.
   const searchName = (name.split(',')[0] ?? name).trim() || name;
 
@@ -394,8 +460,11 @@ export async function message(
   await gap(ctx);
 
   // 2. Pick the suggestion card that matches the recipient's name (case-
-  //    insensitive), preferring a 1st-degree card. The identity check in step 3
-  //    is the real gate; this only chooses which card to open.
+  //    insensitive) AND is 1st-degree. A message send is only possible to a
+  //    1st-degree connection, and the typeahead happily lists near-identical
+  //    strangers ("Dana Fairbourne • 3rd+" for "Dana Fairbourn") — clicking one
+  //    opens a Premium InMail compose to the WRONG person. Verified live
+  //    2026-07-15. No non-1st fallback, ever.
   const cards = ctx.page.locator(SELECTORS.composerResultCard);
   try {
     await cards.first().waitFor({ state: 'visible', timeout: TYPEAHEAD_RESULT_TIMEOUT_MS });
@@ -404,54 +473,111 @@ export async function message(
   }
   const count = await cards.count();
   const wanted = searchName.toLowerCase();
+  const cardTexts: string[] = [];
   let picked = -1;
-  let firstNameMatch = -1;
   for (let i = 0; i < count; i++) {
     const text = ((await cards.nth(i).textContent()) ?? '').toLowerCase();
-    if (!text.includes(wanted)) continue;
-    if (firstNameMatch === -1) firstNameMatch = i;
-    if (/•\s*1st\b/.test(text) || /\b1st\b/.test(text)) {
-      picked = i;
-      break;
-    }
+    cardTexts.push(text.replace(/\s+/g, ' ').trim().slice(0, 80));
+    if (picked !== -1) continue;
+    if (!containsNameAtWordBoundary(text, wanted)) continue;
+    if (/•\s*1st\b/.test(text) || /\b1st\b/.test(text)) picked = i;
   }
-  if (picked === -1) picked = firstNameMatch;
+  // What the typeahead offered and what we did with it — so a refusal (or a
+  // later mis-send report) is self-diagnosing instead of a guessing game.
+  const cardsDiag = () =>
+    `typeahead offered ${count} card(s): ${cardTexts.map((t, i) => `#${i}"${t}"`).join(' ')}`;
   if (picked === -1) {
-    return { ok: false, detail: `no typeahead card matched "${searchName}"; refusing to send` };
+    return {
+      ok: false,
+      detail: `no 1st-degree typeahead card matched "${searchName}"; refusing to send (${cardsDiag()})`,
+    };
   }
   await clickLoc(ctx, cards.nth(picked));
   await gap(ctx);
 
-  // 3. WRONG-RECIPIENT GUARD. The opened thread links to the selected person's
-  //    /in/ profile. Require it to match THIS target (vanity, or the opaque
-  //    member id from the urn) before typing a word. Match the anchor with or
-  //    without a trailing slash so it cannot match a longer id.
+  // 2b. URL identity check. In the NEW-conversation flow LinkedIn puts the
+  //     selected recipient's profile urn in the composer URL
+  //     (?recipients=List(urn:li:fsd_profile:<id>)) — an identity signal
+  //     stronger than any DOM heuristic. When present it must match this
+  //     target; when it names an InMail/upsell surface the pick was not a
+  //     messageable 1st-degree and we refuse. An EXISTING conversation keeps
+  //     a bare thread/new URL, so absence of the param proves nothing.
+  const postClickUrl = ctx.page.url();
+  const urlRecipient = decodeURIComponent(postClickUrl).match(
+    /recipients=List\(urn:li:fsd_profile:([A-Za-z0-9_-]+)\)/,
+  )?.[1];
+  if (/composeOptionType=PREMIUM_INMAIL|premiumUpsellSlotUrn/i.test(postClickUrl)) {
+    return {
+      ok: false,
+      detail:
+        `composer opened an InMail/upsell surface for "${searchName}" — the picked card is ` +
+        `not a messageable 1st-degree connection; refusing to send (picked #${picked}; ${cardsDiag()})`,
+    };
+  }
   const memberId = params.memberId?.trim();
+  if (urlRecipient && memberId && urlRecipient !== memberId) {
+    return {
+      ok: false,
+      detail:
+        `composer URL names recipient urn ${urlRecipient} but this target is ${memberId} — ` +
+        `the typeahead picked a DIFFERENT person; refusing to send (picked #${picked}; ${cardsDiag()})`,
+    };
+  }
+  const urlVerified = Boolean(urlRecipient && memberId && urlRecipient === memberId);
+
+  // 3. WRONG-RECIPIENT GUARD (existing-conversation flow). The opened thread's
+  //    top profile card links to the recipient's /in/ profile; require it to
+  //    match THIS target (vanity, or the opaque member id from the urn) before
+  //    typing a word. Match the anchor with or without a trailing slash so it
+  //    cannot match a longer id. The card only renders when the viewport is
+  //    tall enough (see the launch-config viewport comment) — if this refuses
+  //    with "no recipient link", check the viewport before anything else.
+  //    Skipped when the URL already proved the recipient (new-conversation
+  //    flow, which renders no history and thus no profile card).
   const anchor =
     `a[href*="/in/${publicId}/"], a[href$="/in/${publicId}"]` +
     (memberId ? `, a[href*="/in/${memberId}/"], a[href$="/in/${memberId}"]` : '');
-  try {
-    await ctx.page.locator(anchor).first().waitFor({
-      state: 'visible',
-      timeout: THREAD_OPEN_TIMEOUT_MS,
-    });
-  } catch {
-    // Timed out — fall through to the count gate, which returns the refusal.
-  }
-  if (!(await isPresent(ctx, anchor))) {
-    return {
-      ok: false,
-      detail: `composer did not open a thread for /in/${publicId}; refusing to send to avoid a wrong recipient`,
-    };
+  if (!urlVerified) {
+    try {
+      await ctx.page.locator(anchor).first().waitFor({
+        state: 'visible',
+        timeout: THREAD_OPEN_TIMEOUT_MS,
+      });
+    } catch {
+      // Timed out — fall through to the count gate, which returns the refusal.
+    }
+    if (!(await isPresent(ctx, anchor))) {
+      const saw = await profileHrefsOnPage(ctx);
+      return {
+        ok: false,
+        detail:
+          `composer did not open a thread for /in/${publicId}; refusing to send to avoid a ` +
+          `wrong recipient (wanted ${memberId ? `/in/${publicId} or /in/${memberId}` : `/in/${publicId}`}; ` +
+          `page offered ${saw.length ? saw.join(' ') : 'no /in/ links'}; ` +
+          `picked #${picked}; ${cardsDiag()}; url ${postClickUrl.slice(0, 160)})`,
+      };
+    }
   }
 
   // 4. Compose + send, scoped to the verified thread. humanType clears the box
   //    first; the Send button activates via focus+Enter (off-viewport safe).
+  //    URL-verified new conversations have no recipient anchor to scope with;
+  //    there the compose surface is the page's single main pane.
   const container = SELECTORS.messageThreadContainer;
-  await humanType(ctx, scopeToThread(container, anchor, SELECTORS.messageComposeBox), params.body);
+  const scope = (inner: string): string =>
+    urlVerified
+      ? inner
+          .split(',')
+          .map((s) => `main ${s.trim()}`)
+          .join(', ')
+      : scopeToThread(container, anchor, inner);
+  await humanType(ctx, scope(SELECTORS.messageComposeBox), params.body);
   await gap(ctx);
-  await pressButton(ctx, scopeToThread(container, anchor, SELECTORS.messageSendButton));
-  return { ok: true, detail: 'message sent (composer)' };
+  await pressButton(ctx, scope(SELECTORS.messageSendButton));
+  return {
+    ok: true,
+    detail: `message sent (composer, ${urlVerified ? 'url' : 'anchor'}-verified)`,
+  };
 }
 
 /** Read the inbox conversation list; returns the number of visible threads. */

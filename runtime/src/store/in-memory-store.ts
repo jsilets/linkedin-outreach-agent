@@ -136,6 +136,22 @@ class InMemActionStore implements ActionStorePort {
         r.targetId === targetId && r.type === type && r.result === 'failed' && r.createdAt >= since,
     ).length;
   }
+  async laneHealthSince(
+    accountId: string,
+    type: string,
+    since: Date,
+  ): Promise<{ distinctFailedTargets: number; successes: number }> {
+    const inWindow = [...this.rows.values()].filter(
+      (r) => r.accountId === accountId && r.type === type && r.createdAt >= since,
+    );
+    const failed = new Set(
+      inWindow.filter((r) => r.result === 'failed').map((r) => r.targetId ?? ''),
+    );
+    return {
+      distinctFailedTargets: failed.size,
+      successes: inWindow.filter((r) => r.result === 'success').length,
+    };
+  }
   async reclaimStalePending(olderThan: Date): Promise<number> {
     const stale = [...this.rows.values()].filter(
       (r) => r.result === 'pending' && r.executedAt === null && r.createdAt <= olderThan,

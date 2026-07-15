@@ -21,9 +21,9 @@
 //   COOKIE_VAULT_KEY=... LOA_ALLOW_NO_PROXY=true \
 //   node --import tsx src/tools/profile-shakeout.ts <accountId> <profileUrnOrId>
 //
-// The known-good target is C.J. Berg:
+// Example:
 //   node --import tsx src/tools/profile-shakeout.ts \
-//     58db1bd8-9676-4e10-89b8-04035fb39e8d urn:li:fsd_profile:ACoAABdW_WEBzkhpA61qPDWsZzaOE677Nl8ABeQ
+//     <accountId> <profileUrnOrId>
 
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -40,8 +40,10 @@
     "link-account": "node --env-file-if-exists=.env --import tsx runtime/src/tools/link-account.ts",
     "source-to-list": "node --env-file-if-exists=.env --import tsx runtime/src/tools/source-to-list.ts",
     "msg-overlay-dump": "node --env-file-if-exists=.env --import tsx runtime/src/tools/msg-overlay-dump.ts",
+    "composer-dump": "node --env-file-if-exists=.env --import tsx runtime/src/tools/composer-dump.ts",
     "selector-scan": "node --env-file-if-exists=.env --import tsx runtime/src/tools/selector-scan.ts",
     "ops:report": "node --env-file-if-exists=.env --import tsx scripts/ops-report.ts",
+    "repair-names": "node --env-file-if-exists=.env --import tsx scripts/repair-truncated-names.ts",
     "ops:restagger": "node --env-file-if-exists=.env --import tsx scripts/restagger-backlog.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"

@@ -41,6 +41,7 @@ export interface ResolvedLaunchConfig {
   options: {
     headless: boolean;
     channel: string;
+    viewport: { width: number; height: number };
     /** Present only when an identity was supplied. */
     proxy?: { server: string; username?: string; password?: string };
     /** Present only when an identity was supplied. */
@@ -77,6 +78,14 @@ export function buildLaunchConfig(input: LaunchConfigInput): ResolvedLaunchConfi
   const base = {
     headless: input.headless ?? true,
     channel: input.channel ?? 'chromium',
+    // A TALL viewport, not the 1280x720 default. LinkedIn's messaging thread
+    // only mounts the top-of-thread recipient profile card (msg-s-profile-card)
+    // when the pane is tall enough; at 720px it never renders, the wrong-
+    // recipient guard finds no recipient anchor, and every composer send
+    // refuses. Verified live 2026-07-15: headless 1280x720 -> no card, headless
+    // 1440x1200 -> card + anchors present. The size is a plausible maximized
+    // window on a modern display.
+    viewport: { width: 1440, height: 1200 },
     // Leak-guard flags are always applied: harmless with no proxy, essential
     // with one.
     args: [...LEAK_GUARD_ARGS],

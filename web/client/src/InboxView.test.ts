@@ -165,12 +165,16 @@ describe('timingLabel', () => {
       text: 'Queued · account in cooldown — nothing will send',
       at: null,
     });
+    expect(timingLabel({ kind: 'queued_blocked', reason: 'disabled' })).toEqual({
+      text: 'Queued · messages are turned off for this account',
+      at: null,
+    });
   });
 
   it('never suggests a blocked row is about to go out', () => {
     // The gate denies these outright, so any wording implying an imminent or
     // timed send is the same lie 'sends in the next few minutes' told.
-    for (const reason of ['paused', 'restricted', 'cooldown'] as const) {
+    for (const reason of ['paused', 'restricted', 'cooldown', 'disabled'] as const) {
       const label = timingLabel({ kind: 'queued_blocked', reason });
       expect(label.at).toBeNull();
       expect(label.text).not.toMatch(/\d|soon|minutes|shortly/i);
@@ -187,6 +191,7 @@ describe('timingLabel', () => {
       { kind: 'queued_blocked', reason: 'paused' },
       { kind: 'queued_blocked', reason: 'restricted' },
       { kind: 'queued_blocked', reason: 'cooldown' },
+      { kind: 'queued_blocked', reason: 'disabled' },
       { kind: 'awaiting_approval', readyAt: null },
       { kind: 'awaiting_approval', readyAt: atLocal(1, 9) },
     ];
@@ -196,6 +201,7 @@ describe('timingLabel', () => {
       false,
       true,
       true,
+      false,
       false,
       false,
       false,
@@ -252,10 +258,14 @@ describe('threadTimingLabel', () => {
       text: 'Queued · Cooldown',
       at: null,
     });
+    expect(threadTimingLabel({ kind: 'queued_blocked', reason: 'disabled' })).toEqual({
+      text: 'Queued · Messages off',
+      at: null,
+    });
   });
 
   it('names no instant for a blocked thread', () => {
-    for (const reason of ['paused', 'restricted', 'cooldown'] as const) {
+    for (const reason of ['paused', 'restricted', 'cooldown', 'disabled'] as const) {
       const label = threadTimingLabel({ kind: 'queued_blocked', reason });
       expect(label.at).toBeNull();
       expect(label.text).not.toMatch(/\d/);

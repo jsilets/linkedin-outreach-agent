@@ -110,7 +110,7 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
   const [launching, setLaunching] = useState(false);
   const [launchMsg, setLaunchMsg] = useState<string | null>(null);
 
-  function load() {
+  const load = useCallback(() => {
     api
       .campaign(id)
       .then(setDetail)
@@ -119,7 +119,7 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
       .leads(id)
       .then(setLeads)
       .catch(() => {});
-  }
+  }, [id]);
   useEffect(() => {
     load();
     api
@@ -129,8 +129,7 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
         if (a[0]) setAccountId((prev) => prev || a[0]!.id);
       })
       .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [load]);
 
   async function launch() {
     setLaunching(true);

@@ -107,7 +107,7 @@ export type MessageTiming =
   | { kind: 'queued_capped'; at: string }
   /** The gate denies this account outright: nothing sends until a human resumes
    * it or lifts the state. No timestamp — none of these clear on a schedule. */
-  | { kind: 'queued_blocked'; reason: 'paused' | 'restricted' | 'cooldown' }
+  | { kind: 'queued_blocked'; reason: 'paused' | 'restricted' | 'cooldown' | 'disabled' }
   | { kind: 'awaiting_approval'; readyAt: string | null };
 
 export interface InboxMessage {
@@ -208,7 +208,7 @@ export interface VolumeRow {
 
 // The per-action daily caps an operator can edit. Mirrors the server's
 // ActionType union; kept as a plain list so the UI can render one field each.
-export const ACTION_TYPES = [
+const ACTION_TYPES = [
   'connect',
   'message',
   'view_profile',
@@ -234,7 +234,9 @@ export const DEFAULT_SCHEDULE: AccountSchedule = {
 
 export interface AccountLimits {
   caps: Record<ActionType, number>;
+  enabled?: Partial<Record<ActionType, boolean>>;
   schedule?: AccountSchedule;
+  schedules?: Partial<Record<ActionType, AccountSchedule>>;
 }
 
 export interface Account {
@@ -242,6 +244,11 @@ export interface Account {
   handle: string;
   state: string;
   limits: AccountLimits;
+  /** Operator pause: the hardest stop in the system. While true the safety gate
+   * denies every outbound action, so nothing queued can leave. */
+  paused: boolean;
+  /** Approved outbound messages waiting on the sender — what a pause is holding. */
+  queuedMessageCount: number;
 }
 
 export interface ListSummary {
@@ -350,6 +357,10 @@ export const api = {
   bulkApprove: (messageIds: string[]) =>
     send<BulkApproveResult>('/api/pending/approve', 'POST', { messageIds }),
   accounts: () => get<Account[]>('/api/accounts'),
+  // No pause/resume client calls: Settings drives the per-action gates instead.
+  // The account-wide pause remains the harder stop (it denies every action type
+  // and backs kill_all) and is reached through the privileged MCP tools, which
+  // deliberately bypass this HTTP path so they work when it is wedged.
   lists: () => get<ListSummary[]>('/api/lists'),
   getList: (id: string) => get<ListDetail>(`/api/lists/${id}`),
   removeListMembers: (id: string, memberIds: string[]) =>
@@ -378,11 +389,13 @@ export const api = {
     id: string,
     caps: Record<ActionType, number>,
     schedule?: AccountSchedule,
+    enabled?: Partial<Record<ActionType, boolean>>,
+    schedules?: Partial<Record<ActionType, AccountSchedule>>,
   ): Promise<AccountLimits> => {
     const res = await fetch(`/api/accounts/${id}/limits`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(schedule ? { caps, schedule } : { caps }),
+      body: JSON.stringify({ caps, schedule, enabled, schedules }),
     });
     if (!res.ok) throw new Error(await errorText(res));
     const body = (await res.json()) as { limits: AccountLimits };

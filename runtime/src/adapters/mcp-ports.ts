@@ -41,6 +41,7 @@ import type {
   TargetInput,
 } from '@loa/mcp';
 import type { DefaultSafetyGate } from '@loa/safety';
+import { DEFAULT_CONFIG, effectiveSchedule } from '@loa/safety';
 import type {
   Account,
   ApprovalDecision,
@@ -408,7 +409,9 @@ export class CampaignAdapter implements CampaignPort {
     const limits = row ? rowToAccount(row).limits : undefined;
     const cap = limits?.caps[first.stepType] ?? DEFAULT_CAPS[first.stepType];
     if (cap <= 0) return undefined;
-    const schedule = limits?.schedule ?? DEFAULT_SCHEDULE;
+    const schedule = limits
+      ? effectiveSchedule({ limits }, DEFAULT_CONFIG, first.stepType)
+      : DEFAULT_SCHEDULE;
     const existing = await this.store.sequence.listTargetProgress(campaignId);
     const ledger = existing
       .filter((p) => p.state === 'in_progress' && p.currentStep === 0)

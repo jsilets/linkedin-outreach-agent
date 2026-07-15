@@ -55,6 +55,12 @@ export interface RuntimeConfig {
    */
   replyPollIntervalMs?: number;
   /**
+   * Delay between per-thread history reads inside one reply-detection pass.
+   * Prevents a single poll from making one LinkedIn request per active lead
+   * back-to-back. Defaults to 5s; set LOA_REPLY_HISTORY_READ_DELAY_MS to tune.
+   */
+  replyHistoryReadDelayMs: number;
+  /**
    * Poll interval (ms) for the acceptance-detection tick. Unset means it does
    * NOT auto-start (same opt-in rule as the reply tick): composing the runtime
    * never reads the connections list on its own. Set LOA_ACCEPTANCE_POLL_INTERVAL_MS
@@ -71,6 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     profileDir: env.LOA_PROFILE_DIR ?? '/data/profile',
     vaultDir: env.LOA_VAULT_DIR ?? '/data/vault',
     allowNoProxy: env.LOA_ALLOW_NO_PROXY === 'true',
+    replyHistoryReadDelayMs: 5_000,
   };
   if (env.DATABASE_URL) cfg.databaseUrl = env.DATABASE_URL;
   if (env.OPENROUTER_API_KEY) cfg.openRouterApiKey = env.OPENROUTER_API_KEY;
@@ -85,6 +92,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
   if (env.LOA_DISPATCH_INTERVAL_MS) cfg.dispatchIntervalMs = Number(env.LOA_DISPATCH_INTERVAL_MS);
   if (env.LOA_REPLY_POLL_INTERVAL_MS)
     cfg.replyPollIntervalMs = Number(env.LOA_REPLY_POLL_INTERVAL_MS);
+  if (env.LOA_REPLY_HISTORY_READ_DELAY_MS)
+    cfg.replyHistoryReadDelayMs = Number(env.LOA_REPLY_HISTORY_READ_DELAY_MS);
   if (env.LOA_ACCEPTANCE_POLL_INTERVAL_MS)
     cfg.acceptancePollIntervalMs = Number(env.LOA_ACCEPTANCE_POLL_INTERVAL_MS);
   return cfg;

@@ -30,13 +30,15 @@ import {
   mayExecuteDirectly,
 } from '@loa/mcp';
 import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
-import type { AccountSchedule, CampaignStepType, Json, db as shared } from '@loa/shared';
-import {
-  CONTACTED_TARGET_STAGES,
-  canonicalProfileKey,
-  DEFAULT_SCHEDULE,
-  SafetyDeferredError,
+import { DEFAULT_CONFIG, effectiveSchedule } from '@loa/safety';
+import type {
+  AccountSchedule,
+  ActionType,
+  CampaignStepType,
+  Json,
+  db as shared,
 } from '@loa/shared';
+import { CONTACTED_TARGET_STAGES, canonicalProfileKey, SafetyDeferredError } from '@loa/shared';
 import { personalizeBody } from '../executor/session-provider.js';
 import type { ActionStorePort, SequenceStorePort } from '../store/index.js';
 import { advanceAfterStep, dueAfterDelay } from './advance.js';
@@ -46,6 +48,15 @@ import { advanceAfterStep, dueAfterDelay } from './advance.js';
  * matches, a profile that always rejects) is abandoned — terminal 'cancelled',
  * target pulled from the funnel — instead of retried on every tick forever. */
 const MAX_SEND_ATTEMPTS = 5;
+
+/** Treat a send lane as systemically broken — our fault, not the recipients' —
+ * once this many DISTINCT targets have failed with no success to offset them.
+ * Below this, a failing send is far likelier to be one unreachable person. */
+const SYSTEMIC_FAILURE_TARGETS = 3;
+
+/** How far back the systemic check looks. Wide enough to span a working day's
+ * sends, so an overnight gap does not make a broken lane look healthy. */
+const LANE_HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type CampaignStepRow = shared.CampaignStepRow;
 type TargetProgressRow = shared.TargetProgressRow;
@@ -123,7 +134,7 @@ export interface DispatchTickDeps {
   messages: MessageRepoPort;
   /** Action failure counter, for the send give-up cap. Optional so tests that do
    * not exercise the cap can omit it; wired in compose from the action store. */
-  actions?: Pick<ActionStorePort, 'countFailedSince'>;
+  actions?: Pick<ActionStorePort, 'countFailedSince' | 'laneHealthSince'>;
   /** Cross-campaign suppression (the person said Stop, on any campaign). Wired by
    * compose from the orchestrator; omitted by tests that do not exercise it. When
    * present, a suppressed target's approved send is cancelled and a suppressed
@@ -187,7 +198,11 @@ export class DispatchTick {
   private readonly gate: GateDeps;
   private readonly targets: TargetStagePort;
   private readonly messages: MessageRepoPort;
-  private readonly actions?: Pick<ActionStorePort, 'countFailedSince'>;
+  private readonly actions?: Pick<ActionStorePort, 'countFailedSince' | 'laneHealthSince'>;
+  /** Lanes already reported as systemically broken, so the halt is logged once
+   * per process rather than every tick. Clears on restart, which is correct: a
+   * fresh process should re-evaluate the lane rather than trust a stale halt. */
+  private readonly haltedLanes = new Set<string>();
   private readonly suppression?: { isSuppressed(targetId: string): Promise<boolean> };
   private readonly replyProbe?: SendTimeReplyCheck;
   private readonly log?: {
@@ -234,10 +249,15 @@ export class DispatchTick {
     return { campaignId: blocker.campaignId, stage: blocker.stage, linkedinUrn: key };
   }
 
-  /** The account's working schedule (its own, else the global default). */
-  private async scheduleFor(accountId: string): Promise<AccountSchedule> {
+  /** The account's working schedule for an action (action-specific, account-wide, fallback). */
+  private async scheduleFor(accountId: string, actionType?: ActionType): Promise<AccountSchedule> {
     const acct = await this.gate.safety.getAccount(accountId);
-    return acct.limits?.schedule ?? DEFAULT_SCHEDULE;
+    return effectiveSchedule(acct, DEFAULT_CONFIG, actionType);
+  }
+
+  private nextActionType(steps: CampaignStepRow[], handledIdx: number): ActionType | undefined {
+    const next = steps[handledIdx + 1]?.stepType;
+    return next && next !== 'delay' ? next : undefined;
   }
 
   /** One pass: send any approved-and-due messages, then process every due
@@ -296,6 +316,10 @@ export class DispatchTick {
     const req = msg.pendingReq as ActRequest | undefined;
     if (!req) return undefined; // pre-binding orphan; nothing to dispatch
 
+    const account = await this.gate.safety.getAccount(req.accountId);
+    const decision = await this.gate.safety.canAct(account, req);
+    if (decision.kind !== 'allow') return undefined;
+
     // Give-up cap: if this send has already failed MAX_SEND_ATTEMPTS times, stop
     // retrying it every tick and abandon it terminally. This is the general
     // "can't get stuck" guard — a permanently-failing send (e.g. a recipient
@@ -304,6 +328,13 @@ export class DispatchTick {
     if (this.actions) {
       const failures = await this.actions.countFailedSince(msg.targetId, req.type, msg.createdAt);
       if (failures >= MAX_SEND_ATTEMPTS) {
+        // Before abandoning this lead, ask whose fault it is. Cancelling assumes
+        // the recipient is unreachable; if the whole lane is failing, the fault
+        // is ours and cancelling would quietly destroy every queued lead five
+        // attempts at a time. Halt instead and let a human look.
+        if (await this.laneIsSystemicallyFailing(req.accountId, req.type, now)) {
+          return this.haltSendLane(msg, req.type);
+        }
         const prog = await this.sequence.getTargetProgressByTarget(msg.targetId);
         return this.giveUpApproved(msg, prog?.id, req.type, failures);
       }
@@ -404,7 +435,10 @@ export class DispatchTick {
       return { kind: 'executed', progressId: prog?.id ?? msg.targetId, actionId, nextStep: -1 };
     }
     const steps = (await this.sequence.listCampaignSteps(prog.campaignId)).filter((s) => s.enabled);
-    const schedule = await this.scheduleFor(prog.accountId);
+    const schedule = await this.scheduleFor(
+      prog.accountId,
+      this.nextActionType(steps, prog.currentStep),
+    );
     const patch = advanceAfterStep(steps, prog.currentStep, now, schedule);
     await this.sequence.advanceTargetProgress(prog.id, patch);
     return { kind: 'executed', progressId: prog.id, actionId, nextStep: patch.currentStep! };
@@ -435,6 +469,43 @@ export class DispatchTick {
    * would mislabel an exhausted send as a reply), with the failure count in the
    * error message and a distinct audit event so the operator sees it gave up.
    * Mirrors the step()-throw failure path, which also sets state 'failed'. */
+  /**
+   * Whether this account's send lane for `type` is failing systemically rather
+   * than per-recipient: several distinct targets failed and nothing succeeded to
+   * offset them. One person's overlay never matching is normal; three people's
+   * never matching while nothing sends is a bug in us.
+   */
+  private async laneIsSystemicallyFailing(
+    accountId: string,
+    type: string,
+    now: Date,
+  ): Promise<boolean> {
+    if (!this.actions?.laneHealthSince) return false;
+    const since = new Date(now.getTime() - LANE_HEALTH_WINDOW_MS);
+    const lane = await this.actions.laneHealthSince(accountId, type, since);
+    return lane.successes === 0 && lane.distinctFailedTargets >= SYSTEMIC_FAILURE_TARGETS;
+  }
+
+  /**
+   * Stop attempting this lane instead of cancelling the lead.
+   *
+   * The message stays 'approved' and the cursor untouched, so nothing is lost:
+   * once the underlying defect is fixed the backlog sends. Returning undefined
+   * means no send is attempted this tick either, so a broken lane stops burning
+   * live attempts. The halt is logged once per lane per process — the operator
+   * needs to know the lane froze, not to read it every tick.
+   */
+  private haltSendLane(msg: MessageRow, type: string): undefined {
+    const lane = `${msg.accountId}:${type}`;
+    if (this.haltedLanes.has(lane)) return undefined;
+    this.haltedLanes.add(lane);
+    this.logEvent('send_lane_halted', msg.accountId, {
+      type,
+      reason: `${type} failed for ${SYSTEMIC_FAILURE_TARGETS}+ distinct targets with no successes; holding the queue instead of cancelling leads`,
+    });
+    return undefined;
+  }
+
   private async giveUpApproved(
     msg: MessageRow,
     progressId: string | undefined,
@@ -499,7 +570,10 @@ export class DispatchTick {
         return { kind: 'completed', progressId: progress.id };
       }
       const nextStep = steps[nextIdx]!;
-      const schedule = await this.scheduleFor(progress.accountId);
+      const schedule = await this.scheduleFor(
+        progress.accountId,
+        nextStep.stepType === 'delay' ? undefined : nextStep.stepType,
+      );
       await this.sequence.advanceTargetProgress(progress.id, {
         currentStep: nextIdx,
         nextStepAt: dueAfterDelay(now, nextStep.delaySeconds, schedule),
@@ -672,7 +746,7 @@ export class DispatchTick {
 
     // Executed. Advance to the next step (or complete) with the shared rule,
     // day-aligning the next due time to the account's working schedule.
-    const schedule = await this.scheduleFor(progress.accountId);
+    const schedule = await this.scheduleFor(progress.accountId, this.nextActionType(steps, idx));
     const patch = advanceAfterStep(steps, idx, now, schedule);
     await this.sequence.advanceTargetProgress(progress.id, patch);
     return {
