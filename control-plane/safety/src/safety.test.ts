@@ -542,6 +542,7 @@ describe('constructor counter guard', () => {
     dailyUsage: { usedToday: () => budget('Active').used },
     weeklyInvites: { invitesLast7d: () => 0 },
     recentActions: { lastActionAt: () => undefined },
+    outstandingInvites: { outstandingInvites: () => 0 },
   };
 
   it('throws when any counter is missing and the test flag is not set', () => {
@@ -551,9 +552,14 @@ describe('constructor counter guard', () => {
     expect(
       () => new DefaultSafetyGate({ clock: fixedClock, dailyUsage: counters.dailyUsage }),
     ).toThrow(/requires dailyUsage/);
+    // Every counter but the newest: the guard must not have a hole per-counter.
+    const { outstandingInvites: _omitted, ...withoutOutstanding } = counters;
+    expect(() => new DefaultSafetyGate({ clock: fixedClock, ...withoutOutstanding })).toThrow(
+      /outstandingInvites/,
+    );
   });
 
-  it('constructs when all three counters are wired', () => {
+  it('constructs when every counter is wired', () => {
     expect(() => new DefaultSafetyGate({ clock: fixedClock, ...counters })).not.toThrow();
   });
 });
@@ -674,5 +680,42 @@ describe('working schedule (hours + days)', () => {
     const d = gate.canAct(acct, action('message'));
     expect(d.kind).toBe('defer');
     if (d.kind === 'defer') expect(d.until.getDay()).toBe(0);
+  });
+});
+
+describe('outstanding-invite ceiling', () => {
+  // LinkedIn's harshest documented invite restriction is for too many
+  // OUTSTANDING invitations (up to a month, vs about a week for the ordinary
+  // limit). The pile only grows: an invite nobody accepts is pending forever.
+  const gateWith = (pending: number) =>
+    new DefaultSafetyGate({
+      allowMissingCounters: true,
+      clock: fixedClock,
+      config: {
+        ...DEFAULT_CONFIG,
+        outstandingInviteCeiling: 10,
+        activeHoursStart: 0,
+        activeHoursEnd: 0,
+      },
+      outstandingInvites: { outstandingInvites: () => pending },
+    });
+
+  it('allows a connect below the ceiling', () => {
+    const d = gateWith(9).canAct(account({ state: 'Active' }), action('connect'));
+    expect(d.kind).toBe('allow');
+  });
+
+  it('DENIES a connect at the ceiling, naming the pile and the remedy', () => {
+    // Deny, not defer: waiting does not drain the pile, so a defer would retry
+    // silently forever. The reason has to tell the operator what to do.
+    const d = gateWith(10).canAct(account({ state: 'Active' }), action('connect'));
+    expect(d.kind).toBe('deny');
+    expect(d.kind === 'deny' && d.reason).toMatch(/10 outstanding invitations/);
+    expect(d.kind === 'deny' && d.reason).toMatch(/withdraw/i);
+  });
+
+  it('does not restrict messages: the ceiling is about invitations', () => {
+    const d = gateWith(500).canAct(account({ state: 'Active' }), action('message'));
+    expect(d.kind).toBe('allow');
   });
 });

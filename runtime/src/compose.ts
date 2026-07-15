@@ -60,6 +60,7 @@ import {
   replaySignals,
   StoreBackedActionPacer,
   StoreBackedDailyUsage,
+  StoreBackedOutstandingInvites,
   StoreBackedWeeklyInviteCounter,
 } from './adapters/safety-state.js';
 import { SchedulerService } from './adapters/scheduler.js';
@@ -183,11 +184,13 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // action pacer that spaces every account's actions apart (anti-burst).
   const weekly = new StoreBackedWeeklyInviteCounter();
   const daily = new StoreBackedDailyUsage();
+  const outstanding = new StoreBackedOutstandingInvites();
   const pacer = new StoreBackedActionPacer();
   const pause = new PauseRegistry();
   const gate = new DefaultSafetyGate({
     weeklyInvites: weekly,
     dailyUsage: daily,
+    outstandingInvites: outstanding,
     recentActions: pacer,
     pause,
     ...(deps.safetyConfig ? { config: deps.safetyConfig } : {}),
@@ -202,7 +205,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // Executor + LLM. The fake executor is always built (smoke drives it via
   // feedInbound); the wired executor is the real account-runner when
   // LOA_EXECUTOR=real, else the fake.
-  const fakeExecutor = new FakeExecutor({ store, weekly, daily, pacer });
+  const fakeExecutor = new FakeExecutor({ store, weekly, daily, pacer, outstanding });
   let sessionProvider: LiveSessionProvider | undefined;
   let executor: McpExecutorPort & AgentExecutorPort = fakeExecutor;
   if (config.executorMode === 'real') {
@@ -378,6 +381,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       // A lead sourced from search carries the stub LinkedIn shows a stranger
       // ("R S."); acceptance reveals the real name. Record the swap so the
       // provenance of a changed name is auditable rather than mysterious.
+      onInviteAccepted: (accountId) => outstanding.release(accountId),
       onNameRefreshed: (e) => {
         void orchestrator.eventLog
           .recordEvent('lead_name_refreshed', e.accountId, {
@@ -430,6 +434,7 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       const ids = accounts.map((a) => a.id);
       await weekly.rehydrate(store, ids);
       await daily.rehydrate(store, ids);
+      await outstanding.rehydrate(store, ids);
       await pacer.rehydrate(store, ids);
       await pause.rehydrate(store, ids);
       await replaySignals(

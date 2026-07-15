@@ -5,6 +5,7 @@ export { DEFAULT_CONFIG } from './config.js';
 export type {
   Clock,
   DailyUsageCounter,
+  OutstandingInviteCounter,
   PauseState,
   RecentActionClock,
   SafetyGateOptions,

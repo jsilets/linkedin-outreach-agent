@@ -44,6 +44,14 @@ export interface SafetyConfig {
    * daily caps and the weekly ceiling bound totals; this bounds spacing so
    * activity looks human, not a burst of back-to-back sends.
    */
+  /**
+   * Ceiling on invitations sent but not yet accepted. LinkedIn restricts an
+   * account for "too many outstanding invitations" and publishes no number, so
+   * this is a backstop against an obviously-unhealthy pile rather than a model
+   * of their rule — set well above normal operation, because tripping it stops
+   * invites until stale ones are withdrawn.
+   */
+  outstandingInviteCeiling: number;
   minActionGapMs: number;
   /**
    * Extra random spread added on top of minActionGapMs, in ms. The effective
@@ -74,6 +82,11 @@ export const DEFAULT_CONFIG: SafetyConfig = {
   active: caps(DEFAULT_CAPS),
   throttleMultiplier: 0.5,
   weeklyInviteCeiling: 100,
+  // 500 pending invites is far past healthy without being a day-to-day limit:
+  // at the 100/week ceiling and a ~38% acceptance rate the pile grows by ~60 a
+  // week, so this is roughly two months of never withdrawing anything. It is a
+  // tripwire for a neglected account, not a throttle.
+  outstandingInviteCeiling: 500,
   acceptanceRateFloor: 0.35,
   softSignalCooldownThreshold: 2,
   // 3 min floor + up to 4 min jitter => a 3-7 min gap between any two actions

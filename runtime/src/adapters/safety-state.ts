@@ -17,6 +17,7 @@
 
 import type {
   DailyUsageCounter,
+  OutstandingInviteCounter,
   PauseState,
   RecentActionClock,
   WeeklyInviteCounter,
@@ -61,12 +62,20 @@ export class StoreBackedWeeklyInviteCounter implements WeeklyInviteCounter {
     this.now = opts.now ?? (() => new Date());
   }
 
-  /** Rebuild the window for every account from persisted connect action rows. */
+  /**
+   * Rebuild the window for every account from persisted connect action rows.
+   *
+   * SUCCESSES ONLY, matching what record() counts on the live path ("the weekly
+   * ceiling counts connects that actually went out") and what the daily counter
+   * rehydrates. Without the filter a restart silently re-counted failed invites
+   * — attempts LinkedIn never saw — and burned real ceiling with them, so an
+   * account's headroom shrank every time it rebooted after a bad connect.
+   */
   async rehydrate(store: RuntimeStore, accountIds: string[]): Promise<void> {
     for (const accountId of accountIds) {
       const rows = await store.action.listByAccount(accountId);
       const stamps = rows
-        .filter((r) => r.type === 'connect')
+        .filter((r) => r.type === 'connect' && r.result === 'success')
         .map((r) => (r.executedAt ?? r.scheduledAt).getTime());
       this.connects.set(accountId, stamps);
     }
@@ -173,6 +182,53 @@ export class StoreBackedDailyUsage implements DailyUsageCounter {
       out[k] = fresh.length;
     }
     return out;
+  }
+}
+
+/**
+ * Synchronous counter of invitations sent but not yet accepted, per account.
+ *
+ * The pile is read from the enrollment cursors parked at 'awaiting_connection',
+ * which is our own record of "invited, still waiting". That undercounts invites
+ * a human sent outside a campaign; it is a backstop, and the operator's own
+ * manual invites are not what a runaway automation looks like.
+ *
+ * rehydrate() is the accurate read at boot; record() adds a fresh invite and
+ * release() removes one the acceptance tick has seen accepted. Both ends are
+ * wired precisely so this number tracks the same rows the web read model counts
+ * live — a gate that denies at 500 while the Settings card reads 460 is the same
+ * UI-versus-gate disagreement this change set exists to remove, just inverted.
+ *
+ * Residual drift is upward-only and self-correcting: a cursor that leaves
+ * 'awaiting_connection' by some path other than acceptance (a removed target)
+ * is not released here, so the count can sit high until the next boot. Upward is
+ * the safe direction for a ceiling, and boot re-derives from the rows.
+ */
+export class StoreBackedOutstandingInvites implements OutstandingInviteCounter {
+  private readonly pending = new Map<string, number>();
+
+  /** Count each account's parked invites from persisted enrollment cursors. */
+  async rehydrate(store: RuntimeStore, accountIds: string[]): Promise<void> {
+    const rows = await store.sequence.awaitingConnectionEnrollments();
+    const counts = new Map<string, number>();
+    for (const r of rows) counts.set(r.accountId, (counts.get(r.accountId) ?? 0) + 1);
+    for (const id of accountIds) this.pending.set(id, counts.get(id) ?? 0);
+  }
+
+  /** Note that an invite went out and is now pending. */
+  record(accountId: string): void {
+    this.pending.set(accountId, (this.pending.get(accountId) ?? 0) + 1);
+  }
+
+  /** Note that a pending invite was accepted and has left the pile. Floors at 0:
+   * an acceptance for an invite sent before this process booted is already
+   * absent from the rehydrated count, and must not push it negative. */
+  release(accountId: string): void {
+    this.pending.set(accountId, Math.max(0, (this.pending.get(accountId) ?? 0) - 1));
+  }
+
+  outstandingInvites(accountId: string): number {
+    return this.pending.get(accountId) ?? 0;
   }
 }
 

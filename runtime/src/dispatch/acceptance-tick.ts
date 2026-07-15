@@ -101,6 +101,11 @@ export interface AcceptanceTickDeps {
     from: string | null;
     to: string;
   }) => void;
+  /** Optional sink for "this invite is no longer outstanding". The gate's
+   * outstanding-invite ceiling counts the pending pile, and acceptance is how a
+   * pending invite leaves it; without this the gate's count only ever grows
+   * between restarts and would disagree with what the UI reads live. */
+  onInviteAccepted?: (accountId: string) => void;
 }
 
 export class AcceptanceTick {
@@ -120,6 +125,7 @@ export class AcceptanceTick {
     from: string | null;
     to: string;
   }) => void;
+  private readonly onInviteAccepted?: (accountId: string) => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
 
@@ -132,6 +138,7 @@ export class AcceptanceTick {
     this.scheduleFor = deps.scheduleFor;
     this.onOutcome = deps.onOutcome;
     this.onNameRefreshed = deps.onNameRefreshed;
+    this.onInviteAccepted = deps.onInviteAccepted;
   }
 
   /** One pass: read each account's connections and release accepted targets. */
@@ -218,6 +225,9 @@ export class AcceptanceTick {
     const schedule = (await this.scheduleFor?.(progress.accountId, actionType)) ?? DEFAULT_SCHEDULE;
     const patch = advanceAfterStep(steps, progress.currentStep, now, schedule);
     await this.sequence.advanceTargetProgress(progress.id, patch);
+    // The cursor has just left 'awaiting_connection': this invite is accepted and
+    // is no longer part of the outstanding pile the gate ceilings on.
+    this.onInviteAccepted?.(progress.accountId);
     const name = resolvedName ?? leadName(target);
     if (patch.state === 'completed') {
       return {

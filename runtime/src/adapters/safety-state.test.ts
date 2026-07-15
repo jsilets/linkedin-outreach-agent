@@ -10,6 +10,7 @@ import {
   PauseRegistry,
   RESUME_EVENT_KIND,
   StoreBackedDailyUsage,
+  StoreBackedOutstandingInvites,
 } from './safety-state.js';
 
 const ACCT = 'acct-pause';
@@ -131,5 +132,61 @@ describe('StoreBackedDailyUsage: the day is a local calendar day', () => {
     const usage = new StoreBackedDailyUsage({ now: () => NOON });
     await usage.rehydrate(store, [USAGE_ACCT]);
     expect(usage.usedToday(USAGE_ACCT).connect).toBe(1);
+  });
+});
+
+describe('StoreBackedOutstandingInvites', () => {
+  it('counts each account only its own parked invites', async () => {
+    const store = new InMemoryStore();
+    const park = async (accountId: string, targetId: string) => {
+      const prog = await store.sequence.enrollTarget('camp-1', targetId, accountId);
+      await store.sequence.advanceTargetProgress(prog.id, {
+        state: 'awaiting_connection',
+        nextStepAt: null,
+      });
+    };
+    await park(USAGE_ACCT, 'tgt-1');
+    await park(USAGE_ACCT, 'tgt-2');
+    await park('other-acct', 'tgt-3');
+
+    const outstanding = new StoreBackedOutstandingInvites();
+    await outstanding.rehydrate(store, [USAGE_ACCT, 'other-acct']);
+    expect(outstanding.outstandingInvites(USAGE_ACCT)).toBe(2);
+    expect(outstanding.outstandingInvites('other-acct')).toBe(1);
+  });
+
+  it('an account with nothing parked reads zero, not undefined', async () => {
+    const outstanding = new StoreBackedOutstandingInvites();
+    await outstanding.rehydrate(new InMemoryStore(), [USAGE_ACCT]);
+    expect(outstanding.outstandingInvites(USAGE_ACCT)).toBe(0);
+  });
+
+  it('release() removes an accepted invite, so the gate tracks the same rows the UI reads', async () => {
+    const outstanding = new StoreBackedOutstandingInvites();
+    await outstanding.rehydrate(new InMemoryStore(), [USAGE_ACCT]);
+    outstanding.record(USAGE_ACCT);
+    outstanding.record(USAGE_ACCT);
+    outstanding.release(USAGE_ACCT);
+    expect(outstanding.outstandingInvites(USAGE_ACCT)).toBe(1);
+  });
+
+  it('release() floors at zero for an invite sent before this process booted', async () => {
+    // The acceptance predates the rehydrated count, so it is already excluded.
+    // Going negative would hand back ceiling that was never spent.
+    const outstanding = new StoreBackedOutstandingInvites();
+    await outstanding.rehydrate(new InMemoryStore(), [USAGE_ACCT]);
+    outstanding.release(USAGE_ACCT);
+    outstanding.release(USAGE_ACCT);
+    expect(outstanding.outstandingInvites(USAGE_ACCT)).toBe(0);
+  });
+
+  it('record() adds a freshly-sent invite to the pile', async () => {
+    // Drift is upward-only by design: the count can go stale high as invites are
+    // accepted, which only makes the ceiling more cautious. Boot corrects it.
+    const outstanding = new StoreBackedOutstandingInvites();
+    await outstanding.rehydrate(new InMemoryStore(), [USAGE_ACCT]);
+    outstanding.record(USAGE_ACCT);
+    outstanding.record(USAGE_ACCT);
+    expect(outstanding.outstandingInvites(USAGE_ACCT)).toBe(2);
   });
 });

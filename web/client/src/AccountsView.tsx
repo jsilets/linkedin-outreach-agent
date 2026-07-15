@@ -45,6 +45,88 @@ function actionEnabled(account: Account, type: ActionType): boolean {
   return account.limits.enabled?.[type] ?? true;
 }
 
+// A limiter is "near" once it is within 10% of its ceiling, so an operator sees
+// it coming rather than discovering it after sending stops.
+const NEAR_LIMIT_FRACTION = 0.9;
+
+function limitStatus(used: number, ceiling: number): 'at' | 'near' | 'ok' {
+  if (ceiling <= 0 || used >= ceiling) return 'at';
+  return used >= ceiling * NEAR_LIMIT_FRACTION ? 'near' : 'ok';
+}
+
+/**
+ * One read-only limiter, shown as used/ceiling with a proportional bar.
+ *
+ * Not editable: unlike the daily cap these two live in the gate's own
+ * SafetyConfig, not in the account's limits blob. They are here because the gate
+ * enforces three limiters on invites and a card that showed only the daily cap
+ * promised capacity the gate refused — which reads, from the outside, as sends
+ * silently stopping for no reason. `note` says what the limiter does when hit.
+ */
+function LimitReadout({
+  label,
+  used,
+  ceiling,
+  hint,
+  note,
+}: {
+  label: string;
+  used: number;
+  ceiling: number;
+  hint: string;
+  note: string;
+}) {
+  const status = limitStatus(used, ceiling);
+  const pct = ceiling > 0 ? Math.min(100, (used / ceiling) * 100) : 100;
+  return (
+    <div className={`limit-readout ${status}`}>
+      <div className="limit-readout-head">
+        <span className="field-label">{label}</span>
+        <span className="limit-readout-value">
+          {used.toLocaleString()} / {ceiling.toLocaleString()}
+        </span>
+      </div>
+      <div
+        className="limit-readout-bar"
+        role="meter"
+        aria-valuenow={used}
+        aria-valuemin={0}
+        aria-valuemax={ceiling}
+        aria-label={`${label}: ${used} of ${ceiling}`}
+      >
+        <span className="limit-readout-fill" style={{ transform: `scaleX(${pct / 100})` }} />
+      </div>
+      <p className="limit-readout-hint">{status === 'ok' ? hint : note}</p>
+    </div>
+  );
+}
+
+/**
+ * The two invite limiters the account card cannot edit: the rolling weekly
+ * ceiling and the outstanding-invite ceiling. Invites only — neither applies to
+ * any other action type.
+ */
+function InviteLimiters({ account }: { account: Account }) {
+  return (
+    <div className="limit-readouts">
+      <LimitReadout
+        label="This week"
+        used={account.weeklyInvitesUsed}
+        ceiling={account.weeklyInviteCeiling}
+        hint="Invites sent in the last 7 days."
+        note="Weekly invite ceiling reached. Invites resume as the 7-day window rolls forward."
+      />
+      <LimitReadout
+        label="Outstanding"
+        used={account.outstandingInvites}
+        ceiling={account.outstandingInviteCeiling}
+        hint="Invites sent but not yet accepted."
+        note="Too many invites are still pending. Invites stay blocked until stale ones are withdrawn — waiting will not clear this."
+      />
+    </div>
+  );
+}
+
 function actionSchedule(account: Account, type: ActionType): AccountSchedule {
   return account.limits.schedules?.[type] ?? account.limits.schedule ?? DEFAULT_SCHEDULE;
 }
@@ -413,6 +495,12 @@ function AccountCard({ account }: { account: Account }) {
                   />
                   <span className="limit-field-unit">{ACTION_NOUNS[type]} / day</span>
                 </label>
+
+                {/* The daily cap above is one of THREE limiters the gate applies
+                    to connects. The other two are not editable and not derived
+                    from anything on this card, so they are shown here rather
+                    than left to be inferred from sends that stop. */}
+                {type === 'connect' && <InviteLimiters account={account} />}
 
                 <ScheduleEditor
                   schedule={actionSched}

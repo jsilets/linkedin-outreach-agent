@@ -21,6 +21,7 @@ import type { Account, Action, ActionType, Target } from '@loa/shared';
 import type {
   StoreBackedActionPacer,
   StoreBackedDailyUsage,
+  StoreBackedOutstandingInvites,
   StoreBackedWeeklyInviteCounter,
 } from '../adapters/safety-state.js';
 import type { RuntimeStore } from '../store/index.js';
@@ -28,6 +29,7 @@ import type { RuntimeStore } from '../store/index.js';
 export interface FakeExecutorDeps {
   store: RuntimeStore;
   weekly: StoreBackedWeeklyInviteCounter;
+  outstanding?: StoreBackedOutstandingInvites;
   daily: StoreBackedDailyUsage;
   pacer: StoreBackedActionPacer;
   now?: () => Date;
@@ -36,6 +38,7 @@ export interface FakeExecutorDeps {
 export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
   private readonly store: RuntimeStore;
   private readonly weekly: StoreBackedWeeklyInviteCounter;
+  private readonly outstanding?: StoreBackedOutstandingInvites;
   private readonly daily: StoreBackedDailyUsage;
   private readonly pacer: StoreBackedActionPacer;
   private readonly now: () => Date;
@@ -45,6 +48,7 @@ export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
   constructor(deps: FakeExecutorDeps) {
     this.store = deps.store;
     this.weekly = deps.weekly;
+    this.outstanding = deps.outstanding;
     this.daily = deps.daily;
     this.pacer = deps.pacer;
     this.now = deps.now ?? (() => new Date());
@@ -96,6 +100,7 @@ export class FakeExecutor implements McpExecutorPort, AgentExecutorPort {
     });
     if (type === 'connect') {
       this.weekly.record(accountId, executedAt);
+      this.outstanding?.record(accountId);
     }
     // Count every successful action by type so the gate's daily caps are enforced.
     this.daily.record(accountId, type, executedAt);

@@ -249,6 +249,16 @@ export interface Account {
   paused: boolean;
   /** Approved outbound messages waiting on the sender — what a pause is holding. */
   queuedMessageCount: number;
+  /** Successful connects in the trailing 7 days. The gate checks this against
+   * weeklyInviteCeiling on every connect, independently of the daily cap. */
+  weeklyInvitesUsed: number;
+  /** Rolling 7-day ceiling on invites. At it, connects defer to tomorrow. */
+  weeklyInviteCeiling: number;
+  /** Invites sent but not yet accepted. */
+  outstandingInvites: number;
+  /** Ceiling on unaccepted invites. At it, connects are DENIED rather than
+   * deferred — the pile only drains by withdrawing stale invites. */
+  outstandingInviteCeiling: number;
 }
 
 export interface ListSummary {
