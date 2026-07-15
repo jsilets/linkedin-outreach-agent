@@ -930,9 +930,14 @@ export function buildPauseEventsQuery(accountIds: string[]) {
 /**
  * The safety inputs a send prediction needs: each account's resolved gate config
  * and state, whether an operator has it paused, plus its successful action count
- * since local midnight keyed `${accountId}:${type}` (the same day boundary and
- * success-only rule the gate's daily counter uses). Shared by the scheduled-send
- * forecast and the inbox timing.
+ * since local midnight keyed `${accountId}:${type}`.
+ *
+ * The local-midnight boundary and the success-only rule both mirror the gate's
+ * daily counter (StoreBackedDailyUsage). That claim was false until the gate
+ * moved off a rolling 24h window: this view would show capacity the gate then
+ * refused, which is precisely how an operator ends up asking why nothing is
+ * sending. If one side's day boundary moves, the other has to move with it.
+ * Shared by the scheduled-send forecast and the inbox timing.
  */
 async function loadGateInputs(
   accountIds: string[],
