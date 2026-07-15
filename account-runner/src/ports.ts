@@ -14,6 +14,9 @@ export interface LocatorPort {
   type(text: string, options?: { delay?: number }): Promise<void>;
   fill(text: string): Promise<void>;
   textContent(): Promise<string | null>;
+  // An element attribute, or null when absent. Used by refusal diagnostics to
+  // record the href a guard actually saw, rather than only the one it wanted.
+  getAttribute(name: string): Promise<string | null>;
   count(): Promise<number>;
   // Narrow an OR-chain / multi-match locator to its first element, so a click
   // does not trip Playwright strict mode when several elements match.

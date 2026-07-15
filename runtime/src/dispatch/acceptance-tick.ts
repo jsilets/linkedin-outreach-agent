@@ -24,8 +24,8 @@
 // Host-agnostic and restartable — no shared mutable tick state.
 
 import type { TargetRepoPort } from '@loa/orchestrator';
-import type { AccountSchedule, db as shared } from '@loa/shared';
-import { DEFAULT_SCHEDULE } from '@loa/shared';
+import type { AccountSchedule, ActionType, db as shared } from '@loa/shared';
+import { DEFAULT_SCHEDULE, isTruncatedName } from '@loa/shared';
 import type { AcceptedConnection, ConnectionsReaderPort } from '../adapters/observe-live.js';
 import type { SequenceStorePort } from '../store/index.js';
 import { advanceAfterStep } from './advance.js';
@@ -75,9 +75,10 @@ export interface AcceptanceTickResult {
   outcomes: AcceptanceOutcome[];
 }
 
-/** Narrow target-stage surface: read the parked target and set it 'connected'
- * on acceptance. Supplied by compose from the store's target repo. */
-type TargetStagePort = Pick<TargetRepoPort, 'findById' | 'setStage'>;
+/** Narrow target-stage surface: read the parked target, set it 'connected' on
+ * acceptance, and refresh the name the acceptance payload now reveals.
+ * Supplied by compose from the store's target repo. */
+type TargetStagePort = Pick<TargetRepoPort, 'findById' | 'setStage' | 'mergeExternalContext'>;
 
 export interface AcceptanceTickDeps {
   connections: ConnectionsReaderPort;
@@ -89,9 +90,17 @@ export interface AcceptanceTickDeps {
   /** The account's working schedule, so the first message after acceptance is
    * clocked to the next working-day morning (not exactly N*24h from acceptance).
    * Defaults to the global schedule when not provided. */
-  scheduleFor?: (accountId: string) => Promise<AccountSchedule>;
+  scheduleFor?: (accountId: string, actionType?: ActionType) => Promise<AccountSchedule>;
   /** Optional sink for per-outcome logging (audit / metrics). */
   onOutcome?: (o: AcceptanceOutcome) => void;
+  /** Optional sink for name refreshes, so a host can log that a lead's sourced
+   * stub was replaced by their real 1st-degree name. */
+  onNameRefreshed?: (e: {
+    targetId: string;
+    accountId: string;
+    from: string | null;
+    to: string;
+  }) => void;
 }
 
 export class AcceptanceTick {
@@ -100,8 +109,17 @@ export class AcceptanceTick {
   private readonly targets: TargetStagePort;
   private readonly now: () => Date;
   private readonly connectionsLimit: number;
-  private readonly scheduleFor?: (accountId: string) => Promise<AccountSchedule>;
+  private readonly scheduleFor?: (
+    accountId: string,
+    actionType?: ActionType,
+  ) => Promise<AccountSchedule>;
   private readonly onOutcome?: (o: AcceptanceOutcome) => void;
+  private readonly onNameRefreshed?: (e: {
+    targetId: string;
+    accountId: string;
+    from: string | null;
+    to: string;
+  }) => void;
   private timer: ReturnType<typeof setInterval> | undefined;
   private running = false;
 
@@ -113,6 +131,7 @@ export class AcceptanceTick {
     this.connectionsLimit = deps.connectionsLimit ?? DEFAULT_CONNECTIONS_LIMIT;
     this.scheduleFor = deps.scheduleFor;
     this.onOutcome = deps.onOutcome;
+    this.onNameRefreshed = deps.onNameRefreshed;
   }
 
   /** One pass: read each account's connections and release accepted targets. */
@@ -139,6 +158,31 @@ export class AcceptanceTick {
     return { accounts: byAccount.size, outcomes };
   }
 
+  /**
+   * Replace a truncated stored name with the full name the accepted connection
+   * carries, returning the name the lead should now be known by (or null when
+   * there is nothing better to say).
+   *
+   * Only a truncated or missing name is overwritten. A name that already reads
+   * like a real name is left exactly as sourced — the connections payload is a
+   * better source for a stub, not a licence to churn every lead's name on the
+   * tick that accepts it.
+   */
+  private async refreshTruncatedName(
+    target: shared.TargetRow,
+    accepted: AcceptedConnection,
+    accountId: string,
+  ): Promise<string | null> {
+    const stored = leadName(target);
+    const full = accepted.name?.trim();
+    if (!full || full === stored) return stored;
+    if (stored && !isTruncatedName(stored)) return stored;
+    if (isTruncatedName(full)) return stored; // no better than what we hold
+    await this.targets.mergeExternalContext(target.id, { name: full });
+    this.onNameRefreshed?.({ targetId: target.id, accountId, from: stored, to: full });
+    return full;
+  }
+
   /** Release one parked cursor if its target now appears in the connections. */
   private async release(
     progress: TargetProgressRow,
@@ -148,8 +192,17 @@ export class AcceptanceTick {
     const target = await this.targets.findById(progress.targetId);
     if (!target) return { kind: 'still_waiting', progressId: progress.id };
 
-    const accepted = connections.some((c) => matchesIdentity(c.entityUrn, c.profileUrl, target));
+    const accepted = connections.find((c) => matchesIdentity(c.entityUrn, c.profileUrl, target));
     if (!accepted) return { kind: 'still_waiting', progressId: progress.id };
+
+    // Acceptance is the moment the real name becomes knowable. A lead sourced
+    // from search carries whatever LinkedIn showed a stranger, which for an
+    // out-of-network person is a truncated stub ("R S."). The accepted
+    // connection is 1st-degree, so this payload — already in hand, no extra
+    // request — carries the full name. Refresh it now: the message step
+    // addresses the composer by typing this name into LinkedIn's typeahead, and
+    // a stub finds nobody.
+    const resolvedName = await this.refreshTruncatedName(target, accepted, progress.accountId);
 
     // Accepted. Move the target to 'connected' and release the cursor to the
     // step after the connect. The cursor was parked ON the connect step, so
@@ -160,10 +213,12 @@ export class AcceptanceTick {
       (s) => s.enabled,
     );
     // Day-align the first message to the next working morning (not accept + 24h).
-    const schedule = (await this.scheduleFor?.(progress.accountId)) ?? DEFAULT_SCHEDULE;
+    const nextStep = steps[progress.currentStep + 1]?.stepType;
+    const actionType = nextStep && nextStep !== 'delay' ? nextStep : undefined;
+    const schedule = (await this.scheduleFor?.(progress.accountId, actionType)) ?? DEFAULT_SCHEDULE;
     const patch = advanceAfterStep(steps, progress.currentStep, now, schedule);
     await this.sequence.advanceTargetProgress(progress.id, patch);
-    const name = leadName(target);
+    const name = resolvedName ?? leadName(target);
     if (patch.state === 'completed') {
       return {
         kind: 'completed',

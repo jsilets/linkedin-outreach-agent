@@ -29,6 +29,7 @@ class FakeLocator implements LocatorPort {
     private readonly log: LocatorLog,
     private readonly countValue: () => number,
     private readonly text: () => string | null,
+    private readonly attrs: () => Record<string, string> = () => ({}),
   ) {}
 
   async click(): Promise<void> {
@@ -42,6 +43,9 @@ class FakeLocator implements LocatorPort {
   }
   async textContent(): Promise<string | null> {
     return this.text();
+  }
+  async getAttribute(name: string): Promise<string | null> {
+    return this.attrs()[name] ?? null;
   }
   async count(): Promise<number> {
     return this.countValue();
@@ -72,6 +76,8 @@ export interface FakePageOptions {
   counts?: Record<string, number>;
   /** Per-selector textContent responses. */
   texts?: Record<string, string>;
+  /** Per-selector element attributes (e.g. href), for diagnostics that read them. */
+  attrs?: Record<string, Record<string, string>>;
   /** URL the page reports; updated by goto. */
   url?: string;
 }
@@ -133,10 +139,12 @@ export class FakePage implements PagePort {
     }
     const count = this.opts.counts?.[selector] ?? 1;
     const text = this.opts.texts?.[selector] ?? null;
+    const attrs = this.opts.attrs?.[selector] ?? {};
     return new FakeLocator(
       log,
       () => count,
       () => text,
+      () => attrs,
     );
   }
 

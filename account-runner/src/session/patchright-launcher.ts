@@ -40,6 +40,7 @@ function adaptLocator(loc: PwLocator): LocatorPort {
     type: (text, options) => loc.type(text, options),
     fill: (text) => loc.fill(text),
     textContent: () => loc.textContent(),
+    getAttribute: (name) => loc.getAttribute(name),
     count: () => loc.count(),
     first: () => adaptLocator(loc.first()),
     nth: (index) => adaptLocator(loc.nth(index)),

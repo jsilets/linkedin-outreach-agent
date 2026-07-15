@@ -56,6 +56,16 @@ describe('buildLaunchConfig', () => {
     expect(cfg.options.proxy).toEqual({ server: 'http://gw.proxy.example:7000' });
   });
 
+  it('sets the tall 1440x1200 viewport LinkedIn needs to render the recipient card', () => {
+    // 1280x720 never mounts the messaging profile card, which starves the
+    // wrong-recipient guard. Same viewport with and without a proxy identity.
+    expect(buildLaunchConfig(input).options.viewport).toEqual({ width: 1440, height: 1200 });
+    expect(buildLaunchConfig({ userDataDir: '/profiles/acct-1' }).options.viewport).toEqual({
+      width: 1440,
+      height: 1200,
+    });
+  });
+
   it('omits proxy and geo entirely when no identity is given', () => {
     const cfg = buildLaunchConfig({ userDataDir: '/profiles/acct-1' });
     expect(cfg.options.proxy).toBeUndefined();
