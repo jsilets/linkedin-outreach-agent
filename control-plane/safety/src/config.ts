@@ -76,9 +76,13 @@ export const DEFAULT_CONFIG: SafetyConfig = {
   weeklyInviteCeiling: 100,
   acceptanceRateFloor: 0.35,
   softSignalCooldownThreshold: 2,
-  // 4 min floor + up to 6 min jitter => a 4-10 min gap between any two actions.
-  minActionGapMs: 240_000,
-  actionGapJitterMs: 360_000,
+  // 3 min floor + up to 4 min jitter => a 3-7 min gap between any two actions
+  // (mean ~5). Anti-burst only: daily caps bound the totals; the jitter keeps a
+  // fixed cadence from ever emerging. At the 20+20 connect+message caps this
+  // drains a full day's queue in ~3.3h. Run the dispatch tick at 60s or the
+  // effective gap quantizes up to the tick interval.
+  minActionGapMs: 180_000,
+  actionGapJitterMs: 240_000,
   // Send only during local working hours, 8am-8pm; defer anything else to 8am.
   activeHoursStart: 8,
   activeHoursEnd: 20,
