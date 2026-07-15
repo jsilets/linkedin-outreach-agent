@@ -1108,6 +1108,9 @@ describe('reply-gate conversation history', () => {
         threadUrn: thread,
         participantUrn: 'urn:li:fsd_profile:prospect',
         profileUrl: 'https://www.linkedin.com/in/ada/',
+        // The row moved at 30 because WE sent that message. The watermark still
+        // records it: it tracks change, not replies.
+        lastActivityAt: new Date(30),
       },
     ]);
   });
@@ -1205,6 +1208,81 @@ describe('reply-gate conversation history', () => {
     expect(path).toContain('conversationUrn:urn%3Ali%3Amsg_conversation%3A%28');
     expect(path).toContain('%2Cthread-1%29');
     expect(path).not.toContain('MessengerConversationsBySyncToken');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Conversation-list activity watermark — the change detector the reply tick
+// skips unchanged threads on.
+// ---------------------------------------------------------------------------
+
+const WATERMARK_THREAD = 'urn:li:msg_conversation:(urn:li:fsd_profile:ACoAAViewer,thread-1)';
+
+/** A legacy-shape conversation row carrying the counterparty and a hand-written
+ * event list, so a single conversation can hold several events with mixed
+ * timestamp fields and directions. */
+function watermarkThreadPayload(
+  events: Array<{ from: string; at?: number; createdAt?: number; text?: string }>,
+) {
+  return {
+    elements: [
+      {
+        entityUrn: WATERMARK_THREAD,
+        participants: [
+          {
+            miniProfile: {
+              entityUrn: 'urn:li:fsd_profile:ACoAAAlice',
+              publicIdentifier: 'alice-ng',
+            },
+          },
+        ],
+        events: events.map((e) => ({
+          ...(e.at === undefined ? {} : { deliveredAt: e.at }),
+          ...(e.createdAt === undefined ? {} : { createdAt: e.createdAt }),
+          from: { miniProfile: { entityUrn: `urn:li:fsd_profile:${e.from}` } },
+          eventContent: { attributedBody: { text: e.text ?? 'hello' } },
+        })),
+      },
+    ],
+  };
+}
+
+describe('normalizeInboxThreads (activity watermark)', () => {
+  it('takes lastActivityAt from the newest event, not the last one listed', () => {
+    const body = watermarkThreadPayload([
+      { from: 'ACoAAAlice', at: 10 },
+      { from: 'ACoAAAlice', at: 30 },
+      { from: 'ACoAAAlice', at: 20 },
+    ]);
+    expect(normalizeInboxThreads(body)[0]!.lastActivityAt).toEqual(new Date(30));
+  });
+
+  it('uses the newest event even when it is the viewer’s own outbound', () => {
+    // The load-bearing case. Their reply at 10 is hidden behind our send at 30,
+    // so the inbound normalizer sees nothing — but the row still moved, and the
+    // watermark must say so or the reply tick would skip the history read that
+    // finds the reply.
+    const body = watermarkThreadPayload([
+      { from: 'ACoAAAlice', at: 10, text: 'yes, let us talk' },
+      { from: 'ACoAAViewer', at: 30, text: 'great, thanks' },
+    ]);
+    expect(normalizeInboxThreads(body)[0]!.lastActivityAt).toEqual(new Date(30));
+  });
+
+  it('falls back to createdAt when an event carries no deliveredAt', () => {
+    const body = watermarkThreadPayload([
+      { from: 'ACoAAAlice', at: 10 },
+      { from: 'ACoAAAlice', createdAt: 25 },
+    ]);
+    expect(normalizeInboxThreads(body)[0]!.lastActivityAt).toEqual(new Date(25));
+  });
+
+  it('leaves lastActivityAt undefined when no event carries a usable timestamp', () => {
+    // Undefined, never a guess: the reply tick reads such a thread every pass.
+    const body = watermarkThreadPayload([{ from: 'ACoAAAlice' }, { from: 'ACoAAViewer' }]);
+    const [thread] = normalizeInboxThreads(body);
+    expect(thread).toMatchObject({ participantUrn: 'urn:li:fsd_profile:ACoAAAlice' });
+    expect(thread!.lastActivityAt).toBeUndefined();
   });
 });
 

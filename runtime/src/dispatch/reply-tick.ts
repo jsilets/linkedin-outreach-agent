@@ -81,6 +81,12 @@ export type ReplyScan =
       mappedThreads: number;
       unmatchedThreads: number;
       historyReads: number;
+      /** Enrollments whose thread history was NOT read because the list row
+       * showed no new activity since the last pass. Counted per enrollment, as
+       * historyReads is, so the two sum to the enrollments that mapped to a
+       * thread; mappedThreads dedupes by urn and can be lower when one person is
+       * enrolled twice. A quiet steady state reads no history at all. */
+      skippedThreads: number;
       inboundMessages: number;
       routed: number;
       recorded: number;
@@ -189,6 +195,16 @@ export class ReplyTick {
   /** Conversation identities are cached with the same short TTL as snippets so
    * a burst of pre-send probes shares one mailbox-list read. */
   private readonly threadCache = new Map<string, { at: number; threads: InboxThread[] }>();
+  /**
+   * Newest activity already accounted for, per thread urn. A mapped thread whose
+   * list row reports nothing newer than this has its (expensive) history read
+   * skipped.
+   *
+   * In-memory and per-process, like the seen-set: a restart forgets every mark
+   * and the next pass reads all histories again. That is the safe direction to
+   * forget in — it costs one full pass and cannot lose a reply.
+   */
+  private readonly threadWatermarks = new Map<string, number>();
   /** Per-account pacing for conversation-detail reads. */
   private readonly lastHistoryReadAt = new Map<string, number>();
   private readonly historyReadPace = new Map<string, Promise<void>>();
@@ -220,7 +236,11 @@ export class ReplyTick {
     let mappedThreads = 0;
     let unmatchedThreads = 0;
     let historyReads = 0;
+    let skippedThreads = 0;
     let inboundMessages = 0;
+    // Frozen for the whole pass: marks written as this tick proceeds must not
+    // change a skip decision inside the same tick.
+    const watermarksAtStart = new Map(this.threadWatermarks);
     try {
       // Group active enrollments by account, so each inbox is read once and a
       // reply maps only against that account's own enrolled prospects.
@@ -255,6 +275,15 @@ export class ReplyTick {
               mappedThreads += 1;
               threadUrnsMappedThisAccount.add(thread.threadUrn);
             }
+            // The list row already told us whether this conversation moved. If it
+            // did not, its history cannot have changed either, and reading it is
+            // the single most expensive thing this tick does. Decided against a
+            // snapshot taken before this pass so that two enrollments sharing one
+            // thread still both route, exactly as they did before watermarking.
+            if (this.isUnchanged(thread, watermarksAtStart)) {
+              skippedThreads += 1;
+              continue;
+            }
             failurePhase = 'thread_history';
             const history = await this.readThreadHistoryPaced(accountId, thread.threadUrn);
             historyReads += 1;
@@ -271,6 +300,9 @@ export class ReplyTick {
               outcomes.push(outcome);
               this.onOutcome?.(outcome);
             }
+            // Only now: a throw between the read and the last route must leave the
+            // thread unmarked so the next pass reads it again.
+            this.markThreadSeen(thread);
           }
           unmatchedThreads += threads.filter(
             (thread) => !threadUrnsMappedThisAccount.has(thread.threadUrn),
@@ -312,6 +344,7 @@ export class ReplyTick {
         mappedThreads,
         unmatchedThreads,
         historyReads,
+        skippedThreads,
         inboundMessages,
         routed: outcomes.filter((outcome) => outcome.kind === 'routed').length,
         recorded: outcomes.filter((outcome) => outcome.kind === 'recorded').length,
@@ -341,6 +374,37 @@ export class ReplyTick {
   }
 
   /** Read an account's inbox, reusing a recent read within the TTL. */
+  /**
+   * Whether the list row proves this conversation has not moved since the last
+   * pass that read it.
+   *
+   * Fails toward reading, always: a thread we have never marked, or one whose row
+   * carries no usable timestamp, is NOT unchanged. The cost of a wrong "read" is
+   * one request; the cost of a wrong "skip" is a missed reply.
+   */
+  private isUnchanged(thread: InboxThread, watermarks: Map<string, number>): boolean {
+    const at = thread.lastActivityAt?.getTime();
+    if (at === undefined || !Number.isFinite(at)) return false;
+    const seen = watermarks.get(thread.threadUrn);
+    return seen !== undefined && at <= seen;
+  }
+
+  /**
+   * Record the activity this pass has now accounted for. No timestamp means no
+   * mark, so the thread keeps being read until the row carries one.
+   *
+   * Marks the LIST ROW's timestamp, not the newest message the history returned.
+   * The row is the same value the next pass compares against, and it can only be
+   * older than or equal to what we just read, so the error is always toward
+   * re-reading. Marking the history's newest instead could sit above a row value
+   * that never reaches it and skip a thread forever.
+   */
+  private markThreadSeen(thread: InboxThread): void {
+    const at = thread.lastActivityAt?.getTime();
+    if (at === undefined || !Number.isFinite(at)) return;
+    this.threadWatermarks.set(thread.threadUrn, at);
+  }
+
   private async readInboxCached(accountId: string): Promise<InboundMessage[]> {
     const cached = this.inboxCache.get(accountId);
     const now = Date.now();

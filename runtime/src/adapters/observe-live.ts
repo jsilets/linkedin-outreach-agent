@@ -298,6 +298,18 @@ export interface InboxThread {
   threadUrn: string;
   participantUrn: string;
   profileUrl?: string;
+  /**
+   * When this conversation last saw ANY event, either direction, as the list row
+   * reports it. Direction-agnostic on purpose: it is a change detector, not a
+   * reply detector. A prospect's reply followed by our own later send leaves the
+   * list showing only our message, and that is exactly the case a reply must not
+   * be missed in — so what matters is that the thread moved at all, not who
+   * moved it.
+   *
+   * Undefined when the row carries no parsable timestamp. Callers must treat
+   * that as "unknown, read it" and never as "unchanged".
+   */
+  lastActivityAt?: Date;
 }
 
 /**
@@ -506,12 +518,14 @@ export function normalizeInboxThreads(body: unknown): InboxThread[] {
     const viewerUrn = viewerUrnFromConversation(conv);
     const participant = participantFromConversation(conv, viewerUrn);
     if (!participant?.entityUrn) continue;
+    const lastActivityAt = latestActivityOf(conv);
     out.push({
       threadUrn,
       participantUrn: participant.entityUrn,
       ...(participant.publicIdentifier
         ? { profileUrl: `https://www.linkedin.com/in/${participant.publicIdentifier}/` }
         : {}),
+      ...(lastActivityAt ? { lastActivityAt } : {}),
     });
   }
   return [...new Map(out.map((thread) => [thread.threadUrn, thread])).values()];
@@ -570,6 +584,24 @@ function collectConversations(root: VoyagerMessagingResponse | undefined): Conve
  * modern `messages.elements[]`. */
 function eventsOf(conv: Conversation | undefined): MessagingEvent[] {
   return [...(conv?.events ?? []), ...(conv?.messages?.elements ?? [])];
+}
+
+/**
+ * The newest event timestamp on a conversation list row, in either direction.
+ *
+ * Reads the same deliveredAt/createdAt the event normalizer uses, but WITHOUT
+ * the outbound filter: this answers "has this thread moved", which our own send
+ * moves just as much as a prospect's reply does. Undefined when no event carries
+ * a usable number, so a caller cannot mistake "no timestamp" for "no change".
+ */
+function latestActivityOf(conv: Conversation | undefined): Date | undefined {
+  let newest: number | undefined;
+  for (const event of eventsOf(conv)) {
+    const at = event.deliveredAt ?? event.createdAt;
+    if (typeof at !== 'number' || !Number.isFinite(at)) continue;
+    if (newest === undefined || at > newest) newest = at;
+  }
+  return newest === undefined ? undefined : new Date(newest);
 }
 
 /**

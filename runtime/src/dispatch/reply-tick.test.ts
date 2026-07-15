@@ -7,11 +7,12 @@
 // pulling the target out of the funnel; a sender that is not an enrolled target
 // is left alone; an already-seen message is not re-routed on the next tick; only
 // the newest message in a thread routes, while older ones still reach the
-// transcript.
+// transcript; and a thread whose list row has not moved since the last pass has
+// its history read skipped, without that skip ever hiding a reply.
 
 import type { SchedulerLikePort } from '@loa/orchestrator';
 import type { Intent, LLMProvider, Message } from '@loa/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InboundMessage, InboxReaderPort, InboxThread } from '../adapters/observe-live.js';
 import { makeOrchestratorServices } from '../adapters/orchestrator.js';
 import { InMemoryStore } from '../store/in-memory-store.js';
@@ -477,5 +478,176 @@ describe('ReplyTick', () => {
         error: 'LinkedIn session expired',
       }),
     ]);
+  });
+});
+
+// --- watermarking -----------------------------------------------------------
+
+const THREAD = 'urn:li:msg_conversation:t1';
+const T1 = new Date('2026-07-06T10:00:00Z');
+const T2 = new Date('2026-07-06T10:05:00Z');
+
+/** Like HistoryInbox, but its list row carries a settable lastActivityAt, which
+ * is the whole input to the skip decision. */
+class WatermarkInbox implements InboxReaderPort {
+  readonly historyCalls: string[] = [];
+  lastActivityAt: Date | undefined;
+  history: InboundMessage[];
+  constructor(init: { lastActivityAt?: Date; history?: InboundMessage[] }) {
+    this.lastActivityAt = init.lastActivityAt;
+    this.history = init.history ?? [];
+  }
+  async readInbox(): Promise<InboundMessage[]> {
+    return [];
+  }
+  async readThreads(): Promise<InboxThread[]> {
+    return [
+      {
+        threadUrn: THREAD,
+        participantUrn: 'urn:li:person:p1',
+        ...(this.lastActivityAt ? { lastActivityAt: this.lastActivityAt } : {}),
+      },
+    ];
+  }
+  async readThreadHistory(_accountId: string, threadUrn: string): Promise<InboundMessage[]> {
+    this.historyCalls.push(threadUrn);
+    return this.history;
+  }
+}
+
+describe('ReplyTick: thread watermarking', () => {
+  // The tick caches each account's thread list for a minute off the wall clock,
+  // so two passes in one test would otherwise re-read one cached list and never
+  // reach the watermark decision at all. Only Date is faked: the pacing sleep is
+  // off (historyReadDelayMs defaults to 0) and promises must still settle.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-07-06T11:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Move past the inbox/thread-list cache TTL so the next pass re-reads. */
+  function expireInboxCache(): void {
+    vi.setSystemTime(new Date(Date.now() + 120_000));
+  }
+
+  async function makeTick(inbox: WatermarkInbox, scans: ReplyScan[]) {
+    const store = new InMemoryStore();
+    await seedEnrolledTarget(store);
+    const orchestrator = makeOrchestratorServices(store, noopScheduler);
+    const tick = new ReplyTick({
+      inbox,
+      enrollments: activeEnrollments(store),
+      targets: store.target,
+      router: orchestrator.replyRouter,
+      llm: llm('Interested'),
+      messages: store.message,
+      onScan: (scan) => scans.push(scan),
+    });
+    return { store, tick };
+  }
+
+  // The multi-pass read-count tests hold no reply in the history on purpose: a
+  // routed reply pulls the target out of the funnel, so pass 2 would have no
+  // active enrollment left and would skip the thread for the wrong reason. What
+  // is under test here is only whether the read was issued.
+  it('skips the history read when the list row shows no new activity', async () => {
+    const inbox = new WatermarkInbox({ lastActivityAt: T1 });
+    const scans: ReplyScan[] = [];
+    const { tick } = await makeTick(inbox, scans);
+
+    await tick.runTick();
+    expireInboxCache();
+    await tick.runTick();
+
+    // The expensive read happened once: the second pass had the same watermark.
+    expect(inbox.historyCalls).toEqual([THREAD]);
+    expect(scans[1]).toMatchObject({
+      kind: 'succeeded',
+      mappedThreads: 1,
+      historyReads: 0,
+      skippedThreads: 1,
+    });
+  });
+
+  it('reads the history again once the row reports newer activity', async () => {
+    const inbox = new WatermarkInbox({ lastActivityAt: T1 });
+    const scans: ReplyScan[] = [];
+    const { tick } = await makeTick(inbox, scans);
+
+    await tick.runTick();
+    inbox.lastActivityAt = T2;
+    expireInboxCache();
+    await tick.runTick();
+
+    expect(inbox.historyCalls).toEqual([THREAD, THREAD]);
+    expect(scans[1]).toMatchObject({ kind: 'succeeded', historyReads: 1, skippedThreads: 0 });
+  });
+
+  it('never skips a thread whose row carries no timestamp', async () => {
+    // Fail-safe: an unparsable row means "unknown", which costs one read per
+    // pass. The opposite mistake costs a missed reply.
+    const inbox = new WatermarkInbox({ lastActivityAt: undefined });
+    const scans: ReplyScan[] = [];
+    const { tick } = await makeTick(inbox, scans);
+
+    await tick.runTick();
+    expireInboxCache();
+    await tick.runTick();
+
+    expect(inbox.historyCalls).toEqual([THREAD, THREAD]);
+    expect(scans.map((scan) => (scan.kind === 'succeeded' ? scan.skippedThreads : -1))).toEqual([
+      0, 0,
+    ]);
+  });
+
+  it('always reads a thread it has never seen before', async () => {
+    const inbox = new WatermarkInbox({
+      lastActivityAt: T1,
+      history: [inbound({ receivedAt: T1 })],
+    });
+    const scans: ReplyScan[] = [];
+    const { tick } = await makeTick(inbox, scans);
+
+    await tick.runTick();
+
+    // Nothing is on the watermark map yet, so a row that is old in wall-clock
+    // terms is still new to this process.
+    expect(inbox.historyCalls).toEqual([THREAD]);
+    expect(scans[0]).toMatchObject({
+      kind: 'succeeded',
+      mappedThreads: 1,
+      historyReads: 1,
+      skippedThreads: 0,
+    });
+  });
+
+  it('still finds a reply the row hides behind our own later send', async () => {
+    // Pass 1: a quiet thread with nothing in it. The tick marks T1.
+    const inbox = new WatermarkInbox({ lastActivityAt: T1, history: [] });
+    const scans: ReplyScan[] = [];
+    const { store, tick } = await makeTick(inbox, scans);
+
+    const first = await tick.runTick();
+    expect(first.outcomes).toEqual([]);
+    expect((await store.sequence.getTargetProgressByTarget(TGT))!.state).toBe('in_progress');
+
+    // Then they reply and a human answers them, so the row's newest event is
+    // OURS. The watermark still advances, and the history read finds the reply
+    // the list row never showed.
+    inbox.lastActivityAt = T2;
+    inbox.history = [
+      inbound({ text: 'sure, happy to chat', receivedAt: new Date(T2.getTime() - 1) }),
+    ];
+    expireInboxCache();
+    const second = await tick.runTick();
+
+    expect(inbox.historyCalls).toEqual([THREAD, THREAD]);
+    expect(second.outcomes).toEqual([
+      { kind: 'routed', targetId: TGT, threadUrn: THREAD, intent: 'Interested' },
+    ]);
+    expect((await store.sequence.getTargetProgressByTarget(TGT))!.state).toBe('replied');
   });
 });
