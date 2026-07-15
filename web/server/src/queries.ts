@@ -2047,6 +2047,46 @@ export interface AccountRow {
   handle: string;
   state: string;
   limits: AccountLimits;
+  /** Operator pause, derived from the event trail (see derivePausedAccountIds).
+   * The hardest stop there is: SafetyGate.canAct denies every outbound action. */
+  paused: boolean;
+  /** Approved outbound messages waiting on the sender. While paused this is
+   * exactly what the pause is holding back, so the UI can name the consequence. */
+  queuedMessageCount: number;
+}
+
+// Approved-but-unsent outbound messages per account: everything already through
+// human approval and waiting only on the sender. Grouped so one round-trip
+// covers every account. Extracted so its SQL shape is assertable without a live
+// DB (see buildVolumeQuery).
+export function buildApprovedMessageCountsQuery() {
+  return db
+    .select({ accountId: messages.accountId, count: sql<number>`count(*)::int` })
+    .from(messages)
+    .where(and(eq(messages.direction, 'outbound'), eq(messages.status, 'approved')))
+    .groupBy(messages.accountId);
+}
+
+/**
+ * Fold an account row together with the two derived reads. Pure so the wiring —
+ * which account is paused, and how many messages that pause is holding — is
+ * assertable without a database.
+ */
+export function toAccountRow(
+  row: { id: string; handle: string; state: string; limits: unknown },
+  pausedAccountIds: ReadonlySet<string>,
+  queuedByAccount: ReadonlyMap<string, number>,
+): AccountRow {
+  return {
+    id: row.id,
+    handle: row.handle,
+    state: row.state,
+    // Legacy rows created before the limits column backfill to the default so
+    // the UI always has caps to render and edit.
+    limits: (row.limits as AccountLimits | null) ?? defaultLimits(),
+    paused: pausedAccountIds.has(row.id),
+    queuedMessageCount: queuedByAccount.get(row.id) ?? 0,
+  };
 }
 
 export async function listAccounts(): Promise<AccountRow[]> {
@@ -2059,12 +2099,19 @@ export async function listAccounts(): Promise<AccountRow[]> {
     })
     .from(accounts)
     .orderBy(asc(accounts.handle));
-  // Legacy rows created before the limits column backfill to the default so the
-  // UI always has caps to render and edit.
-  return rows.map((r) => ({
-    ...r,
-    limits: (r.limits as AccountLimits | null) ?? defaultLimits(),
-  }));
+  // inArray with an empty list is not a valid read, and there is nothing to fold.
+  if (rows.length === 0) return [];
+
+  // The same pause read-model the inbox timing uses, so a toggle in Settings and
+  // a "paused" label on a queued message can never disagree.
+  const pausedAccountIds = derivePausedAccountIds(
+    await buildPauseEventsQuery(rows.map((r) => r.id)),
+  );
+  const queuedByAccount = new Map(
+    (await buildApprovedMessageCountsQuery()).map((r) => [r.accountId, r.count]),
+  );
+
+  return rows.map((r) => toAccountRow(r, pausedAccountIds, queuedByAccount));
 }
 
 /** Thrown when a limits patch fails validation. The route maps this to a 400. */

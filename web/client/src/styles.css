@@ -1933,6 +1933,120 @@ textarea.draft {
   border-top: none;
 }
 
+/* ── Operator pause: the hardest stop in the system ─────────────────────────── */
+
+.pause-control {
+  margin-top: var(--space-3);
+}
+
+.pause-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.pause-switch-name {
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1);
+  border: 0;
+  background: none;
+  color: var(--ink-1);
+  font: inherit;
+  font-size: var(--text-meta);
+  cursor: pointer;
+}
+
+.switch:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-1);
+}
+
+/* Track/thumb are painted, not glyphs, so the state reads at a glance in both
+   themes. Paused is the resting look: hairline + muted, no accent fill. */
+.switch-track {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  transition:
+    background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--ink-3);
+  transition:
+    transform var(--dur) var(--ease),
+    background var(--dur) var(--ease);
+}
+
+.switch-state {
+  font-weight: var(--weight-medium);
+  color: var(--ink-2);
+}
+
+.switch.on .switch-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.switch.on .switch-thumb {
+  background: var(--accent-ink);
+  transform: translateX(18px);
+}
+
+.switch.on .switch-state {
+  color: var(--ink-1);
+}
+
+.pause-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-meta);
+  color: var(--ink-2);
+}
+
+/* Held queue is the one thing an operator must not miss: amber = "look at this",
+   the same attention hue as approvals. */
+.pause-note.held {
+  color: var(--st-approval-ink);
+}
+
+.pause-confirm {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--st-approval) 35%, var(--line));
+  border-radius: var(--radius-1);
+  background: color-mix(in srgb, var(--st-approval) 8%, var(--surface-1));
+}
+
+.pause-confirm p {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-meta);
+  color: var(--ink-1);
+}
+
 /* Reduced motion: collapse every transition. */
 @media (prefers-reduced-motion: reduce) {
   * {

@@ -242,6 +242,11 @@ export interface Account {
   handle: string;
   state: string;
   limits: AccountLimits;
+  /** Operator pause: the hardest stop in the system. While true the safety gate
+   * denies every outbound action, so nothing queued can leave. */
+  paused: boolean;
+  /** Approved outbound messages waiting on the sender — what a pause is holding. */
+  queuedMessageCount: number;
 }
 
 export interface ListSummary {
@@ -350,6 +355,10 @@ export const api = {
   bulkApprove: (messageIds: string[]) =>
     send<BulkApproveResult>('/api/pending/approve', 'POST', { messageIds }),
   accounts: () => get<Account[]>('/api/accounts'),
+  pauseAccount: (id: string) =>
+    send<{ ok: true; paused: boolean }>(`/api/accounts/${id}/pause`, 'POST'),
+  resumeAccount: (id: string) =>
+    send<{ ok: true; paused: boolean }>(`/api/accounts/${id}/resume`, 'POST'),
   lists: () => get<ListSummary[]>('/api/lists'),
   getList: (id: string) => get<ListDetail>(`/api/lists/${id}`),
   removeListMembers: (id: string, memberIds: string[]) =>

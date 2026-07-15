@@ -28,6 +28,8 @@ let projectScheduledSends: typeof import('./queries.js').projectScheduledSends;
 let deriveMessageTiming: typeof import('./queries.js').deriveMessageTiming;
 let derivePausedAccountIds: typeof import('./queries.js').derivePausedAccountIds;
 let buildPauseEventsQuery: typeof import('./queries.js').buildPauseEventsQuery;
+let buildApprovedMessageCountsQuery: typeof import('./queries.js').buildApprovedMessageCountsQuery;
+let toAccountRow: typeof import('./queries.js').toAccountRow;
 let deriveDispatchHealth: typeof import('./queries.js').deriveDispatchHealth;
 let buildDispatchBootEventsQuery: typeof import('./queries.js').buildDispatchBootEventsQuery;
 let db: typeof import('./db.js').db;
@@ -55,6 +57,8 @@ beforeAll(async () => {
     deriveMessageTiming,
     derivePausedAccountIds,
     buildPauseEventsQuery,
+    buildApprovedMessageCountsQuery,
+    toAccountRow,
     deriveDispatchHealth,
     buildDispatchBootEventsQuery,
   } = await import('./queries.js'));
@@ -598,6 +602,66 @@ describe('buildPauseEventsQuery', () => {
     expect(params).toContain('account_paused');
     expect(params).toContain('account_resumed');
     expect(params).toContain('acct-1');
+  });
+});
+
+describe('buildApprovedMessageCountsQuery', () => {
+  it('counts approved outbound messages per account', () => {
+    const { sql, params } = buildApprovedMessageCountsQuery().toSQL();
+    expect(sql).toContain('"messages"');
+    expect(sql).toContain('count(*)::int');
+    expect(sql).toContain('group by');
+    expect(sql).toContain('"account_id"');
+    // Both filters are bound params, not inlined. 'approved' is the whole point:
+    // a draft is not queued behind the pause, it is waiting on a human.
+    expect(params).toContain('approved');
+    expect(params).toContain('outbound');
+  });
+
+  it('does not window or limit the count', () => {
+    // The pause holds the whole backlog however old; a limit would understate
+    // what resuming is about to release.
+    const { sql } = buildApprovedMessageCountsQuery().toSQL();
+    expect(sql).not.toContain('limit');
+  });
+});
+
+describe('toAccountRow', () => {
+  const row = { id: 'acct-1', handle: 'josh', state: 'Active', limits: null };
+
+  it('marks an account in the paused set as paused and carries its held count', () => {
+    expect(toAccountRow(row, new Set(['acct-1']), new Map([['acct-1', 11]]))).toMatchObject({
+      id: 'acct-1',
+      handle: 'josh',
+      paused: true,
+      queuedMessageCount: 11,
+    });
+  });
+
+  it('reads an account outside the paused set as sending', () => {
+    expect(toAccountRow(row, new Set(['other']), new Map())).toMatchObject({
+      paused: false,
+      queuedMessageCount: 0,
+    });
+  });
+
+  it('does not read another account queue as this one', () => {
+    // A grouped count covers every account: keying it wrong would quote someone
+    // else's backlog in this account's resume confirm.
+    expect(
+      toAccountRow(
+        row,
+        new Set(['acct-1']),
+        new Map([
+          ['acct-2', 7],
+          ['acct-1', 11],
+        ]),
+      ).queuedMessageCount,
+    ).toBe(11);
+  });
+
+  it('backfills legacy null limits so the caps UI always has values', () => {
+    expect(toAccountRow(row, new Set(), new Map()).limits.caps).toBeDefined();
   });
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import {
   ACTION_TYPES,
   type Account,
@@ -7,6 +7,7 @@ import {
   api,
   DEFAULT_SCHEDULE,
 } from './api';
+import { runWriteAction, type WriteOutcome, type WritePhase } from './writeAction';
 
 // Human-readable labels for the per-action daily caps.
 const CAP_LABELS: Record<ActionType, string> = {
@@ -46,6 +47,33 @@ function sameSchedule(a: AccountSchedule, b: AccountSchedule): boolean {
   );
 }
 
+// Sentence naming what a pause is actually holding back. An active account stays
+// quiet: there is nothing for the operator to act on.
+export function pauseStatusCopy(paused: boolean, queuedMessageCount: number): string {
+  if (!paused) return 'Sending is active.';
+  if (queuedMessageCount === 0) return 'Sending is paused. Nothing is approved and waiting.';
+  const queued =
+    queuedMessageCount === 1
+      ? '1 approved message is waiting'
+      : `${queuedMessageCount} approved messages are waiting`;
+  return `Sending is paused. ${queued} and will not go out.`;
+}
+
+// The confirm shown before resume, and only before resume: it releases real
+// messages to real people and cannot be undone, so it names the real count.
+// Pacing quoted from the gate's own defaults (minActionGapMs 4m + up to 6m
+// jitter, see control-plane/safety/src/config.ts) — it is meaningless for a
+// single message, so only a plural queue gets the rate.
+export function resumeConfirmCopy(queuedMessageCount: number): string {
+  if (queuedMessageCount === 0) {
+    return 'Resume sending? Nothing is approved right now, but anything approved from here on will go out.';
+  }
+  if (queuedMessageCount === 1) {
+    return 'Resume sending? 1 approved message will begin going out.';
+  }
+  return `Resume sending? ${queuedMessageCount} approved messages will begin going out, roughly one every 4-10 minutes.`;
+}
+
 export function AccountsView() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [handle, setHandle] = useState('');
@@ -56,16 +84,17 @@ export function AccountsView() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  function loadAccounts() {
-    api
-      .accounts()
-      .then(setAccounts)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }
+  // Raw reload: rejects so a caller can tell a failed re-read from a failed write.
+  const reloadAccounts = useCallback(() => api.accounts().then(setAccounts), []);
+
+  // Reload that reports its own failure, for callers with nothing to distinguish.
+  const loadAccounts = useCallback(() => {
+    reloadAccounts().catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [reloadAccounts]);
 
   useEffect(() => {
     loadAccounts();
-  }, []);
+  }, [loadAccounts]);
 
   async function connect() {
     setSaving(true);
@@ -157,7 +186,7 @@ export function AccountsView() {
         )}
         <div className="grid" style={{ gap: 0, marginTop: 'var(--space-2)' }}>
           {accounts.map((a) => (
-            <AccountCard key={a.id} account={a} />
+            <AccountCard key={a.id} account={a} reload={reloadAccounts} />
           ))}
         </div>
       </div>
@@ -165,10 +194,100 @@ export function AccountsView() {
   );
 }
 
+/**
+ * The operator pause: the hardest stop in the system. Paused, the SafetyGate
+ * denies every outbound action, so nothing approved can leave.
+ *
+ * Pausing is instant — it is the safe direction, and a confirm between an
+ * operator and "stop sending" is a confirm in the wrong place. Resuming is not
+ * undoable: it hands the queue to the sender and those messages reach real
+ * people, so it confirms first and names the count.
+ */
+function PauseControl({ account, reload }: { account: Account; reload: () => Promise<unknown> }) {
+  const [phase, setPhase] = useState<WritePhase>('idle');
+  const [notice, setNotice] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const labelId = useId();
+  const paused = account.paused;
+  // 'stale' means the runtime accepted the write but the re-read failed, so what
+  // the switch shows is no longer known to be true: lock rather than invite a
+  // second click that would be a second real write.
+  const busy = phase === 'working' || phase === 'stale';
+
+  async function run(act: () => Promise<unknown>, failure: string) {
+    setPhase('working');
+    setNotice(null);
+    const outcome: WriteOutcome = await runWriteAction(act, reload, {
+      failure,
+      stale:
+        'Done, but this page could not refresh. Do not retry — reload to see the current state.',
+    });
+    setPhase(outcome.phase);
+    setNotice(outcome.phase === 'done' ? null : outcome.notice);
+  }
+
+  function toggle() {
+    if (!paused) {
+      run(() => api.pauseAccount(account.id), 'Could not pause sending.');
+      return;
+    }
+    setConfirming(true);
+  }
+
+  function resume() {
+    setConfirming(false);
+    run(() => api.resumeAccount(account.id), 'Could not resume sending.');
+  }
+
+  return (
+    <div className="pause-control">
+      <div className="pause-switch">
+        <span className="pause-switch-name" id={labelId}>
+          Sending
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={!paused}
+          aria-labelledby={labelId}
+          className={`switch${paused ? '' : ' on'}`}
+          disabled={busy}
+          onClick={toggle}
+        >
+          <span className="switch-track" aria-hidden="true">
+            <span className="switch-thumb" />
+          </span>
+          <span className="switch-state">{paused ? 'Paused' : 'Active'}</span>
+        </button>
+      </div>
+
+      <p className={paused ? 'pause-note held' : 'pause-note'}>
+        {pauseStatusCopy(paused, account.queuedMessageCount)}
+      </p>
+
+      {confirming && (
+        <div className="pause-confirm" role="group" aria-label="Confirm resume">
+          <p>{resumeConfirmCopy(account.queuedMessageCount)}</p>
+          <div className="toolbar" style={{ margin: 0 }}>
+            <button type="button" className="btn" onClick={resume} disabled={busy}>
+              Resume sending
+            </button>
+            <button type="button" className="btn ghost" onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {notice && <div className="error">{notice}</div>}
+    </div>
+  );
+}
+
 // One account's identity plus its editable automation limits: per-action daily
 // caps AND the working-hours/days window the SafetyGate enforces. One Save
 // persists both together.
-function AccountCard({ account }: { account: Account }) {
+function AccountCard({ account, reload }: { account: Account; reload: () => Promise<unknown> }) {
   const [caps, setCaps] = useState<Record<ActionType, number>>(account.limits.caps);
   const [schedule, setSchedule] = useState<AccountSchedule>(
     account.limits.schedule ?? DEFAULT_SCHEDULE,
@@ -238,6 +357,8 @@ function AccountCard({ account }: { account: Account }) {
         <strong>{account.handle}</strong>
         <span className="muted">{account.state}</span>
       </div>
+
+      <PauseControl account={account} reload={reload} />
 
       <div style={{ marginTop: 6 }}>
         <label className="muted">Daily limits (max actions per day, 0 disables)</label>
