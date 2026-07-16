@@ -574,12 +574,22 @@ export interface AuditRecord {
  * out (oldest first); `releasedCursors` counts campaign targets whose parked
  * awaiting_connection cursor was released to terminal by the withdrawal. */
 export interface WithdrawStaleResult {
-  /** Invites that matched the age filter and were attempted (== withdrawn+failed). */
+  /** Aged invites picked up for this call (capped): == withdrawn + failed + any
+   *  left unattempted when the sweep stopped early on a throttle. */
   considered: number;
   withdrawn: Array<{ publicIdentifier?: string; sentAt?: string }>;
-  /** How many withdraw attempts returned a non-2xx / threw. */
+  /** How many withdraw attempts were a permanent per-invite failure (skipped). */
   failed: number;
   releasedCursors: number;
+  /** How many throttle signals (429/999/403 or a blocked fetch) were seen. */
+  throttled: number;
+  /** Aged invites still pending after this call (agedTotal − withdrawn). Re-run a
+   *  spaced call to clear them; 0 means the aged pile is empty. */
+  remaining: number;
+  /** Why the sweep ended: it drained the pile ('completed'), hit the per-call cap
+   *  with more still aged ('max_reached'), or backed off and stopped on a
+   *  sustained throttle ('throttled'). */
+  stopped: 'completed' | 'max_reached' | 'throttled';
 }
 
 export interface AccountAdminPort {

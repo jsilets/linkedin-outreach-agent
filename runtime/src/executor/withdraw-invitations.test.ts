@@ -1,7 +1,7 @@
 import type { SentInvitation } from '@loa/account-runner';
 import type { db as shared } from '@loa/shared';
 import { describe, expect, it, vi } from 'vitest';
-import { StaleInvitationSweeper } from './withdraw-invitations.js';
+import { StaleInvitationSweeper, type StaleInvitationSweeperDeps } from './withdraw-invitations.js';
 
 // All fixtures use FICTIONAL names / slugs / urns — the repo is public.
 
@@ -55,6 +55,7 @@ function makeDeps(opts: {
   page: FakeWithdrawPage;
   parked?: shared.TargetProgressRow[];
   targets?: Record<string, shared.TargetRow>;
+  pacing?: StaleInvitationSweeperDeps['pacing'];
 }) {
   const appended: Array<{ kind: string; payload: Record<string, unknown> }> = [];
   const advanced: Array<{ id: string; patch: unknown }> = [];
@@ -88,6 +89,15 @@ function makeDeps(opts: {
     pacer: { record } as never,
     now: () => NOW,
     sleep: async () => {},
+    // Zero-length cooldowns/backoffs so the throttle-safe pacing runs instantly
+    // in tests; a no-op sleep means these never actually wait either way.
+    pacing: {
+      batchCooldownMs: () => 0,
+      throttleBackoffMs: 0,
+      maxBackoffMs: 0,
+      gapMs: () => 0,
+      ...opts.pacing,
+    },
   });
   return { sweeper, appended, advanced, staged, release, record };
 }
@@ -113,13 +123,15 @@ describe('StaleInvitationSweeper.withdrawStale', () => {
     expect(appended[0]!.payload.via).toBe('stale_sweep');
   });
 
-  it('caps the batch at 25 even when max is higher', async () => {
-    const invites = Array.from({ length: 30 }, (_v, i) =>
+  it('caps the batch at MAX_PER_SWEEP (100) and reports the overflow as remaining', async () => {
+    const invites = Array.from({ length: 120 }, (_v, i) =>
       inv({ id: `${i}`, sentAt: new Date(NOW.getTime() - (100 + i) * DAY) }),
     );
     const { sweeper } = makeDeps({ invites, page: new FakeWithdrawPage(200) });
-    const res = await sweeper.withdrawStale('acct', { olderThanDays: 21, max: 100 });
-    expect(res.withdrawn).toHaveLength(25);
+    const res = await sweeper.withdrawStale('acct', { olderThanDays: 21, max: 500 });
+    expect(res.withdrawn).toHaveLength(100);
+    expect(res.stopped).toBe('max_reached');
+    expect(res.remaining).toBe(20);
   });
 
   it('releases a matching parked cursor and decrements outstanding, once', async () => {
@@ -149,12 +161,74 @@ describe('StaleInvitationSweeper.withdrawStale', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it('counts a non-2xx withdraw as failed and appends no event', async () => {
-    const invites = [inv({ id: '7', sentAt: new Date(NOW.getTime() - 30 * DAY) })];
-    const { sweeper, appended } = makeDeps({ invites, page: new FakeWithdrawPage(429) });
+  it('skips a permanent per-invite failure (404) and keeps going', async () => {
+    // 404 = already withdrawn/accepted. Skip it (count failed), do not retry, and
+    // withdraw the next invite. A permanent failure is not throttle and not a stop.
+    const invites = [
+      inv({ id: '7', publicIdentifier: 'gone', sentAt: new Date(NOW.getTime() - 60 * DAY) }),
+      inv({ id: '8', publicIdentifier: 'live', sentAt: new Date(NOW.getTime() - 30 * DAY) }),
+    ];
+    const { sweeper, appended } = makeDeps({ invites, page: new FakeWithdrawPage([404, 200]) });
     const res = await sweeper.withdrawStale('acct', { olderThanDays: 21, max: 25 });
-    expect(res).toMatchObject({ considered: 1, failed: 1, releasedCursors: 0 });
+    expect(res.failed).toBe(1);
+    expect(res.withdrawn.map((w) => w.publicIdentifier)).toEqual(['live']);
+    expect(res.throttled).toBe(0);
+    expect(res.stopped).toBe('completed');
+    expect(appended).toHaveLength(1); // only the successful one journals
+  });
+
+  it('backs off and RETRIES the same invite on a throttle (429), then succeeds', async () => {
+    // First POST throttles, the retry after backoff succeeds — the invite is
+    // withdrawn, not lost, and the throttle is counted.
+    const invites = [
+      inv({ id: '9', publicIdentifier: 'ok', sentAt: new Date(NOW.getTime() - 30 * DAY) }),
+    ];
+    const page = new FakeWithdrawPage([429, 200]);
+    const { sweeper } = makeDeps({ invites, page });
+    const res = await sweeper.withdrawStale('acct', { olderThanDays: 21, max: 25 });
+    expect(res.withdrawn).toHaveLength(1);
+    expect(res.throttled).toBe(1);
+    expect(res.failed).toBe(0);
+    expect(res.stopped).toBe('completed');
+    expect(page.posts).toHaveLength(2); // one throttled, one retried
+  });
+
+  it('STOPS on a sustained throttle instead of hammering, reporting the remainder', async () => {
+    // A page that always throttles: after maxConsecutiveThrottles retries the
+    // sweep must stop, leave the rest untouched, and report them as remaining.
+    const invites = Array.from({ length: 4 }, (_v, i) =>
+      inv({ id: `${i}`, sentAt: new Date(NOW.getTime() - (60 + i) * DAY) }),
+    );
+    const { sweeper, appended } = makeDeps({
+      invites,
+      page: new FakeWithdrawPage(429),
+      pacing: { maxConsecutiveThrottles: 2 },
+    });
+    const res = await sweeper.withdrawStale('acct', { olderThanDays: 21, max: 25 });
+    expect(res.stopped).toBe('throttled');
     expect(res.withdrawn).toHaveLength(0);
+    expect(res.throttled).toBeGreaterThan(0);
+    expect(res.remaining).toBe(4); // nothing cleared, all 4 still pending
     expect(appended).toHaveLength(0);
+  });
+
+  it('treats a thrown fetch ("Failed to fetch") as a throttle, not a skip', async () => {
+    const invites = [inv({ id: '5', sentAt: new Date(NOW.getTime() - 30 * DAY) })];
+    const throwingPage = {
+      posts: [] as string[],
+      async voyagerPost(path: string): Promise<{ status: number; body: unknown }> {
+        this.posts.push(path);
+        throw new Error('Failed to fetch');
+      },
+    };
+    const { sweeper } = makeDeps({
+      invites,
+      page: throwingPage as unknown as FakeWithdrawPage,
+      pacing: { maxConsecutiveThrottles: 1 },
+    });
+    const res = await sweeper.withdrawStale('acct', { olderThanDays: 21, max: 25 });
+    expect(res.stopped).toBe('throttled');
+    expect(res.throttled).toBeGreaterThan(0);
+    expect(res.failed).toBe(0);
   });
 });

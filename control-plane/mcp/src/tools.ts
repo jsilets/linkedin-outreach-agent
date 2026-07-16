@@ -1006,18 +1006,22 @@ const safetyTools: ToolDef[] = [
       "account's outstanding pile under LinkedIn's ~500 outstanding-invite ceiling. " +
       'Reads all pending invites (see list_sent_invitations), filters to those at ' +
       'least olderThanDays old (invites with an unknown sent time are skipped), and ' +
-      'withdraws them oldest-first, paced apart, up to max (hard-capped at 25 per ' +
-      'call). Withdrawing does not notify the recipient, but LinkedIn blocks ' +
-      're-inviting the same person for up to ~3 weeks — so a withdrawn campaign ' +
-      'target is parked lost and never re-enqueued. Space repeated calls several ' +
-      'minutes apart: LinkedIn throttles bulk withdrawals, so chaining calls ' +
-      'back-to-back starts returning failures (seen live past ~40 in a short window). ' +
-      'Returns a summary of what went out and how many campaign cursors it released.',
+      'withdraws them oldest-first, up to max (hard-capped at 100 per call). It is ' +
+      'throttle-safe: it paces every withdrawal, cools down between batches to stay ' +
+      "under LinkedIn's rate limit, and if it still gets throttled it backs off and " +
+      'STOPS rather than hammer (so it never trips a hard restriction). Because of ' +
+      'that pacing a full call can take many minutes; it is a single synchronous ' +
+      'call, so just wait for it. Withdrawing does not notify the recipient, but ' +
+      'LinkedIn blocks re-inviting the same person for up to ~3 weeks — so a ' +
+      'withdrawn campaign target is parked lost and never re-enqueued. Returns ' +
+      '{withdrawn, failed, throttled, releasedCursors, remaining, stopped}; when ' +
+      "`stopped` is 'throttled' or 'max_reached' and `remaining` > 0, run it again " +
+      'after a few minutes to clear the rest.',
     privileged: true,
     inputShape: {
       accountId: z.string(),
       olderThanDays: z.number().int().positive().default(21),
-      max: z.number().int().positive().max(25).default(25),
+      max: z.number().int().positive().max(100).default(50),
     },
     handler: (a, p, ctx) => {
       requirePrivileged(ctx, 'withdraw_sent_invitations');
