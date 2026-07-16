@@ -1009,8 +1009,10 @@ const safetyTools: ToolDef[] = [
       'withdraws them oldest-first, paced apart, up to max (hard-capped at 25 per ' +
       'call). Withdrawing does not notify the recipient, but LinkedIn blocks ' +
       're-inviting the same person for up to ~3 weeks — so a withdrawn campaign ' +
-      'target is parked lost and never re-enqueued. Returns a summary of what went ' +
-      'out and how many campaign cursors it released.',
+      'target is parked lost and never re-enqueued. Space repeated calls several ' +
+      'minutes apart: LinkedIn throttles bulk withdrawals, so chaining calls ' +
+      'back-to-back starts returning failures (seen live past ~40 in a short window). ' +
+      'Returns a summary of what went out and how many campaign cursors it released.',
     privileged: true,
     inputShape: {
       accountId: z.string(),

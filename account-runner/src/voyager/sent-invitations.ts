@@ -178,22 +178,31 @@ interface SentInvitationsResponse {
   included?: Array<InvitationEntity & MiniProfileEntity>;
 }
 
-/** True when an included[] entity is an Invitation (by urn or $type tag). */
+/**
+ * True when an included[] entity is a real Invitation (carries sentTime +
+ * invitee), NOT the SentInvitationViewV2 wrapper that `data.*elements` points to.
+ * Verified live 2026-07-16: the normalized response inlines BOTH a
+ * `…invitation.Invitation` entity (sentTime, invitee, the invitation urn) and a
+ * `…invitation.SentInvitationViewV2` wrapper (no sentTime); `*elements` lists the
+ * wrappers, so keying off it loses the timestamp. Match the `.Invitation` $type
+ * (which excludes `.SentInvitationViewV2`) or the sentTime+invitee pair.
+ */
 function isInvitationEntity(el: (InvitationEntity & MiniProfileEntity) | undefined): boolean {
   if (!el) return false;
-  if (typeof el.sentTime === 'number') return true;
-  if (typeof el.entityUrn === 'string' && /:(?:fsd_)?invitation:/.test(el.entityUrn)) return true;
   const t = el.$type ?? el._type ?? '';
-  return typeof t === 'string' && t.endsWith('.Invitation');
+  if (typeof t === 'string' && t.endsWith('.Invitation')) return true;
+  return typeof el.sentTime === 'number' && el.invitee != null;
 }
 
 /**
  * Walk a sent-invitations response into SentInvitation[]. Handles both shapes:
+ *   - normalized (live): `included[]` holds the real `…invitation.Invitation`
+ *     entities (sentTime + invitee) alongside SentInvitationViewV2 wrappers and
+ *     MiniProfiles; we pick the Invitation entities directly (NOT via
+ *     `data.*elements`, which lists the timestamp-less wrappers) and resolve each
+ *     invitee's `*miniProfile` through included[].
  *   - decorated REST: `elements[]` are Invitations with an inline
- *     `invitee.miniProfile`;
- *   - normalized dash: `included[]` holds Invitation stubs + MiniProfile/Profile
- *     entities, with `data.*elements` giving order and `invitee.*miniProfile`
- *     (or `*inviteeResolutionResult`) a urn ref resolved through included[].
+ *     `invitee.miniProfile`.
  * Exported for the ops shakeout and unit tests.
  */
 export function normalizeSentInvitationsResponse(body: unknown): SentInvitation[] {
@@ -205,18 +214,22 @@ export function normalizeSentInvitationsResponse(body: unknown): SentInvitation[
     for (const el of included) if (el?.entityUrn) byUrn.set(el.entityUrn, el);
   }
 
-  // Prefer the ordered dash *elements when present; then the decorated elements;
-  // then every Invitation entity in included[].
+  // Prefer the real Invitation entities inlined in included[] (they carry
+  // sentTime); then the decorated `elements[]`; then the ordered `*elements` as a
+  // last resort for a shape that only carries the wrappers.
+  const realInvitations = (included ?? []).filter(isInvitationEntity);
   const order = root?.data?.['*elements'];
   let invitations: InvitationEntity[];
-  if (Array.isArray(order)) {
-    invitations = order.map((u) => byUrn.get(u)).filter((e): e is InvitationEntity => !!e);
+  if (realInvitations.length) {
+    invitations = realInvitations;
   } else if (Array.isArray(root?.elements)) {
     invitations = root.elements;
   } else if (Array.isArray(root?.data?.elements)) {
     invitations = root.data.elements;
+  } else if (Array.isArray(order)) {
+    invitations = order.map((u) => byUrn.get(u)).filter((e): e is InvitationEntity => !!e);
   } else {
-    invitations = (included ?? []).filter(isInvitationEntity);
+    invitations = [];
   }
 
   const out: SentInvitation[] = [];

@@ -43,6 +43,44 @@ function dashSentBody(
   };
 }
 
+/**
+ * The REAL live normalized shape (captured 2026-07-16): `data.*elements` points
+ * at SentInvitationViewV2 WRAPPER urns that carry no sentTime, while the actual
+ * `…invitation.Invitation` entities (sentTime + invitee) sit separately in
+ * included[]. Reading via *elements loses every timestamp — the regression this
+ * fixture guards. The wrapper and invitation share the same numeric id here, as
+ * they do live, but the normalizer must return the INVITATION urn and its
+ * sentTime, not the wrapper.
+ */
+function liveSentBody(
+  people: Array<{ id: string; profileId: string; slug: string; first: string; sentTime: number }>,
+) {
+  return {
+    data: {
+      // *elements lists the wrappers, NOT the invitations.
+      '*elements': people.map((p) => `urn:li:fsd_sentInvitationViewV2:${p.id}`),
+    },
+    included: [
+      ...people.map((p) => ({
+        entityUrn: `urn:li:fsd_sentInvitationViewV2:${p.id}`,
+        $type: 'com.linkedin.voyager.relationships.invitation.SentInvitationViewV2',
+        '*invitation': `urn:li:fsd_invitation:${p.id}`,
+      })),
+      ...people.map((p) => ({
+        entityUrn: `urn:li:fsd_invitation:${p.id}`,
+        $type: 'com.linkedin.voyager.relationships.invitation.Invitation',
+        sentTime: p.sentTime,
+        invitee: { '*miniProfile': `urn:li:fsd_profile:${p.profileId}` },
+      })),
+      ...people.map((p) => ({
+        entityUrn: `urn:li:fsd_profile:${p.profileId}`,
+        publicIdentifier: p.slug,
+        firstName: p.first,
+      })),
+    ],
+  };
+}
+
 /** A decorated legacy REST body: elements[] carry an inline invitee.miniProfile. */
 function legacySentBody(
   people: Array<{ id: string; slug: string; first: string; last: string; sentTime: number }>,
@@ -121,6 +159,37 @@ describe('normalizeSentInvitationsResponse', () => {
     });
     expect(invs[0]!.sentAt?.getTime()).toBe(30);
     expect(invs[1]!.name).toBe('Sam Vale');
+  });
+
+  it('reads the real Invitation entities, not the timestamp-less *elements wrappers', () => {
+    const body = liveSentBody([
+      {
+        id: '901',
+        profileId: 'ACoAA901',
+        slug: 'nora-elm',
+        first: 'Nora',
+        sentTime: 1_700_000_000_000,
+      },
+      {
+        id: '902',
+        profileId: 'ACoAA902',
+        slug: 'ivo-ash',
+        first: 'Ivo',
+        sentTime: 1_700_000_500_000,
+      },
+    ]);
+    const invs = normalizeSentInvitationsResponse(body);
+    expect(invs).toHaveLength(2);
+    // The INVITATION urn (withdrawable), never the SentInvitationViewV2 wrapper urn.
+    expect(invs.map((i) => i.invitationUrn).sort()).toEqual([
+      'urn:li:fsd_invitation:901',
+      'urn:li:fsd_invitation:902',
+    ]);
+    // Every invite has a real sentAt — the bug was all of them coming back undefined.
+    expect(invs.every((i) => i.sentAt instanceof Date)).toBe(true);
+    const nora = invs.find((i) => i.publicIdentifier === 'nora-elm');
+    expect(nora?.sentAt?.getTime()).toBe(1_700_000_000_000);
+    expect(nora?.name).toBe('Nora');
   });
 
   it('resolves the decorated legacy shape with an inline miniProfile', () => {
