@@ -40,6 +40,31 @@ class RecordingExecutor implements ExecutorPort {
   }
 }
 
+/** An executor that ran and recorded a given non-success result: 'skipped' for a
+ * deliberate no-op (an invite was already pending), 'failed' for a genuine
+ * failure. Both mean no invite went out. */
+class ResultExecutor implements ExecutorPort {
+  readonly calls: ActRequest[] = [];
+  constructor(private readonly result: Action['result']) {}
+  async execute(req: ActRequest): Promise<Action> {
+    this.calls.push(req);
+    const now = new Date();
+    return {
+      id: 'action-1',
+      type: req.type,
+      scheduledAt: now,
+      executedAt: now,
+      result: this.result,
+      dedupKey: `${req.accountId}:${req.targetId}:${req.type}`,
+      accountId: req.accountId,
+      targetId: req.targetId,
+      campaignId: req.campaignId,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+}
+
 /** An executor whose execute() always throws the given error. Models the two
  * ways the executor can fail once the gate has already allowed at step 1:
  * a typed SafetyDeferredError (the runner re-check flipped to defer/deny at
@@ -328,6 +353,77 @@ describe('DispatchTick', () => {
 
     // Parked cursors are not due, so the dispatch tick will not re-fire it.
     expect(await store.sequence.dueTargetProgress(new Date())).toHaveLength(0);
+  });
+
+  it('parks a connect that sent nothing at already_invited, not awaiting acceptance', async () => {
+    // The person already had one of our invites pending, so connect sent nothing
+    // and the row reads 'skipped'. Parking at awaiting_connection here waits
+    // forever for the acceptance of an invitation this campaign never sent: the
+    // cursor is not due, so nothing revisits it, and it silently counts toward
+    // the outstanding-invite pile at every boot. Re-running the step is pointless
+    // too — LinkedIn allows exactly one pending invitation per person.
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+      note: 'hello',
+    });
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 1,
+      stepType: 'message',
+      body: 'body',
+    });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const executor = new ResultExecutor('skipped');
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
+
+    const res = await tick.runTick(new Date('2026-07-06T12:00:00Z'));
+
+    expect(res.outcomes[0]).toMatchObject({ kind: 'already_invited' });
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.state).toBe('already_invited');
+    expect(progress.nextStepAt).toBeNull();
+    // Terminal: the message step must never fire off the back of an invite we
+    // did not send and cannot know was accepted.
+    expect(await store.sequence.dueTargetProgress(new Date())).toHaveLength(0);
+  });
+
+  it('fails a connect that did not land instead of parking it awaiting acceptance', async () => {
+    // A connect that errored sent no invite either. This used to park at
+    // awaiting_connection exactly like a real invite, stranding the lead
+    // invisibly: never due, never retried, forever counted as an outstanding
+    // invite. Terminal 'failed' is honest and shows up in the funnel.
+    await store.sequence.upsertCampaignStep({
+      campaignId: CAMP,
+      stepOrder: 0,
+      stepType: 'connect',
+      note: 'hello',
+    });
+    await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+
+    const executor = new ResultExecutor('failed');
+    const tick = new DispatchTick({
+      sequence: store.sequence,
+      targets: store.target,
+      messages: store.message,
+      gate: makeGate(executor, { kind: 'allow' }),
+    });
+
+    const res = await tick.runTick(new Date('2026-07-06T12:00:00Z'));
+
+    expect(res.outcomes[0]).toMatchObject({ kind: 'failed' });
+    const [progress] = await store.sequence.listTargetProgress(CAMP);
+    expect(progress.state).toBe('failed');
+    expect(progress.state).not.toBe('awaiting_connection');
+    const target = await store.target.findById(TGT);
+    expect(target?.stage).not.toBe('invited');
   });
 
   it('holds a message step whose target is not yet connected, and fires once it is', async () => {

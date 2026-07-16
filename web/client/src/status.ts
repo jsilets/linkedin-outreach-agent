@@ -18,7 +18,9 @@ export const PROGRESS_ORDER = [
   'replied',
   'completed',
   'failed',
+  'withdrawn',
   'skipped',
+  'already_invited',
 ] as const;
 
 type Meta = { label: string; varName: string };
@@ -33,6 +35,11 @@ const META: Record<string, Meta> = {
   completed: { label: 'Completed', varName: '--st-done' },
   failed: { label: 'Failed', varName: '--st-failed' },
   skipped: { label: 'Skipped', varName: '--st-idle' },
+  // Both were 'skipped' once, which read as "we never contacted them" for two
+  // cases where an invite to this person existed. Named for what actually
+  // happened, so a lead's row explains itself without a database query.
+  withdrawn: { label: 'Invite withdrawn', varName: '--st-done' },
+  already_invited: { label: 'Invite already pending', varName: '--st-idle' },
   // derived lead milestones (see deriveLeadStatus) — finer than the raw states.
   // Approved-but-paced sends: the operator already approved, only the pacer/send
   // window is left, so they use the in-progress color, NOT amber (amber means "a
@@ -98,6 +105,8 @@ export function deriveLeadStatus(l: LeadStatusInput): string {
   if (st === 'completed') return 'completed';
   if (st === 'failed') return 'failed';
   if (st === 'skipped') return 'skipped';
+  if (st === 'withdrawn') return 'withdrawn';
+  if (st === 'already_invited') return 'already_invited';
   // Invite is out, waiting for the person to accept.
   if (st === 'awaiting_connection') return 'awaiting_connection';
 

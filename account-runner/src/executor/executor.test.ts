@@ -229,7 +229,11 @@ describe('executor acts when allowed', () => {
     const res = await connect(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/frank/',
     });
-    expect(res.ok).toBe(true);
+    // NOT ok: no invite was sent. ok:true here was recorded as a successful
+    // invite, burning weekly-ceiling headroom and parking the lead awaiting an
+    // acceptance of an invitation this campaign never sent.
+    expect(res.ok).toBe(false);
+    expect(res.noop).toBe('already_pending');
     expect(res.detail).toContain('already pending');
     expect(page.clicked(SELECTORS.connectButton)).toBe(false);
     expect(page.clicked(SELECTORS.connectInMenu)).toBe(false);
@@ -249,7 +253,8 @@ describe('executor acts when allowed', () => {
     const res = await connect(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/in/grace/',
     });
-    expect(res.ok).toBe(true);
+    expect(res.ok).toBe(false);
+    expect(res.noop).toBe('already_pending');
     expect(res.detail).toContain('already pending');
     expect(page.clicked(SELECTORS.moreActionsButton)).toBe(true);
     expect(page.clicked(SELECTORS.connectInMenu)).toBe(false);

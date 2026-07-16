@@ -106,6 +106,22 @@ export const PROGRESS_STATES = [
   'replied',
   'awaiting_approval',
   'awaiting_connection',
+  // Terminal, and deliberately NOT 'skipped'. Both mean "an invite to this
+  // person exists or existed", which 'skipped' (a sourcing failure — we never
+  // contacted them) is the wrong word for. Conflating them broke the funnel:
+  // every denominator drops 'skipped' on the assumption that a skipped lead was
+  // never invited, while the invited numerator still counted them, so a campaign
+  // read "Invited 38, 103% of 37 leads".
+  //
+  // 'withdrawn'       — we withdrew the invite (the stale sweep, or a single
+  //                     gated withdraw). They WERE invited: a real outcome that
+  //                     stays in the denominator.
+  // 'already_invited' — connect found an invite to this person already pending,
+  //                     so it sent nothing. This campaign never invited them and
+  //                     must not try again; LinkedIn allows only one pending
+  //                     invitation per person.
+  'withdrawn',
+  'already_invited',
 ] as const;
 export type ProgressState = (typeof PROGRESS_STATES)[number];
 

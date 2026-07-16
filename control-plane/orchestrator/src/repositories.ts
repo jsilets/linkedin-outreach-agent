@@ -163,10 +163,13 @@ export class ActionRepo {
     id: string,
     result: ActionRow['result'],
     executedAt: Date | null,
+    detail?: string,
   ): Promise<ActionRow> {
     const [out] = await this.db.handle
       .update(actions)
-      .set({ result, executedAt, updatedAt: new Date() })
+      // Only write detail when the caller has one, so a result carrying no
+      // explanation cannot blank out a detail already on the row.
+      .set({ result, executedAt, updatedAt: new Date(), ...(detail ? { detail } : {}) })
       .where(eq(actions.id, id))
       .returning();
     return out!;

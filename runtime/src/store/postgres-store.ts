@@ -57,8 +57,9 @@ class PgActionStore implements ActionStorePort {
     id: string,
     result: shared.ActionRow['result'],
     executedAt: Date | null,
+    detail?: string,
   ): Promise<shared.ActionRow> {
-    return this.repos.action.setResult(id, result, executedAt);
+    return this.repos.action.setResult(id, result, executedAt, detail);
   }
   async deleteById(id: string): Promise<void> {
     return this.repos.action.deleteById(id);

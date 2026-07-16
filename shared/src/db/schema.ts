@@ -111,6 +111,9 @@ export const progressStateEnum = pgEnum('progress_state', [
   'replied',
   'awaiting_approval',
   'awaiting_connection',
+  // See PROGRESS_STATES in ../enums.ts for why these are not 'skipped'.
+  'withdrawn',
+  'already_invited',
 ]);
 
 // --- tables ----------------------------------------------------------------
@@ -196,6 +199,13 @@ export const actions = pgTable(
     scheduledAt: timestamp('scheduled_at', { withTimezone: true }).notNull(),
     executedAt: timestamp('executed_at', { withTimezone: true }),
     result: actionResultEnum('result').notNull().default('pending'),
+    // The adapter's own account of what happened, verbatim ("already pending; no
+    // invite sent", "invite refused by LinkedIn: ..."). Only the event trail
+    // carried this before, and events are not joinable to the row that caused
+    // them, so "how many of this week's invites were no-ops?" was unanswerable
+    // after the fact. Nullable: rows written before this column, and results
+    // with nothing to add, leave it null.
+    detail: text('detail'),
     dedupKey: text('dedup_key').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

@@ -246,13 +246,52 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
     // action landed (we did drive the session either way).
     this.pacer?.record(accountId, executedAt);
 
+    // A no-op is not a failure and not a success: the action ran and there was
+    // nothing to do (an invite to this person was already pending). Record it
+    // 'skipped' so it charges NO limiter — the weekly ceiling, the outstanding
+    // pile and the daily caps all key off 'success', so this one branch is what
+    // stops a no-op from burning invite headroom — and so invitedTargets, which
+    // also counts successes, stops crediting this campaign with an invite it
+    // never sent. The caller decides what happens to the cursor.
+    if (!outcome.ok && outcome.noop) {
+      const skippedRow = await this.store.action.setResult(
+        action.id,
+        'skipped',
+        executedAt,
+        outcome.detail,
+      );
+      await this.store.event.append({
+        accountId,
+        kind: 'action_skipped',
+        payload: {
+          actionId: action.id,
+          type,
+          targetId,
+          campaignId,
+          noop: outcome.noop,
+          detail: outcome.detail,
+        },
+      });
+      return {
+        ...action,
+        executedAt: skippedRow.executedAt,
+        result: skippedRow.result,
+        updatedAt: skippedRow.updatedAt,
+      };
+    }
+
     // Honor the action's own ok flag: a connect that was refused, email-gated,
     // or found no Connect control returns ok:false and must be recorded as a
     // failure — never a false success. Only a genuinely-sent invite counts.
     if (!outcome.ok) {
       // Persist the failure onto the row so getQueue no longer reports it as a
       // still-pending action and the row is not left orphaned as 'pending'.
-      const failedRow = await this.store.action.setResult(action.id, 'failed', executedAt);
+      const failedRow = await this.store.action.setResult(
+        action.id,
+        'failed',
+        executedAt,
+        outcome.detail,
+      );
       await this.store.event.append({
         accountId,
         kind: 'action_failed',
@@ -268,7 +307,12 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
 
     // Persist the success onto the row (result + executedAt) so getQueue stops
     // reporting it as pending. Do this before warming the safety state / event.
-    const successRow = await this.store.action.setResult(action.id, 'success', executedAt);
+    const successRow = await this.store.action.setResult(
+      action.id,
+      'success',
+      executedAt,
+      outcome.detail,
+    );
     // Keep the in-memory safety state warm exactly like the fake executor: the
     // weekly ceiling counts connects that actually went out, and the daily caps
     // count every successful action by type.
@@ -345,15 +389,20 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
   }
 
   /** Move a target parked in 'awaiting_connection' out to terminal after its
-   * invite was withdrawn (stage 'lost', cursor 'skipped'), mirroring operator
+   * invite was withdrawn (stage 'lost', cursor 'withdrawn'), mirroring operator
    * removal. Returns true when a parked cursor matched, so the caller can release
-   * the outstanding-invite counter only then. */
+   * the outstanding-invite counter only then.
+   *
+   * 'withdrawn', not 'skipped': this person WAS invited, and the funnel drops
+   * 'skipped' from every denominator on the assumption that a skipped lead never
+   * was. Reporting them as skipped is what made a campaign read "Invited 38,
+   * 103% of 37 leads" the morning the stale sweep first ran. */
   private async releaseWithdrawnCursor(targetId: string): Promise<boolean> {
     const prog = await this.store.sequence.getTargetProgressByTarget(targetId);
     if (prog?.state !== 'awaiting_connection') return false;
     await this.store.target.setStage(targetId, 'lost');
     await this.store.sequence.advanceTargetProgress(prog.id, {
-      state: 'skipped',
+      state: 'withdrawn',
       nextStepAt: null,
     });
     return true;

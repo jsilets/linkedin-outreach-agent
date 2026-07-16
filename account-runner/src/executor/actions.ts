@@ -29,9 +29,26 @@ export interface ActionContext {
   now?: () => number;
 }
 
-/** Typed result common to every action. */
+/**
+ * Why an action deliberately did nothing. Not a failure: nothing is broken and
+ * a retry would do nothing either.
+ *
+ * 'already_pending' — an invitation to this person is already outstanding.
+ * LinkedIn allows only one at a time, so there is no invite to send.
+ */
+type ActionNoop = 'already_pending';
+
+/**
+ * Typed result common to every action.
+ *
+ * `ok` means THE ACTION LANDED — an invite was actually sent, a message actually
+ * delivered. It is not "the browser did not throw". When ok is false, `noop`
+ * separates the two very different reasons: set means nothing needed doing
+ * (record it, do not retry, charge no limiter); unset means it genuinely failed.
+ */
 export interface ActionResultOut {
   ok: boolean;
+  noop?: ActionNoop;
   detail?: string;
 }
 
@@ -265,8 +282,14 @@ export async function connect(
   // probing once — a single early probe races hydration and misreads a normal
   // Connect-inline profile as Follow-by-default, then throws in the menu path.
   const signal = await waitForConnectSignal(ctx, 12_000);
+  // An invite to this person is already outstanding, so no invite was sent. This
+  // returned ok:true and was recorded as a successful invite: it burned a slot of
+  // the rolling weekly ceiling, added to the outstanding pile, and parked the
+  // lead awaiting acceptance of an invitation this campaign never sent (which,
+  // when the invite was months old, the stale sweep then withdrew out from under
+  // the cursor). Only a genuinely-sent invite is ok.
   if (signal === 'pending') {
-    return { ok: true, detail: 'already pending; no invite sent' };
+    return { ok: false, noop: 'already_pending', detail: 'already pending; no invite sent' };
   }
   // Two ways in: the inline Connect control, or — on Follow-by-default profiles
   // that keep it in the "More" overflow — the menu entry. Fall to the menu only
@@ -279,7 +302,11 @@ export async function connect(
     via = 'more-menu';
     const menu = await openConnectMenu(ctx);
     if (menu === 'pending') {
-      return { ok: true, detail: 'already pending; no invite sent (more-menu)' };
+      return {
+        ok: false,
+        noop: 'already_pending',
+        detail: 'already pending; no invite sent (more-menu)',
+      };
     }
     if (menu === 'none') {
       return {

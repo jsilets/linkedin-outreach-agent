@@ -153,7 +153,7 @@ describe('gateAct', () => {
   it('semi_auto lets a connect through but gates a message', async () => {
     const { deps, execute, enqueue } = makeDeps('semi_auto');
     const connectOut = await gateAct(deps, connectReq());
-    expect(connectOut).toEqual({ kind: 'executed', actionId: 'action-1' });
+    expect(connectOut).toEqual({ kind: 'executed', actionId: 'action-1', result: 'success' });
     expect(execute).toHaveBeenCalledOnce();
 
     const msgOut = await gateAct(deps, messageReq(), 'hi');
@@ -166,7 +166,7 @@ describe('gateAct', () => {
   it('autonomous dispatches a message directly', async () => {
     const { deps, execute } = makeDeps('autonomous');
     const out = await gateAct(deps, messageReq(), 'hi');
-    expect(out).toEqual({ kind: 'executed', actionId: 'action-1' });
+    expect(out).toEqual({ kind: 'executed', actionId: 'action-1', result: 'success' });
     expect(execute).toHaveBeenCalledOnce();
   });
 

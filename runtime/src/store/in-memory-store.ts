@@ -103,6 +103,7 @@ class InMemActionStore implements ActionStorePort {
       scheduledAt: row.scheduledAt,
       executedAt: row.executedAt ?? null,
       result: row.result ?? 'pending',
+      detail: row.detail ?? null,
       dedupKey: row.dedupKey,
       createdAt: now,
       updatedAt: now,
@@ -120,10 +121,19 @@ class InMemActionStore implements ActionStorePort {
     id: string,
     result: ActionRow['result'],
     executedAt: Date | null,
+    detail?: string,
   ): Promise<ActionRow> {
     const cur = this.rows.get(id);
     if (!cur) throw new Error(`no action: ${id}`);
-    const next: ActionRow = { ...cur, result, executedAt, updatedAt: new Date() };
+    // Mirrors the Postgres repo: a result with no detail leaves the row's detail
+    // alone rather than blanking it.
+    const next: ActionRow = {
+      ...cur,
+      result,
+      executedAt,
+      updatedAt: new Date(),
+      ...(detail ? { detail } : {}),
+    };
     this.rows.set(id, next);
     return next;
   }
