@@ -15,6 +15,7 @@ import {
   FAILURE_EVENT_KIND_SUFFIXES,
   planCampaignTargetRemoval,
   readIcpScore,
+  startOfLocalDay,
 } from '@loa/shared';
 import type { SQL } from 'drizzle-orm';
 import { and, asc, desc, eq, gte, inArray, isNotNull, notInArray, or, sql } from 'drizzle-orm';
@@ -976,8 +977,7 @@ async function loadGateInputs(
 
   const pausedAccountIds = derivePausedAccountIds(await buildPauseEventsQuery(accountIds));
 
-  const midnight = new Date(now);
-  midnight.setHours(0, 0, 0, 0);
+  const midnight = startOfLocalDay(now);
   const usedRows = await db
     .select({
       accountId: actions.accountId,
