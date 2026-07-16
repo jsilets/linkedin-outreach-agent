@@ -33,6 +33,7 @@ import type { MessageRepoPort, TargetRepoPort } from '@loa/orchestrator';
 import { DEFAULT_CONFIG, effectiveSchedule } from '@loa/safety';
 import type {
   AccountSchedule,
+  ActionResult,
   ActionType,
   CampaignStepType,
   Json,
@@ -110,6 +111,7 @@ export type StepOutcome =
   | { kind: 'completed'; progressId: string }
   | { kind: 'held'; progressId: string; reason: string } // gate queued/deferred/denied, or not connected
   | { kind: 'awaiting_connection'; progressId: string } // connect sent; parked for acceptance
+  | { kind: 'already_invited'; progressId: string } // an invite was already pending; none sent
   | { kind: 'cancelled'; progressId: string; messageId?: string; reason: string } // approved send killed pre-flight
   | { kind: 'failed'; progressId: string; error: string }
   | { kind: 'no_steps'; progressId: string }
@@ -397,6 +399,23 @@ export class DispatchTick {
     let actionId: string;
     try {
       const action = await this.gate.executor.execute(outbound);
+      // A deliberate no-op ('skipped') must NOT be retried: nothing was sent
+      // because there was nothing to send, and the next tick would find exactly
+      // the same thing. Left to the `!== 'success'` retry below it would drive a
+      // live browser visit every tick forever — and the give-up cap could not
+      // save it, since that counts only FAILED rows. Cancel the approved send and
+      // resolve the cursor from the row.
+      if (action.result === 'skipped') {
+        await this.messages.setStatus(msg.id, 'cancelled');
+        const prog = await this.sequence.getTargetProgressByTarget(msg.targetId);
+        if (req.type === 'connect' && prog) return await this.parkAfterConnect(prog, action, now);
+        return {
+          kind: 'cancelled',
+          progressId: prog?.id ?? msg.targetId,
+          messageId: msg.id,
+          reason: 'nothing to send',
+        };
+      }
       if (action.result !== 'success') return undefined; // ok:false; retry next tick
       actionId = action.id;
     } catch (err) {
@@ -442,6 +461,58 @@ export class DispatchTick {
     const patch = advanceAfterStep(steps, prog.currentStep, now, schedule);
     await this.sequence.advanceTargetProgress(prog.id, patch);
     return { kind: 'executed', progressId: prog.id, actionId, nextStep: patch.currentStep! };
+  }
+
+  /**
+   * Resolve a connect step's cursor from what the action row actually says.
+   * Shared by the sequence path and the approved-out-of-band path so the two can
+   * never disagree about what a connect did.
+   *
+   *   success        -> park at 'awaiting_connection' (stage 'invited'). The
+   *                     invite is out; the acceptance tick resumes from here.
+   *   skipped        -> 'already_invited', terminal. An invite to this person was
+   *                     already pending, so nothing was sent and re-running the
+   *                     step would send nothing again: LinkedIn allows exactly
+   *                     one pending invitation per person. Stage stays 'invited'
+   *                     because an invite genuinely is outstanding — just not
+   *                     ours to have sent, and possibly old enough for the stale
+   *                     sweep to withdraw.
+   *   anything else  -> 'failed', terminal and visible. Previously this parked
+   *                     awaiting acceptance too, stranding the lead forever on an
+   *                     invite that was never sent.
+   */
+  private async parkAfterConnect(
+    progress: { id: string; targetId: string },
+    outcome: { result: ActionResult },
+    now: Date,
+  ): Promise<StepOutcome> {
+    if (outcome.result === 'skipped') {
+      await this.targets.setStage(progress.targetId, 'invited');
+      await this.sequence.advanceTargetProgress(progress.id, {
+        state: 'already_invited',
+        nextStepAt: null,
+        lastStepAt: now,
+        errorMessage: null,
+      });
+      return { kind: 'already_invited', progressId: progress.id };
+    }
+    if (outcome.result !== 'success') {
+      const error = `connect did not land (${outcome.result}); no invite sent`;
+      await this.sequence.advanceTargetProgress(progress.id, {
+        state: 'failed',
+        errorMessage: error,
+        nextStepAt: null,
+      });
+      return { kind: 'failed', progressId: progress.id, error };
+    }
+    await this.targets.setStage(progress.targetId, 'invited');
+    await this.sequence.advanceTargetProgress(progress.id, {
+      state: 'awaiting_connection',
+      nextStepAt: null,
+      lastStepAt: now,
+      errorMessage: null,
+    });
+    return { kind: 'awaiting_connection', progressId: progress.id };
   }
 
   /** Cancel an approved-but-unsent message (terminal 'cancelled') and record an
@@ -733,15 +804,26 @@ export class DispatchTick {
     // acceptance tick knows where to resume from (it advances past connect once
     // the invite is accepted). This is what gates a later message behind a real
     // 1st-degree connection.
+    //
+    // Only for an invite that actually went out. Parking on any other result
+    // waits forever for the acceptance of an invitation nobody received: the
+    // cursor is not due, so no tick revisits it, and it silently counts toward
+    // the outstanding-invite pile at every boot.
     if (step.stepType === 'connect') {
-      await this.targets.setStage(progress.targetId, 'invited');
+      return await this.parkAfterConnect(progress, outcome, now);
+    }
+
+    // A non-connect action that ran but did not land. Nothing to advance to:
+    // treat it exactly as the throw path does, so the lead stops visibly rather
+    // than looping or stalling.
+    if (outcome.result !== 'success') {
+      const error = `${step.stepType} did not land (${outcome.result})`;
       await this.sequence.advanceTargetProgress(progress.id, {
-        state: 'awaiting_connection',
+        state: 'failed',
+        errorMessage: error,
         nextStepAt: null,
-        lastStepAt: now,
-        errorMessage: null,
       });
-      return { kind: 'awaiting_connection', progressId: progress.id };
+      return { kind: 'failed', progressId: progress.id, error };
     }
 
     // Executed. Advance to the next step (or complete) with the shared rule,

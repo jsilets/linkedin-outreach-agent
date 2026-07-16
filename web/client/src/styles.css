@@ -949,18 +949,245 @@ th {
   text-overflow: ellipsis;
 }
 
-/* Mini funnel strip on campaign cards: a single thin proportional bar. */
-.mini-funnel {
-  display: flex;
-  width: 100%;
-  height: 6px;
-  border-radius: var(--radius-1);
-  overflow: hidden;
-  background: var(--surface-2);
+/* ── Stage funnel: people-count outcomes as proportional drop-off rows ─────── */
+/* label | bar | count + rate on one tight grid line per stage. The bar widths
+   share one scale (the eligible pool) so the funnel's shape is legible at a
+   glance; the numbers columns align vertically for scanning. */
+.stage-funnel {
+  display: grid;
+  grid-template-columns: 72px minmax(80px, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+  margin: var(--space-2) 0 var(--space-3);
+  max-width: 560px;
 }
 
-.mini-funnel .mseg {
+.stage-funnel .fs-row {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+  align-items: center;
+}
+
+.stage-funnel .fs-label {
+  font-size: var(--text-caption);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.stage-funnel .fs-track {
+  height: 10px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.stage-funnel .fs-fill {
+  display: block;
   height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.stage-funnel .fs-value {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+
+.stage-funnel .fs-n {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-meta);
+  color: var(--ink-1);
+  min-width: 3ch;
+  text-align: right;
+}
+
+.stage-funnel .fs-rate {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-caption);
+  color: var(--ink-2);
+}
+
+.stage-funnel .fs-of {
+  font-family: var(--font-body);
+  color: var(--ink-3);
+}
+
+/* ── Work bar: grouped completion strip with per-segment tooltips ──────────── */
+.work {
+  margin-top: var(--space-2);
+}
+
+.work-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-meta);
+}
+
+.work-ratio {
+  color: var(--ink-2);
+}
+
+.work-n,
+.work-pct {
+  font-family: var(--font-mono);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-1);
+}
+
+.work-flag {
+  font-size: var(--text-caption);
+  font-weight: var(--weight-medium);
+  color: var(--c);
+}
+
+.work-skip {
+  font-size: var(--text-caption);
+  color: var(--ink-3);
+}
+
+.work-bar {
+  display: flex;
+  gap: 2px;
+  width: 100%;
+  height: 8px;
+}
+
+.work-bar-empty {
+  height: auto;
+  font-size: var(--text-caption);
+  color: var(--ink-3);
+}
+
+.work-bar .wseg {
+  position: relative;
+  flex-basis: 4px;
+  min-width: 4px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--c);
+  outline: none;
+  transition: filter var(--dur) var(--ease);
+}
+
+.work-bar .wseg:first-child {
+  border-top-left-radius: var(--radius-1);
+  border-bottom-left-radius: var(--radius-1);
+}
+
+.work-bar .wseg:last-child {
+  border-top-right-radius: var(--radius-1);
+  border-bottom-right-radius: var(--radius-1);
+}
+
+.work-bar .wseg:hover,
+.work-bar .wseg:focus-visible {
+  filter: brightness(1.15);
+}
+
+.work-bar .wseg:focus-visible {
+  box-shadow: 0 0 0 2px var(--focus);
+}
+
+/* Composition tooltip, revealed on hover/focus. Same recipe as .chip-reason-pop
+   so the two popovers read as one system. */
+.work-bar .wseg-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  max-width: 260px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-1);
+  box-shadow: var(--shadow-1);
+  font-size: var(--text-caption);
+  white-space: normal;
+}
+
+/* Segments near the row edges: keep the popover inside the card. */
+.work-bar .wseg:first-child .wseg-pop {
+  left: 0;
+  transform: none;
+}
+
+.work-bar .wseg:last-child .wseg-pop {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.work-bar .wseg:hover .wseg-pop,
+.work-bar .wseg:focus-visible .wseg-pop {
+  display: flex;
+}
+
+.wseg-pop-head {
+  font-weight: var(--weight-semibold);
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.wseg-pop-detail {
+  color: var(--ink-2);
+}
+
+.wseg-pop-part {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--ink-2);
+}
+
+.wseg-pop-n {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-1);
+}
+
+/* Legend chips under the roll-up bar: always-visible key for the strip. */
+.work-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--ink-2);
+}
+
+.work-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.work-legend-item .swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.work-legend-n {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-1);
 }
 
 /* ── Status chip: neutral surface + a dot in the status color + neutral label ── */
@@ -1138,34 +1365,6 @@ textarea.draft {
   font-size: var(--text-body);
   line-height: 1.55;
   color: var(--ink-1);
-}
-
-/* ── Performance stat chips (campaign rows + detail) ──────────────────────── */
-/* Quiet inline stats, not badges: the leading count in mono ink-1, the rest a
-   muted label. */
-.stat-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
-  margin-top: var(--space-2);
-}
-
-.stat {
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--space-1);
-  font-size: var(--text-meta);
-}
-
-.stat .stat-n {
-  font-family: var(--font-mono);
-  font-weight: var(--weight-medium);
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-1);
-}
-
-.stat .stat-label {
-  color: var(--ink-2);
 }
 
 /* ── Inbox: local message workspace ───────────────────────────────────────── */

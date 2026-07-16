@@ -13,7 +13,11 @@ import type { Account, Action, ActionType, Decision, Target } from '@loa/shared'
 import { SafetyDeferredError } from '@loa/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { makeRunnerSafetyPort } from '../adapters/safety.js';
-import { StoreBackedWeeklyInviteCounter } from '../adapters/safety-state.js';
+import {
+  StoreBackedDailyUsage,
+  StoreBackedOutstandingInvites,
+  StoreBackedWeeklyInviteCounter,
+} from '../adapters/safety-state.js';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { AccountRunnerExecutor, isRendererStall } from './account-runner-executor.js';
 import type { SessionProvider } from './session-provider.js';
@@ -368,12 +372,65 @@ describe('AccountRunnerExecutor real path', () => {
     const movedTarget = await store.target.findById(TGT);
     expect(movedTarget?.stage).toBe('lost');
     const movedProg = await store.sequence.getTargetProgressByTarget(TGT);
-    expect(movedProg?.state).toBe('skipped');
+    // 'withdrawn', not 'skipped': they WERE invited, and every funnel denominator
+    // drops 'skipped' on the assumption that a skipped lead never was.
+    expect(movedProg?.state).toBe('withdrawn');
     // The audit event records that the withdrawal released a cursor.
     const events = await store.event.listByAccount(ACCT);
     const executed = events.find((e) => e.kind === 'action_executed');
     const payload = executed?.payload as { releasedCursor?: boolean } | undefined;
     expect(payload?.releasedCursor).toBe(true);
+  });
+
+  it('records an already-pending connect as skipped, charging no invite limiter', async () => {
+    // The profile shows "Pending": an invite is already outstanding, so connect
+    // sends nothing. This must not read as a sent invite. It used to: the row
+    // said 'success', which burned a slot of the rolling weekly ceiling (the one
+    // limiter currently capable of stopping all outbound), added to the
+    // outstanding pile, and credited the campaign with an invite it never sent.
+    const weekly = new StoreBackedWeeklyInviteCounter();
+    const outstanding = new StoreBackedOutstandingInvites();
+    const daily = new StoreBackedDailyUsage();
+
+    class PendingPage extends StubPage {
+      // The action bar renders "Pending" and offers no Connect control.
+      override locator(selector: string): LocatorPort {
+        return stubLocator(selector === SELECTORS.pendingIndicator ? 1 : 0, null);
+      }
+    }
+    const session = new StubSessionProvider();
+    (session as { page: StubPage }).page = new PendingPage();
+    const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
+      weeklyInvites: weekly,
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
+    const executor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session,
+      sleep: noSleep,
+      rng: () => 0.5,
+      weekly,
+      outstanding,
+      daily,
+    });
+
+    const action = await executor.execute(actRequest('connect'));
+
+    // Not success (no invite went out) and not failed (nothing is broken).
+    expect(action.result).toBe('skipped');
+    // The row keeps the adapter's own account of what happened, so "how many of
+    // this week's invites were no-ops?" is answerable after the fact.
+    const row = await store.action.findById(action.id);
+    expect(row?.detail).toContain('already pending');
+    // No limiter is charged: this is the whole point.
+    expect(weekly.invitesLast7d(ACCT)).toBe(0);
+    expect(outstanding.outstandingInvites(ACCT)).toBe(0);
+    expect(daily.usedToday(ACCT).connect).toBe(0);
+    const events = await store.event.listByAccount(ACCT);
+    expect(events.find((e) => e.kind === 'action_skipped')).toBeDefined();
+    expect(events.find((e) => e.kind === 'action_executed')).toBeUndefined();
   });
 
   it('leaves no orphan pending row when the mint-time re-check defers, and rethrows', async () => {

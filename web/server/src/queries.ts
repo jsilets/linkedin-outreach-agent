@@ -68,6 +68,10 @@ function deriveStatus(byProgressState: Record<string, number>): CampaignStatus {
 export interface CampaignPerformance {
   /** connect actions that succeeded. */
   invitesSent: number;
+  /** distinct targets with at least one successful connect action. The people
+   * count behind invitesSent: `eligible - invitedTargets` is "invites still to
+   * go", which invitesSent (volume) cannot say if a target is ever re-invited. */
+  invitedTargets: number;
   /** invite_accepted events attributed to this campaign. */
   invitesAccepted: number;
   /** message actions that succeeded. Total volume, not people: a 3-step sequence
@@ -84,7 +88,14 @@ export interface CampaignPerformance {
 }
 
 function emptyPerformance(): CampaignPerformance {
-  return { invitesSent: 0, invitesAccepted: 0, messagesSent: 0, messagedTargets: 0, replies: 0 };
+  return {
+    invitesSent: 0,
+    invitedTargets: 0,
+    invitesAccepted: 0,
+    messagesSent: 0,
+    messagedTargets: 0,
+    replies: 0,
+  };
 }
 
 export interface CampaignSummary {
@@ -210,8 +221,10 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
   };
   for (const r of perfActionRows) {
     const p = ensurePerf(r.campaignId);
-    if (r.type === 'connect') p.invitesSent = r.count;
-    else if (r.type === 'message') {
+    if (r.type === 'connect') {
+      p.invitesSent = r.count;
+      p.invitedTargets = r.targetCount;
+    } else if (r.type === 'message') {
       p.messagesSent = r.count;
       p.messagedTargets = r.targetCount;
     }
@@ -302,8 +315,10 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
   const performance = emptyPerformance();
   const perfActionRows = await buildCampaignPerformanceActionsQuery(id);
   for (const r of perfActionRows) {
-    if (r.type === 'connect') performance.invitesSent = r.count;
-    else if (r.type === 'message') {
+    if (r.type === 'connect') {
+      performance.invitesSent = r.count;
+      performance.invitedTargets = r.targetCount;
+    } else if (r.type === 'message') {
       performance.messagesSent = r.count;
       performance.messagedTargets = r.targetCount;
     }

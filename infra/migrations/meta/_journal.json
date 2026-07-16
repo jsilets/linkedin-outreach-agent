@@ -92,6 +92,13 @@
       "when": 1784071133217,
       "tag": "0012_shiny_stone_men",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1784221311196,
+      "tag": "0013_superb_wendell_vaughn",
+      "breakpoints": true
     }
   ]
 }

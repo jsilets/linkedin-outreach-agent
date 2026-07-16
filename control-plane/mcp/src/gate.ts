@@ -21,13 +21,18 @@
 // Even when a level permits execution, SafetyGate.canAct still runs and can
 // defer or deny within budget.
 
-import type { AutonomyLevel, Decision } from '@loa/shared';
+import type { ActionResult, AutonomyLevel, Decision } from '@loa/shared';
 import { SafetyDeferredError } from '@loa/shared';
 import type { ActRequest, ApprovalPort, ExecutorPort, PendingItem, SafetyPort } from './ports.js';
 
-/** Outcome of routing an Act through the gate. */
+/** Outcome of routing an Act through the gate.
+ *
+ * 'executed' means the action RAN, not that it worked: `result` carries what the
+ * row says ('success', 'failed', or 'skipped' for a deliberate no-op). Callers
+ * must branch on it. Dropping it here is how a connect that sent no invite still
+ * parked its lead awaiting acceptance. */
 export type GateOutcome =
-  | { kind: 'executed'; actionId: string }
+  | { kind: 'executed'; actionId: string; result: ActionResult }
   | { kind: 'queued'; pendingId: string }
   | { kind: 'deferred'; until: Date }
   | { kind: 'denied'; reason: string };
@@ -107,7 +112,7 @@ export async function gateAct(
     case 'allow': {
       try {
         const action = await deps.executor.execute(req);
-        return { kind: 'executed', actionId: action.id };
+        return { kind: 'executed', actionId: action.id, result: action.result };
       } catch (err) {
         // The executor re-checks safety at token-mint time (defense in depth).
         // If that re-check flipped to a non-allow (e.g. the anti-burst pacer

@@ -34,6 +34,9 @@ export interface ActionStorePort {
     id: string,
     result: shared.ActionRow['result'],
     executedAt: Date | null,
+    /** The adapter's own account of what happened, persisted onto the row.
+     * Omitted leaves any existing detail untouched. */
+    detail?: string,
   ): Promise<shared.ActionRow>;
   /** Remove an action row. Used to clean up a just-created pending row when a
    * mint-time safety re-check defers, so no orphan pending row is left behind. */
