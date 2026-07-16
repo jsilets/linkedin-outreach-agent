@@ -67,22 +67,3 @@ export function FunnelBar({
     </div>
   );
 }
-
-/** A single thin proportional strip — the funnel compressed to a card row. */
-export function MiniFunnel({ counts }: { counts: Counts }) {
-  const entries = ordered(counts);
-  const total = entries.reduce((a, [, n]) => a + n, 0);
-  if (total === 0) return <div className="mini-funnel" aria-hidden />;
-  return (
-    <div className="mini-funnel" role="img" aria-label="Pipeline breakdown">
-      {entries.map(([key, n]) => (
-        <span
-          key={key}
-          className="mseg"
-          style={{ background: statusVar(key), width: `${(n / total) * 100}%` }}
-          title={`${statusLabel(key)}: ${n}`}
-        />
-      ))}
-    </div>
-  );
-}

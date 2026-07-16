@@ -24,8 +24,11 @@ export interface Step {
 
 type CampaignStatus = 'draft' | 'active' | 'done';
 
-interface CampaignPerformance {
+export interface CampaignPerformance {
   invitesSent: number;
+  /** Distinct targets with at least one successful invite — the people count
+   * behind invitesSent, so `eligible - invitedTargets` is "invites still to go". */
+  invitedTargets: number;
   invitesAccepted: number;
   /** Total message VOLUME: every successful message action, including follow-ups
    * to the same person. Not a population — do not divide replies by it. */

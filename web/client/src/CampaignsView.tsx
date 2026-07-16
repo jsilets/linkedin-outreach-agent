@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { type Account, api, type CampaignDetail, type CampaignSummary, type Lead } from './api';
+import { StageFunnel, WorkBar, WorkStatusLine } from './CampaignStats';
+import { summarizeWork } from './campaignMetrics';
 import { FlowEditor } from './FlowEditor';
-import { FunnelBar, MiniFunnel } from './FunnelBar';
+import { FunnelBar } from './FunnelBar';
 import { LeadsTable } from './LeadsTable';
 import { statusLabel, statusVar } from './status';
 
@@ -10,34 +12,6 @@ function StatusBadge({ status }: { status: string }) {
     <span className="status-badge" style={{ ['--c' as string]: statusVar(status) }}>
       {statusLabel(status)}
     </span>
-  );
-}
-
-// A campaign's headline performance as two quiet stat chips: invite acceptance
-// and message reply rates. Rates guard divide-by-zero with an em dash, so a
-// campaign that hasn't sent yet reads honestly rather than "0%" or "NaN". Coded
-// defensively against `performance` since the server field may not be present.
-// Reply rate divides distinct repliers by distinct messaged targets: dividing by
-// messagesSent would mix a population by a volume and can exceed 100%.
-function PerfStats({ performance }: { performance?: CampaignSummary['performance'] }) {
-  const invitesSent = performance?.invitesSent ?? 0;
-  const invitesAccepted = performance?.invitesAccepted ?? 0;
-  const messagesSent = performance?.messagesSent ?? 0;
-  const messagedTargets = performance?.messagedTargets ?? 0;
-  const replies = performance?.replies ?? 0;
-  const accepted = invitesSent > 0 ? `${Math.round((invitesAccepted / invitesSent) * 100)}%` : '—';
-  const replied = messagedTargets > 0 ? `${Math.round((replies / messagedTargets) * 100)}%` : '—';
-  return (
-    <div className="stat-row">
-      <span className="stat">
-        <span className="stat-n">{invitesSent}</span>
-        <span className="stat-label">invites · {accepted} accepted</span>
-      </span>
-      <span className="stat">
-        <span className="stat-n">{messagesSent}</span>
-        <span className="stat-label">messages · {replied} replied</span>
-      </span>
-    </div>
   );
 }
 
@@ -73,29 +47,33 @@ export function CampaignsView() {
 
   return (
     <div className="grid">
-      {list.map((c) => (
-        <div className="card campaign-row" key={c.id} onClick={() => setSelected(c.id)}>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-              <h3 style={{ margin: 0 }}>{c.goal}</h3>
-              <StatusBadge status={c.status} />
-              {c.pendingCount > 0 && (
-                <span
-                  className="chip"
-                  style={{ ['--c' as string]: statusVar('awaiting_approval') }}
-                >
-                  {c.pendingCount} to approve
-                </span>
-              )}
+      {list.map((c) => {
+        const work = summarizeWork(c.byProgressState, c.targetCount);
+        return (
+          <div className="card campaign-row" key={c.id} onClick={() => setSelected(c.id)}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                <h3 style={{ margin: 0 }}>{c.goal}</h3>
+                <StatusBadge status={c.status} />
+                {c.pendingCount > 0 && (
+                  <span
+                    className="chip"
+                    style={{ ['--c' as string]: statusVar('awaiting_approval') }}
+                  >
+                    {c.pendingCount} to approve
+                  </span>
+                )}
+              </div>
+              <div className="muted" style={{ marginBottom: 8 }}>
+                {c.owner} · {c.autonomyLevel} · {work.eligible} leads
+                {work.skipped > 0 && ` (${work.skipped} skipped)`}
+              </div>
+              <StageFunnel performance={c.performance} eligible={work.eligible} />
+              <WorkBar byProgressState={c.byProgressState} targetCount={c.targetCount} />
             </div>
-            <div className="muted" style={{ marginBottom: 8 }}>
-              {c.owner} · {c.autonomyLevel} · {c.targetCount} targets
-            </div>
-            <MiniFunnel counts={c.byProgressState} />
-            <PerfStats performance={c.performance} />
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -168,7 +146,11 @@ function CampaignDetailView({ id, onBack }: { id: string; onBack: () => void }) 
         <div className="muted" style={{ marginBottom: 12 }}>
           {detail.owner} · {detail.autonomyLevel} · strategy: {detail.messageStrategy}
         </div>
-        <PerfStats performance={detail.performance} />
+        <StageFunnel
+          performance={detail.performance}
+          eligible={summarizeWork(detail.byProgressState, detail.targetCount).eligible}
+        />
+        <WorkStatusLine byProgressState={detail.byProgressState} targetCount={detail.targetCount} />
         <FunnelBar counts={detail.byProgressState} selected={filter} onSelect={setFilter} />
         <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
           {filter

@@ -7,11 +7,12 @@ import {
   type ScheduledItem,
   type VolumeRow,
 } from './api';
+import { StageFunnel, WorkBar, WorkLegend } from './CampaignStats';
+import { aggregate, summarizeWork } from './campaignMetrics';
 import { type Column, DataTable } from './DataTable';
-import { FunnelBar, MiniFunnel } from './FunnelBar';
 import { formatRelative, formatStamp } from './format';
 import { usePref } from './prefs';
-import { actionLabel, actionResultLabel, actionResultVar, statusLabel, statusVar } from './status';
+import { actionLabel, actionResultLabel, actionResultVar, statusVar } from './status';
 
 // One theme-aware status token per action type, used as a categorical palette in
 // the chart and legend. Amber (--st-approval) is deliberately excluded — it is
@@ -107,10 +108,8 @@ export function MetricsView({
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
   }, [accountId, days]);
 
-  const agg: Record<string, number> = {};
-  for (const c of campaigns) {
-    for (const [k, n] of Object.entries(c.byProgressState ?? {})) agg[k] = (agg[k] ?? 0) + n;
-  }
+  const agg = aggregate(campaigns);
+  const aggWork = summarizeWork(agg.byProgressState, agg.targetCount);
 
   return (
     <div className="dash">
@@ -167,38 +166,22 @@ export function MetricsView({
 
       <div className="card">
         <div className="section-head">
-          <h3>Pipeline across all campaigns</h3>
+          <h3>Across all campaigns</h3>
+          {aggWork.needsApproval > 0 && (
+            <span className="chip" style={{ ['--c' as string]: statusVar('awaiting_approval') }}>
+              {aggWork.needsApproval} awaiting your approval
+            </span>
+          )}
         </div>
-        <FunnelBar counts={agg} />
-        <div className="grid" style={{ marginTop: 'var(--space-4)', gap: 'var(--space-2)' }}>
-          {campaigns.map((c) => (
-            <div
-              key={c.id}
-              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}
-            >
-              <div style={{ width: 220, minWidth: 0 }}>
-                <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {c.goal}
-                </div>
-                <div className="muted" style={{ fontSize: 'var(--text-meta)' }}>
-                  {statusLabel(c.status)} · {c.targetCount} targets
-                </div>
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <MiniFunnel counts={c.byProgressState} />
-              </div>
-              {c.pendingCount > 0 && (
-                <span
-                  className="chip"
-                  style={{ ['--c' as string]: statusVar('awaiting_approval') }}
-                >
-                  {c.pendingCount}
-                </span>
-              )}
-            </div>
-          ))}
-          {campaigns.length === 0 && <span className="muted">No campaigns yet.</span>}
-        </div>
+        {campaigns.length === 0 ? (
+          <span className="muted">No campaigns yet.</span>
+        ) : (
+          <>
+            <StageFunnel performance={agg.performance} eligible={aggWork.eligible} />
+            <WorkBar byProgressState={agg.byProgressState} targetCount={agg.targetCount} />
+            <WorkLegend byProgressState={agg.byProgressState} targetCount={agg.targetCount} />
+          </>
+        )}
       </div>
 
       <div className="dash-feeds">
