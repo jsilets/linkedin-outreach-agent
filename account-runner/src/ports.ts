@@ -84,6 +84,20 @@ export interface PagePort {
     opts?: { accept?: string },
   ): Promise<{ status: number; body: unknown }>;
   /**
+   * Issue an authenticated same-origin POST to the LinkedIn Voyager API from the
+   * page's own fetch context — the write twin of voyagerGet, for action POSTs
+   * like withdraw. Sends the same Csrf-Token + X-Restli-Protocol-Version headers,
+   * content-type application/json, and the JSON `body`. A successful action may
+   * return HTTP 200 with an EMPTY body, so the parsed body is null on non-JSON.
+   * Optional so lightweight test fakes need not implement it; callers must check
+   * for its presence and fall back (or refuse) when it is absent.
+   */
+  voyagerPost?(
+    pathWithQuery: string,
+    body: unknown,
+    opts?: { accept?: string },
+  ): Promise<{ status: number; body: unknown }>;
+  /**
    * Insert text at the focused element's caret (paste-like: one input event, no
    * per-key events, no viewport hit-test). Reaches an editor that renders
    * outside the viewport, where click+type stalls. Optional so lightweight test

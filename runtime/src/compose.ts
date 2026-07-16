@@ -51,6 +51,7 @@ import {
   LiveConnectionsReader,
   LiveInboxReader,
   LiveObserve,
+  LiveSentInvitationsReader,
 } from './adapters/observe-live.js';
 import { makeOrchestratorServices, type OrchestratorServices } from './adapters/orchestrator.js';
 import { PersistenceAdapter } from './adapters/persistence.js';
@@ -72,6 +73,7 @@ import { ReplyTick } from './dispatch/reply-tick.js';
 import { AccountRunnerExecutor } from './executor/account-runner-executor.js';
 import { FakeExecutor } from './executor/fake-executor.js';
 import { LiveSessionProvider } from './executor/session-provider.js';
+import { StaleInvitationSweeper } from './executor/withdraw-invitations.js';
 import { FakeLLMProvider } from './llm/fake-llm-provider.js';
 import { rowToAccount, rowToCampaign, rowToTarget } from './mappers.js';
 import {
@@ -224,13 +226,29 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       weekly,
       daily,
       pacer,
+      outstanding,
     });
   }
   const { llm, name: llmProvider } = chooseLlm(config);
 
   // mcp ports, all backed by the single orchestrator + gate + store + executor.
   const approvals = new ApprovalAdapter(orchestrator, executor, store);
-  const admin = new AccountAdminAdapter(store, gate, orchestrator, pause);
+  // The stale-invitation sweeper (withdraw_sent_invitations) reads + withdraws
+  // over the live page, so it is only wired with a real session; in fake mode the
+  // admin tool refuses. It shares the outstanding counter + pacer so a withdrawal
+  // decrements the pending pile and spaces the account's next action apart.
+  const invitationSweeper = sessionProvider
+    ? new StaleInvitationSweeper({
+        reader: new LiveSentInvitationsReader({ pageFor: (id) => sessionProvider!.pageFor(id) }),
+        pages: { pageFor: (id) => sessionProvider!.pageFor(id) },
+        sequence: store.sequence,
+        targets: store.target,
+        events: store.event,
+        outstanding,
+        pacer,
+      })
+    : undefined;
+  const admin = new AccountAdminAdapter(store, gate, orchestrator, pause, invitationSweeper);
   const campaign = new CampaignAdapter(orchestrator, store, gate);
   const safety = makeMcpSafetyPort(gate, store);
   // Observe: reads run open (no gating). With a real session the observe port is

@@ -258,11 +258,29 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       // The invite is now pending until the person accepts it.
       this.outstanding?.record(accountId);
     }
+    // A withdrawn invite drains the outstanding pile. If this target was parked
+    // awaiting acceptance, release its cursor to terminal (stage 'lost' / progress
+    // 'skipped') — LinkedIn blocks re-inviting the same person for up to ~3 weeks,
+    // so it must not be re-enqueued — and decrement the outstanding counter, the
+    // same accounting the acceptance tick does. No parked cursor (a manual invite
+    // or an already-accepted one) releases nothing.
+    let withdrawReleasedCursor = false;
+    if (type === 'withdraw_invite') {
+      withdrawReleasedCursor = await this.releaseWithdrawnCursor(targetId);
+      if (withdrawReleasedCursor) this.outstanding?.release(accountId);
+    }
     this.daily?.record(accountId, type, executedAt);
     await this.store.event.append({
       accountId,
       kind: 'action_executed',
-      payload: { actionId: action.id, type, targetId, campaignId, via: 'account_runner' },
+      payload: {
+        actionId: action.id,
+        type,
+        targetId,
+        campaignId,
+        via: 'account_runner',
+        ...(type === 'withdraw_invite' ? { releasedCursor: withdrawReleasedCursor } : {}),
+      },
     });
     return {
       ...action,
@@ -305,5 +323,20 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
         throw new Error(`unhandled action type: ${String(never)}`);
       }
     }
+  }
+
+  /** Move a target parked in 'awaiting_connection' out to terminal after its
+   * invite was withdrawn (stage 'lost', cursor 'skipped'), mirroring operator
+   * removal. Returns true when a parked cursor matched, so the caller can release
+   * the outstanding-invite counter only then. */
+  private async releaseWithdrawnCursor(targetId: string): Promise<boolean> {
+    const prog = await this.store.sequence.getTargetProgressByTarget(targetId);
+    if (prog?.state !== 'awaiting_connection') return false;
+    await this.store.target.setStage(targetId, 'lost');
+    await this.store.sequence.advanceTargetProgress(prog.id, {
+      state: 'skipped',
+      nextStepAt: null,
+    });
+    return true;
   }
 }

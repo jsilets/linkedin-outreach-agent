@@ -26,3 +26,12 @@ export { preflight } from './safety/index.js';
 export type { SelectorKey } from './selectors.js';
 export { SELECTORS } from './selectors.js';
 export * from './session/index.js';
+export type { SentInvitation } from './voyager/sent-invitations.js';
+export {
+  invitationIdFromUrn,
+  normalizeSentInvitationsResponse,
+  readSentInvitations,
+  sentInvitationsPath,
+  WITHDRAW_INVITATION_BODY,
+  withdrawInvitationPath,
+} from './voyager/sent-invitations.js';

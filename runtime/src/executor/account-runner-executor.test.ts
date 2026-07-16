@@ -81,6 +81,11 @@ class StubPage implements PagePort {
   async voyagerGet() {
     return { status: 200, body: {} };
   }
+  // Withdraw drives a same-origin POST; the executor's release path only depends
+  // on it returning 2xx, so a canned 200 with an empty body is enough here.
+  async voyagerPost() {
+    return { status: 200, body: null };
+  }
 }
 
 /** SessionProvider that hands back one recording fake Page, no browser. The
@@ -231,6 +236,60 @@ describe('AccountRunnerExecutor real path', () => {
     expect(stored?.executedAt).toBeInstanceOf(Date);
     const events = await store.event.listByAccount(ACCT);
     expect(events.some((e) => e.kind === 'action_failed')).toBe(true);
+  });
+
+  it('releases a parked awaiting_connection cursor when its invite is withdrawn', async () => {
+    // Enroll the target and park it awaiting acceptance (where a sent connect
+    // leaves it). Its /in/ vanity (janedoe) must appear in the sent-invitations
+    // read so withdrawInvite resolves the urn and fires the withdraw POST.
+    const prog = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.sequence.advanceTargetProgress(prog.id, { state: 'awaiting_connection' });
+
+    class InvitePage extends StubPage {
+      override async voyagerGet() {
+        return {
+          status: 200,
+          body: {
+            elements: [
+              {
+                entityUrn: 'urn:li:invitation:999',
+                sentTime: Date.parse('2026-06-01T00:00:00Z'),
+                invitee: { miniProfile: { publicIdentifier: 'janedoe', firstName: 'Jane' } },
+              },
+            ],
+          },
+        };
+      }
+    }
+    const inviteSession = new StubSessionProvider();
+    (inviteSession as { page: StubPage }).page = new InvitePage();
+    const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
+      weeklyInvites: new StoreBackedWeeklyInviteCounter(),
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
+    const inviteExecutor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session: inviteSession,
+      sleep: noSleep,
+      rng: () => 0.5,
+    });
+
+    const action = await inviteExecutor.execute(actRequest('withdraw_invite'));
+
+    expect(action.result).toBe('success');
+    // The parked cursor is released to terminal so a ~3-week re-invite lockout
+    // never re-enqueues it: stage 'lost', cursor 'skipped'.
+    const movedTarget = await store.target.findById(TGT);
+    expect(movedTarget?.stage).toBe('lost');
+    const movedProg = await store.sequence.getTargetProgressByTarget(TGT);
+    expect(movedProg?.state).toBe('skipped');
+    // The audit event records that the withdrawal released a cursor.
+    const events = await store.event.listByAccount(ACCT);
+    const executed = events.find((e) => e.kind === 'action_executed');
+    const payload = executed?.payload as { releasedCursor?: boolean } | undefined;
+    expect(payload?.releasedCursor).toBe(true);
   });
 
   it('leaves no orphan pending row when the mint-time re-check defers, and rethrows', async () => {

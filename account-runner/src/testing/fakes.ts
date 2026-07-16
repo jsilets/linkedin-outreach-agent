@@ -182,6 +182,18 @@ export class FakePage implements PagePort {
     return this.cannedVoyager ?? { status: 200, body: {} };
   }
 
+  /** Canned Voyager POST response; defaults to 200 with an empty body. */
+  cannedVoyagerPost?: { status: number; body: unknown };
+  /** Every voyagerPost issued, in order, for assertions. */
+  readonly voyagerPosts: Array<{ path: string; body: unknown }> = [];
+  async voyagerPost(
+    pathWithQuery: string,
+    body: unknown,
+  ): Promise<{ status: number; body: unknown }> {
+    this.voyagerPosts.push({ path: pathWithQuery, body });
+    return this.cannedVoyagerPost ?? { status: 200, body: null };
+  }
+
   /** Convenience: was a selector clicked at least once? */
   clicked(selector: string): boolean {
     return (this.locators.get(selector)?.clicks ?? 0) > 0;

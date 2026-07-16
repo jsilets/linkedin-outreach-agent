@@ -37,6 +37,7 @@
     "inbox-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/inbox-shakeout.ts",
     "act-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/act-shakeout.ts",
     "profile-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/profile-shakeout.ts",
+    "invitations-shakeout": "node --env-file-if-exists=.env --import tsx runtime/src/tools/invitations-shakeout.ts",
     "link-account": "node --env-file-if-exists=.env --import tsx runtime/src/tools/link-account.ts",
     "source-to-list": "node --env-file-if-exists=.env --import tsx runtime/src/tools/source-to-list.ts",
     "msg-overlay-dump": "node --env-file-if-exists=.env --import tsx runtime/src/tools/msg-overlay-dump.ts",

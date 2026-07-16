@@ -4,7 +4,7 @@
   "workspaces": {
     "runtime": {
       "entry": [
-        "src/tools/{act-shakeout,search-shakeout,profile-shakeout,link-account,source-to-list,msg-overlay-dump,selector-scan,leak-test}.ts"
+        "src/tools/{act-shakeout,search-shakeout,profile-shakeout,invitations-shakeout,link-account,source-to-list,msg-overlay-dump,selector-scan,leak-test}.ts"
       ]
     }
   }

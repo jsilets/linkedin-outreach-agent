@@ -100,6 +100,34 @@ function adaptPage(page: PwPage): PagePort {
         },
         { path: pathWithQuery, accept: opts?.accept ?? '' },
       ),
+    voyagerPost: (pathWithQuery, body, opts) =>
+      page.evaluate(
+        async ({ path, accept, payload }: { path: string; accept: string; payload: string }) => {
+          const m = document.cookie.match(/JSESSIONID=("?)([^;"]+)\1/);
+          const csrf = m?.[2] ?? '';
+          const headers: Record<string, string> = {
+            'csrf-token': csrf,
+            'x-restli-protocol-version': '2.0.0',
+            'content-type': 'application/json',
+          };
+          if (accept) headers.accept = accept;
+          const resp = await fetch(path, {
+            method: 'POST',
+            credentials: 'include',
+            headers,
+            body: payload,
+          });
+          // An action POST often returns 200 with an empty body; tolerate it.
+          let respBody: unknown = null;
+          try {
+            respBody = await resp.json();
+          } catch {
+            respBody = null;
+          }
+          return { status: resp.status, body: respBody };
+        },
+        { path: pathWithQuery, accept: opts?.accept ?? '', payload: JSON.stringify(body ?? {}) },
+      ),
   };
 }
 

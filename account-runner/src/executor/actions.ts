@@ -7,6 +7,12 @@ import { isTruncatedName } from '@loa/shared';
 import { actionGapMs, clickDelayMs, realSleep, type Sleeper } from '../human.js';
 import type { AllowToken, LocatorPort, PagePort } from '../ports.js';
 import { SELECTORS } from '../selectors.js';
+import {
+  invitationIdFromUrn,
+  readSentInvitations,
+  WITHDRAW_INVITATION_BODY,
+  withdrawInvitationPath,
+} from '../voyager/sent-invitations.js';
 import { assertAllowed } from './gate.js';
 
 /** Shared context every action needs: the page, the authorizing token, ids. */
@@ -618,55 +624,74 @@ export async function follow(ctx: ActionContext, profileUrl: string): Promise<Ac
   return { ok: true, detail: 'followed' };
 }
 
-const SENT_INVITATIONS_URL = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
-
 /** Lowercased /in/<vanity> slug — the identity key on the sent-invites list. */
 function vanityFromUrl(profileUrl: string): string | null {
   const m = profileUrl.match(/\/in\/([^/?#]+)/);
   return m?.[1]?.toLowerCase() ?? null;
 }
 
-/**
- * Withdraw button scoped to the row that also holds this profile's anchor, so
- * we never withdraw the globally-first invite. withdrawInviteButton must stay a
- * single selector: the descendant prefix binds only the first OR-chain clause.
- */
-function withdrawButtonForVanity(vanity: string): string {
-  const btn = SELECTORS.withdrawInviteButton;
-  return (
-    `li:has(a[href*="/in/${vanity}"]) ${btn}, ` +
-    `div[class*="invitation-card"]:has(a[href*="/in/${vanity}"]) ${btn}`
-  );
+/** Ensure the page is on the LinkedIn origin so the same-origin voyager fetch
+ * carries the session cookies. A resumed session lands here already; this is a
+ * cheap guard for the rare case it does not (no DOM scrape, no full nav cost). */
+async function ensureLinkedInOrigin(ctx: ActionContext): Promise<void> {
+  if (!ctx.page.url().startsWith('https://www.linkedin.com')) {
+    await ctx.page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded' });
+  }
 }
 
 /**
- * Withdraw a previously sent invite, targeted by the invitee's profile URL.
- * Navigates to the sent-invitations manager, finds THAT profile's row, and
- * clicks its own Withdraw button, then confirms. Fails safe: returns ok:false
- * without acting if the invite is not among the rendered rows (already
- * accepted / withdrawn), so it never withdraws the wrong person.
+ * Withdraw a previously sent invite over the Voyager API (no DOM scrolling). The
+ * invitation-manager page is infinite-scroll, so the old row-clicking path could
+ * only reach the first rendered rows; this pages the sent-invitations endpoint
+ * and fires the dash withdraw action directly.
  *
- * verify-live + known limit: the sent list is virtualized, so this only sees
- * the initially-rendered rows; reaching lower rows needs a page.evaluate scroll
- * seam the port does not expose yet.
+ * Targets by invitationUrn when the caller has one; otherwise resolves the
+ * invitee's /in/ vanity against the paginated sent-invitations list. Fails safe:
+ * returns ok:false without acting if no pending invite matches the vanity
+ * (already accepted / withdrawn), so it never withdraws the wrong person.
+ *
+ * Behavior note: withdrawing does not notify the recipient, and LinkedIn blocks
+ * re-inviting the same person for up to ~3 weeks — so a withdrawn campaign target
+ * must not be re-enqueued (the runtime parks it 'lost'/'skipped').
  */
 export async function withdrawInvite(
   ctx: ActionContext,
-  params: { profileUrl: string },
+  params: { profileUrl: string; invitationUrn?: string },
 ): Promise<ActionResultOut> {
   guard(ctx);
-  const vanity = vanityFromUrl(params.profileUrl);
-  if (!vanity) return { ok: false, detail: `no /in/ vanity in ${params.profileUrl}` };
-  await ctx.page.goto(SENT_INVITATIONS_URL, { waitUntil: 'domcontentloaded' });
-  await gap(ctx);
-  const rowWithdraw = withdrawButtonForVanity(vanity);
-  if (!(await isPresent(ctx, rowWithdraw))) {
-    return { ok: false, detail: `no pending invite for ${vanity}` };
+  const post = ctx.page.voyagerPost?.bind(ctx.page);
+  if (!post) {
+    return { ok: false, detail: 'voyagerPost unavailable: cannot withdraw over the API' };
   }
-  await humanClick(ctx, rowWithdraw);
+  const vanity = vanityFromUrl(params.profileUrl);
+  // The withdraw POST is same-origin too, so the guard runs on BOTH branches —
+  // a caller-supplied invitationUrn must not skip it.
+  await ensureLinkedInOrigin(ctx);
+  let invitationUrn = params.invitationUrn;
+  if (!invitationUrn) {
+    if (!vanity) return { ok: false, detail: `no /in/ vanity in ${params.profileUrl}` };
+    const invites = await readSentInvitations(ctx.page);
+    const match = invites.find(
+      (inv) => inv.publicIdentifier?.toLowerCase() === vanity || vanityOfInvite(inv) === vanity,
+    );
+    if (!match) return { ok: false, detail: `no pending invite for ${vanity}` };
+    invitationUrn = match.invitationUrn;
+  }
+  const who = vanity ?? invitationUrn;
+  const { status } = await post(
+    withdrawInvitationPath(invitationIdFromUrn(invitationUrn)),
+    WITHDRAW_INVITATION_BODY,
+  );
   await gap(ctx);
-  await humanClick(ctx, SELECTORS.confirmWithdrawButton);
-  return { ok: true, detail: `invite withdrawn for ${vanity}` };
+  if (status < 200 || status >= 300) {
+    return { ok: false, detail: `withdraw returned HTTP ${status} for ${who}` };
+  }
+  return { ok: true, detail: `invite withdrawn for ${who}` };
+}
+
+/** The invitee /in/ vanity carried on a sent-invitation's profileUrl, if any. */
+function vanityOfInvite(inv: { profileUrl?: string }): string | null {
+  return inv.profileUrl ? vanityFromUrl(inv.profileUrl) : null;
 }
 
 /** LinkedIn reaction types, keyed by the API enum; LIKE is the default. */

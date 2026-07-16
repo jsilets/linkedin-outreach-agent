@@ -39,6 +39,7 @@ import type {
   RemoveTargetsResult,
   SequenceStepInput,
   TargetInput,
+  WithdrawStaleResult,
 } from '@loa/mcp';
 import type { DefaultSafetyGate } from '@loa/safety';
 import { DEFAULT_CONFIG, effectiveSchedule } from '@loa/safety';
@@ -61,6 +62,7 @@ import {
 } from '@loa/shared';
 import { advanceAfterStep } from '../dispatch/advance.js';
 import { StaggerAllocator } from '../dispatch/stagger.js';
+import type { StaleInvitationSweeper } from '../executor/withdraw-invitations.js';
 import { rowToAccount } from '../mappers.js';
 import type { RuntimeStore } from '../store/index.js';
 import type { OrchestratorServices } from './orchestrator.js';
@@ -590,6 +592,9 @@ export class AccountAdminAdapter implements AccountAdminPort {
     private readonly gate: DefaultSafetyGate,
     private readonly services: OrchestratorServices,
     private readonly pause: PauseRegistry,
+    /** The stale-invitation sweeper. Only wired with a real session (it reads +
+     * withdraws over the live page); absent in fake mode, where the tool refuses. */
+    private readonly invitations?: StaleInvitationSweeper,
   ) {}
 
   async pauseAccount(accountId: string, reason: string): Promise<void> {
@@ -650,6 +655,19 @@ export class AccountAdminAdapter implements AccountAdminPort {
       payload: r.payload as Json,
     }));
   }
+
+  async withdrawStaleInvitations(
+    accountId: string,
+    opts: { olderThanDays: number; max: number },
+  ): Promise<WithdrawStaleResult> {
+    if (!this.invitations) {
+      throw new Error(
+        'withdraw_sent_invitations requires a real browser session (LOA_EXECUTOR=real); ' +
+          'there is no live page to read or withdraw invites in fake mode',
+      );
+    }
+    return this.invitations.withdrawStale(accountId, opts);
+  }
 }
 
 /** Deterministic ObservePort for dev/smoke: canned profile/post reads. A live
@@ -696,6 +714,12 @@ export class FakeObserve implements ObservePort {
     _accountId: string,
     _limit: number,
   ): Promise<import('@loa/mcp').RecentConnection[]> {
+    return [];
+  }
+  async listSentInvitations(
+    _accountId: string,
+    _opts: { limit?: number; olderThanDays?: number },
+  ): Promise<import('@loa/mcp').SentInvitationView[]> {
     return [];
   }
 }

@@ -140,6 +140,21 @@ export interface RecentConnection {
   connectedAt?: string;
 }
 
+/** One pending outgoing invitation, from the full paginated sent-invitations
+ * read (both campaign-sent and manually-sent). `sentAt` is an ISO timestamp and
+ * `ageDays` its whole-day age when the payload carries a sent time; both are
+ * absent otherwise. */
+export interface SentInvitationView {
+  invitationUrn: string;
+  inviteeUrn?: string;
+  publicIdentifier?: string;
+  profileUrl?: string;
+  name?: string;
+  sentAt?: string;
+  ageDays?: number;
+  message?: string;
+}
+
 export interface ObservePort {
   getProfile(accountId: string, linkedinUrn: string): Promise<ProfileSummary>;
   getRecentPosts(accountId: string, linkedinUrn: string, limit: number): Promise<PostSummary[]>;
@@ -150,6 +165,14 @@ export interface ObservePort {
   /** Recently-accepted connections from the account's own network, most-recent
    * first. Read-only; does not charge the people-search budget. */
   listRecentConnections(accountId: string, limit: number): Promise<RecentConnection[]>;
+  /** All pending outgoing invitations, read in full over the paginated Voyager
+   * endpoint (LinkedIn is the source of truth, so this covers manual invites the
+   * runtime never sent). `olderThanDays` filters to invites at least that old;
+   * invites with an unknown sent time are excluded when a filter is set. */
+  listSentInvitations(
+    accountId: string,
+    opts: { limit?: number; olderThanDays?: number },
+  ): Promise<SentInvitationView[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +570,18 @@ export interface AuditRecord {
   payload: Json;
 }
 
+/** Outcome of a stale-invitation sweep. `withdrawn` lists what actually went
+ * out (oldest first); `releasedCursors` counts campaign targets whose parked
+ * awaiting_connection cursor was released to terminal by the withdrawal. */
+export interface WithdrawStaleResult {
+  /** Invites that matched the age filter and were attempted (== withdrawn+failed). */
+  considered: number;
+  withdrawn: Array<{ publicIdentifier?: string; sentAt?: string }>;
+  /** How many withdraw attempts returned a non-2xx / threw. */
+  failed: number;
+  releasedCursors: number;
+}
+
 export interface AccountAdminPort {
   pauseAccount(accountId: string, reason: string): Promise<void>;
   resumeAccount(accountId: string): Promise<void>;
@@ -555,6 +590,13 @@ export interface AccountAdminPort {
   getHealth(accountId: string): Promise<HealthReport>;
   rotateSession(accountId: string): Promise<void>;
   auditLog(accountId: string, limit: number): Promise<AuditRecord[]>;
+  /** Operator remedy: withdraw the oldest pending invitations to keep the
+   * outstanding pile under LinkedIn's ~500 ceiling. Withdraws at most `max`
+   * (hard-capped), oldest first, paced apart. */
+  withdrawStaleInvitations(
+    accountId: string,
+    opts: { olderThanDays: number; max: number },
+  ): Promise<WithdrawStaleResult>;
 }
 
 // ---------------------------------------------------------------------------

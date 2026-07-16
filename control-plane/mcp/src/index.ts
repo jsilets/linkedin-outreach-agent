@@ -46,8 +46,10 @@ export type {
   SafetyPort,
   ScoreLeadsResult,
   ScoreListResult,
+  SentInvitationView,
   SequenceStepInput,
   TargetInput,
+  WithdrawStaleResult,
 } from './ports.js';
 export { type AuthResult, authenticate, buildMcpServer, createApp, startServer } from './server.js';
 export { type SourceToListResult, sourceToList } from './source-to-list.js';
