@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { makeRunnerSafetyPort } from '../adapters/safety.js';
 import { StoreBackedWeeklyInviteCounter } from '../adapters/safety-state.js';
 import { InMemoryStore } from '../store/in-memory-store.js';
-import { AccountRunnerExecutor } from './account-runner-executor.js';
+import { AccountRunnerExecutor, isRendererStall } from './account-runner-executor.js';
 import type { SessionProvider } from './session-provider.js';
 
 const ACCT = 'acct-1';
@@ -94,8 +94,9 @@ class StubPage implements PagePort {
 class StubSessionProvider implements SessionProvider {
   readonly page: StubPage;
   readonly requested: string[] = [];
-  constructor(locatorCount = 1) {
-    this.page = new StubPage(locatorCount);
+  readonly recycled: string[] = [];
+  constructor(locatorCount = 1, page?: StubPage) {
+    this.page = page ?? new StubPage(locatorCount);
   }
   async pageFor(accountId: string): Promise<PagePort> {
     this.requested.push(accountId);
@@ -103,6 +104,9 @@ class StubSessionProvider implements SessionProvider {
   }
   profileUrlFor(_target: Target): string {
     return PROFILE;
+  }
+  async recycle(accountId: string): Promise<void> {
+    this.recycled.push(accountId);
   }
 }
 
@@ -236,6 +240,86 @@ describe('AccountRunnerExecutor real path', () => {
     expect(stored?.executedAt).toBeInstanceOf(Date);
     const events = await store.event.listByAccount(ACCT);
     expect(events.some((e) => e.kind === 'action_failed')).toBe(true);
+  });
+
+  it('recycles the browser session when the drive throws a Playwright timeout', async () => {
+    // A wedged renderer fails every pointer click with "Timeout Nms exceeded"
+    // for the life of the browser (observed live 2026-07-16: three sends in a
+    // row from one Chromium launched mid display-wake). The executor must drop
+    // the cached session so the NEXT action gets a fresh browser, instead of
+    // every action that day inheriting the same dead instance.
+    class StallPage extends StubPage {
+      override locator(selector: string): LocatorPort {
+        const loc = super.locator(selector);
+        return {
+          ...loc,
+          async click() {
+            throw new Error('locator.click: Timeout 30000ms exceeded.');
+          },
+          first() {
+            return this;
+          },
+          nth() {
+            return this;
+          },
+        };
+      }
+    }
+    const stallSession = new StubSessionProvider(1, new StallPage());
+    const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
+      weeklyInvites: new StoreBackedWeeklyInviteCounter(),
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
+    const stallExecutor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session: stallSession,
+      sleep: noSleep,
+      rng: () => 0.5,
+    });
+
+    // message() reaches its first pointer click at the typeahead card — the
+    // same flow the live failures died in.
+    await expect(stallExecutor.execute(actRequest('message', 'hello'))).rejects.toThrow(
+      /Timeout 30000ms exceeded/,
+    );
+
+    expect(stallSession.recycled).toEqual([ACCT]);
+    const events = await store.event.listByAccount(ACCT);
+    const failed = events.find((e) => e.kind === 'action_failed');
+    expect(failed?.payload).toMatchObject({ sessionRecycled: true });
+  });
+
+  it('does NOT recycle the session on a policy refusal (ok:false)', async () => {
+    // A refusal ("no Connect control", "no typeahead card matched") is the page
+    // behaving correctly; relaunching the browser for it would churn the session
+    // for nothing.
+    const refuseSession = new StubSessionProvider(0);
+    const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
+      weeklyInvites: new StoreBackedWeeklyInviteCounter(),
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
+    const refuseExecutor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session: refuseSession,
+      sleep: noSleep,
+      rng: () => 0.5,
+    });
+
+    const action = await refuseExecutor.execute(actRequest('connect'));
+
+    expect(action.result).toBe('failed');
+    expect(refuseSession.recycled).toEqual([]);
+  });
+
+  it('classifies only Playwright timeout phrasing as a renderer stall', () => {
+    expect(isRendererStall('locator.click: Timeout 30000ms exceeded.\nCall log:')).toBe(true);
+    expect(isRendererStall('page.goto: Timeout 30000ms exceeded.')).toBe(true);
+    expect(isRendererStall('no 1st-degree typeahead card matched "Jane"; refusing')).toBe(false);
+    expect(isRendererStall('needs recipient email; refusing to send')).toBe(false);
   });
 
   it('releases a parked awaiting_connection cursor when its invite is withdrawn', async () => {

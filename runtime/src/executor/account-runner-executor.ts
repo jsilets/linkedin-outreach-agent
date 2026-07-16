@@ -69,6 +69,14 @@ export interface AccountRunnerExecutorDeps {
   rng?: () => number;
 }
 
+/** Playwright's timeout phrasing ("locator.click: Timeout 30000ms exceeded.",
+ * "page.goto: Timeout 30000ms exceeded.") — the errors a wedged renderer
+ * produces. Deliberate substring match: the action functions never craft this
+ * wording in their own ok:false refusals, so a policy refusal never recycles. */
+export function isRendererStall(detail: string): boolean {
+  return /\bTimeout \d+ms exceeded\b/.test(detail);
+}
+
 export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort {
   private readonly store: RuntimeStore;
   private readonly runnerSafety: RunnerSafetyPort;
@@ -208,6 +216,16 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       const failedAt = this.now();
       this.pacer?.record(accountId, failedAt);
       await this.store.action.setResult(action.id, 'failed', failedAt);
+      // A Playwright timeout out of the drive is the sick-renderer signature (a
+      // Chromium launched mid display-wake never passes the click stability
+      // check again). The session cache is process-lifetime, so recycle it here
+      // or every later action inherits the same dead browser. A false positive
+      // (a genuinely slow page) just costs one fresh, resumed launch.
+      const detail = err instanceof Error ? err.message : String(err);
+      const recycled = isRendererStall(detail);
+      if (recycled) {
+        await this.session.recycle?.(accountId).catch(() => {});
+      }
       await this.store.event.append({
         accountId,
         kind: 'action_failed',
@@ -216,7 +234,8 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
           type,
           targetId,
           campaignId,
-          detail: err instanceof Error ? err.message : String(err),
+          detail,
+          ...(recycled ? { sessionRecycled: true } : {}),
         },
       });
       throw err;

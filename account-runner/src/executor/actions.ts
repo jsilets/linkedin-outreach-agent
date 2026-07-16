@@ -461,7 +461,11 @@ export async function message(
   } catch {
     return { ok: false, detail: 'message composer recipient field did not open' };
   }
-  await field.click();
+  // focus(), not click(): a pointer click must pass Playwright's frame-
+  // stability check, which a renderer wedged since launch never satisfies
+  // (three sends died there 2026-07-16). focus() skips it, and LinkedIn opens
+  // the typeahead on focus+keystrokes just as it does on click.
+  await field.focus();
   await field.type(searchName, { delay: TYPEAHEAD_KEY_DELAY_MS });
   await gap(ctx);
 

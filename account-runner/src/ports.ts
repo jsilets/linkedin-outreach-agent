@@ -110,6 +110,17 @@ export interface PagePort {
    * insertText.
    */
   pressKey?(key: string): Promise<void>;
+  /**
+   * True when the renderer produces two consecutive animation frames within
+   * timeoutMs. A Chromium launched mid display-wake can come up with a
+   * compositor that never settles; every pointer click then fails Playwright's
+   * "stable" actionability check for the life of the process (observed live
+   * 2026-07-16: three sends failed in a row until the browser was relaunched).
+   * The session layer probes this at launch and relaunches instead of handing
+   * out a sick page. Optional so lightweight test fakes need not implement it;
+   * absence means "assume healthy".
+   */
+  renderHealthy?(timeoutMs: number): Promise<boolean>;
 }
 
 /**

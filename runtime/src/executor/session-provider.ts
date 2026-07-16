@@ -28,6 +28,14 @@ export interface SessionProvider {
   pageFor(accountId: string): Promise<PagePort>;
   /** Profile URL for a target (built from its LinkedIn URN). */
   profileUrlFor(target: Target): string;
+  /**
+   * Close and forget this account's cached browser session so the next pageFor
+   * launches a fresh one. Called when an action fails with a renderer-stall
+   * signature (a Playwright actionability timeout): the session cache is
+   * process-lifetime, so without this one sick Chromium fails every action
+   * until the runtime restarts. Optional so test stubs need not implement it.
+   */
+  recycle?(accountId: string): Promise<void>;
 }
 
 export interface LiveSessionProviderConfig {
@@ -184,6 +192,18 @@ export class LiveSessionProvider implements SessionProvider {
     return profileUrlForTarget(target);
   }
 
+  async recycle(accountId: string): Promise<void> {
+    const pending = this.sessions.get(accountId);
+    if (!pending) return;
+    this.sessions.delete(accountId);
+    try {
+      const s = await pending;
+      await s.context.close();
+    } catch {
+      // Already dead or never opened; the cache entry is gone either way.
+    }
+  }
+
   /** Close every open session. Called on runtime shutdown. */
   async close(): Promise<void> {
     const open = [...this.sessions.values()];
@@ -226,8 +246,38 @@ export class LiveSessionProvider implements SessionProvider {
       // a mid-run challenge is the driving session's job, not the provider's.
       raiseHumanTask: () => {},
     };
-    return resume(deps, input);
+    // A Chromium launched mid display-wake can come up with a compositor that
+    // never produces stable frames; every click in it then times out for the
+    // life of the process (2026-07-16: three sends failed back-to-back from one
+    // sick instance). Probe the renderer before handing the session out, and
+    // relaunch once rather than caching a browser that can only fail.
+    let session = await resume(deps, input);
+    if (!(await renderOk(session.page))) {
+      console.warn(
+        `[session] renderer unhealthy after launch for ${accountId}; relaunching browser`,
+      );
+      await session.context.close().catch(() => {});
+      await clearSingletonLocks(userDataDir);
+      session = await resume(deps, input);
+      if (!(await renderOk(session.page))) {
+        await session.context.close().catch(() => {});
+        throw new Error(
+          `browser renderer unhealthy for ${accountId} after relaunch; refusing to drive actions`,
+        );
+      }
+    }
+    return session;
   }
+}
+
+/** How long the launch probe waits for two animation frames. Generous: a cold
+ * launch on a busy machine legitimately takes a moment to produce frames. */
+const RENDER_PROBE_TIMEOUT_MS = 5_000;
+
+/** True when the page's renderer produces frames (or the port cannot probe). */
+async function renderOk(page: PagePort): Promise<boolean> {
+  if (!page.renderHealthy) return true;
+  return page.renderHealthy(RENDER_PROBE_TIMEOUT_MS);
 }
 
 /**

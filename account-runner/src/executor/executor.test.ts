@@ -297,6 +297,11 @@ describe('executor acts when allowed', () => {
     expect(res.ok).toBe(true);
     // Opened the dedicated composer, NOT the profile page.
     expect(page.gotos).toContain('https://www.linkedin.com/messaging/thread/new/');
+    // The recipient field is activated by focus, never a pointer click: a click
+    // must pass the frame-stability check, which a renderer wedged since launch
+    // fails forever (three live sends died there 2026-07-16).
+    expect(page.focused(SELECTORS.composerRecipientField)).toBe(true);
+    expect(page.clicked(SELECTORS.composerRecipientField)).toBe(false);
     // Typed the recipient name into the typeahead (per-key, to fire suggestions).
     expect(page.typedInto(SELECTORS.composerRecipientField)).toContain('Jane Doe');
     expect(page.composed).toContain('Thanks for connecting!');
