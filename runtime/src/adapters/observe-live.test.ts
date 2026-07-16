@@ -784,6 +784,87 @@ describe('LiveConnectionsReader.readConnections', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Sent-invitations reader — paginated Voyager read -> SentInvitationView[].
+// ---------------------------------------------------------------------------
+
+/** A one-page normalized dash sent-invitations body (FICTIONAL identities). */
+function sentInvitesPayload(
+  people: Array<{ id: string; profileId: string; slug: string; name: string; sentTime: number }>,
+) {
+  return {
+    data: { '*elements': people.map((p) => `urn:li:fsd_invitation:${p.id}`) },
+    included: [
+      ...people.map((p) => ({
+        entityUrn: `urn:li:fsd_invitation:${p.id}`,
+        $type: 'com.linkedin.voyager.relationships.invitation.Invitation',
+        sentTime: p.sentTime,
+        invitee: { '*miniProfile': `urn:li:fsd_profile:${p.profileId}` },
+      })),
+      ...people.map((p) => ({
+        entityUrn: `urn:li:fsd_profile:${p.profileId}`,
+        publicIdentifier: p.slug,
+        firstName: p.name.split(' ')[0],
+        lastName: p.name.split(' ')[1],
+      })),
+    ],
+  };
+}
+
+describe('LiveObserve.listSentInvitations', () => {
+  const DAY = 86_400_000;
+
+  it('reads the paginated endpoint and computes ageDays', async () => {
+    const now = Date.now();
+    const page = new SearchFakePage([
+      sentInvitesPayload([
+        {
+          id: '1',
+          profileId: 'ACoAAOne',
+          slug: 'ida-brook',
+          name: 'Ida Brook',
+          sentTime: now - 30 * DAY,
+        },
+      ]),
+    ]);
+    const observe = new LiveObserve({ pageFor: async () => page }, new InMemorySearchBudget());
+    const invites = await observe.listSentInvitations('acct', { limit: 100 });
+    expect(invites).toHaveLength(1);
+    expect(invites[0]).toMatchObject({
+      invitationUrn: 'urn:li:fsd_invitation:1',
+      publicIdentifier: 'ida-brook',
+      profileUrl: 'https://www.linkedin.com/in/ida-brook/',
+    });
+    expect(invites[0]!.ageDays).toBe(30);
+    expect(page.calls[0]).toContain('/voyager/api/relationships/sentInvitationViewsV2');
+  });
+
+  it('drops invites younger than olderThanDays when filtering', async () => {
+    const now = Date.now();
+    const page = new SearchFakePage([
+      sentInvitesPayload([
+        {
+          id: '1',
+          profileId: 'ACoAAOld',
+          slug: 'old-one',
+          name: 'Old One',
+          sentTime: now - 40 * DAY,
+        },
+        {
+          id: '2',
+          profileId: 'ACoAANew',
+          slug: 'new-two',
+          name: 'New Two',
+          sentTime: now - 3 * DAY,
+        },
+      ]),
+    ]);
+    const observe = new LiveObserve({ pageFor: async () => page }, new InMemorySearchBudget());
+    const invites = await observe.listSentInvitations('acct', { olderThanDays: 21 });
+    expect(invites.map((i) => i.publicIdentifier)).toEqual(['old-one']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Profile reader — profileView -> ProfileSummary.
 // ---------------------------------------------------------------------------
 

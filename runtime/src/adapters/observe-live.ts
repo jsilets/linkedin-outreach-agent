@@ -24,7 +24,8 @@
 // open-source clients. buildVoyagerSearchUrl() is retained as the human-facing
 // results-page URL (e.g. to open the same search in a real browser).
 
-import type { PagePort } from '@loa/account-runner';
+import type { PagePort, SentInvitation } from '@loa/account-runner';
+import { readSentInvitations } from '@loa/account-runner';
 import type {
   ConversationSummary,
   EngagerSummary,
@@ -36,6 +37,7 @@ import type {
   ProfilePosition,
   ProfileSummary,
   RecentConnection,
+  SentInvitationView,
 } from '@loa/mcp';
 import { extractCompany } from '@loa/shared';
 
@@ -1011,6 +1013,23 @@ function normalizeConnectionElement(el: ConnectionElement | undefined): Accepted
   };
 }
 
+/**
+ * LiveSentInvitationsReader: read an account's pending OUTGOING invitations in
+ * full over the paginated Voyager sent-invitations endpoint, from the account's
+ * own logged-in page (same same-origin primitive as the connections reader). The
+ * path builder + normalizer live in @loa/account-runner so the executor's
+ * withdraw action shares them (package direction is runtime -> account-runner).
+ */
+export class LiveSentInvitationsReader {
+  constructor(private readonly pages: PageProvider) {}
+
+  async read(accountId: string, limit: number): Promise<SentInvitation[]> {
+    const page = await this.pages.pageFor(accountId);
+    await ensureOnLinkedIn(page);
+    return readSentInvitations(page, { limit });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // LiveObserve
 // ---------------------------------------------------------------------------
@@ -1034,6 +1053,42 @@ export class LiveObserve implements ObservePort {
       ...(c.headline ? { headline: c.headline } : {}),
       ...(c.connectedAt ? { connectedAt: c.connectedAt.toISOString() } : {}),
     }));
+  }
+
+  /** Full paginated read of the account's pending sent invitations. Computes a
+   * whole-day age from sentAt and, when olderThanDays is set, keeps only invites
+   * at least that old (invites with an unknown sentAt cannot be aged, so they are
+   * dropped from a filtered read). Not a people-search, so no budget charge. */
+  async listSentInvitations(
+    accountId: string,
+    opts: { limit?: number; olderThanDays?: number },
+  ): Promise<SentInvitationView[]> {
+    const reader = new LiveSentInvitationsReader(this.pages);
+    const invites = await reader.read(accountId, opts.limit ?? 1000);
+    const now = Date.now();
+    const views: SentInvitationView[] = [];
+    for (const inv of invites) {
+      const ageDays =
+        inv.sentAt !== undefined
+          ? Math.floor((now - inv.sentAt.getTime()) / 86_400_000)
+          : undefined;
+      if (
+        opts.olderThanDays !== undefined &&
+        (ageDays === undefined || ageDays < opts.olderThanDays)
+      )
+        continue;
+      views.push({
+        invitationUrn: inv.invitationUrn,
+        ...(inv.inviteeUrn ? { inviteeUrn: inv.inviteeUrn } : {}),
+        ...(inv.publicIdentifier ? { publicIdentifier: inv.publicIdentifier } : {}),
+        ...(inv.profileUrl ? { profileUrl: inv.profileUrl } : {}),
+        ...(inv.name ? { name: inv.name } : {}),
+        ...(inv.sentAt ? { sentAt: inv.sentAt.toISOString() } : {}),
+        ...(ageDays !== undefined ? { ageDays } : {}),
+        ...(inv.message ? { message: inv.message } : {}),
+      });
+    }
+    return views;
   }
 
   async searchPeople(

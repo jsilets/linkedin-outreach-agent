@@ -231,6 +231,30 @@ const observeTools: ToolDef[] = [
     },
     handler: (a, p) => p.observe.listRecentConnections(a.accountId, a.limit),
   },
+  {
+    name: 'list_sent_invitations',
+    family: 'observe',
+    description:
+      "List the account's PENDING sent connection invitations, read in full over " +
+      'the paginated Voyager endpoint behind the (infinite-scroll) invitation ' +
+      'manager. LinkedIn is the source of truth, so this covers invites sent ' +
+      'manually, not just campaign ones. Each item carries invitationUrn, ' +
+      'profileUrl, name, sentAt, and ageDays when known. Use it to audit the ' +
+      'outstanding pile against the ~500 outstanding-invite ceiling; pass ' +
+      'olderThanDays to see only aged invites (those with an unknown sent time are ' +
+      'omitted when filtering). Read-only; does not charge the people-search budget.',
+    privileged: false,
+    inputShape: {
+      accountId: z.string(),
+      limit: z.number().int().positive().max(1000).default(100),
+      olderThanDays: z.number().int().positive().optional(),
+    },
+    handler: (a, p) =>
+      p.observe.listSentInvitations(a.accountId, {
+        limit: a.limit,
+        ...(a.olderThanDays !== undefined ? { olderThanDays: a.olderThanDays } : {}),
+      }),
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -972,6 +996,39 @@ const safetyTools: ToolDef[] = [
     handler: (a, p, ctx) => {
       requirePrivileged(ctx, 'audit_log');
       return p.admin.auditLog(a.accountId, a.limit);
+    },
+  },
+  {
+    name: 'withdraw_sent_invitations',
+    family: 'safety',
+    description:
+      'Operator remedy: withdraw the OLDEST pending sent invitations to keep the ' +
+      "account's outstanding pile under LinkedIn's ~500 outstanding-invite ceiling. " +
+      'Reads all pending invites (see list_sent_invitations), filters to those at ' +
+      'least olderThanDays old (invites with an unknown sent time are skipped), and ' +
+      'withdraws them oldest-first, up to max (hard-capped at 100 per call). It is ' +
+      'throttle-safe: it paces every withdrawal, cools down between batches to stay ' +
+      "under LinkedIn's rate limit, and if it still gets throttled it backs off and " +
+      'STOPS rather than hammer (so it never trips a hard restriction). Because of ' +
+      'that pacing a full call can take many minutes; it is a single synchronous ' +
+      'call, so just wait for it. Withdrawing does not notify the recipient, but ' +
+      'LinkedIn blocks re-inviting the same person for up to ~3 weeks — so a ' +
+      'withdrawn campaign target is parked lost and never re-enqueued. Returns ' +
+      '{withdrawn, failed, throttled, releasedCursors, remaining, stopped}; when ' +
+      "`stopped` is 'throttled' or 'max_reached' and `remaining` > 0, run it again " +
+      'after a few minutes to clear the rest.',
+    privileged: true,
+    inputShape: {
+      accountId: z.string(),
+      olderThanDays: z.number().int().positive().default(21),
+      max: z.number().int().positive().max(100).default(50),
+    },
+    handler: (a, p, ctx) => {
+      requirePrivileged(ctx, 'withdraw_sent_invitations');
+      return p.admin.withdrawStaleInvitations(a.accountId, {
+        olderThanDays: a.olderThanDays,
+        max: a.max,
+      });
     },
   },
 ];

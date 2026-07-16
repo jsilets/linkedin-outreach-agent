@@ -297,6 +297,11 @@ describe('executor acts when allowed', () => {
     expect(res.ok).toBe(true);
     // Opened the dedicated composer, NOT the profile page.
     expect(page.gotos).toContain('https://www.linkedin.com/messaging/thread/new/');
+    // The recipient field is activated by focus, never a pointer click: a click
+    // must pass the frame-stability check, which a renderer wedged since launch
+    // fails forever (three live sends died there 2026-07-16).
+    expect(page.focused(SELECTORS.composerRecipientField)).toBe(true);
+    expect(page.clicked(SELECTORS.composerRecipientField)).toBe(false);
     // Typed the recipient name into the typeahead (per-key, to fire suggestions).
     expect(page.typedInto(SELECTORS.composerRecipientField)).toContain('Jane Doe');
     expect(page.composed).toContain('Thanks for connecting!');
@@ -423,50 +428,95 @@ describe('executor acts when allowed', () => {
   });
 });
 
-describe('withdrawInvite targets a specific pending invite', () => {
-  const vanity = 'jane-doe-123';
+describe('withdrawInvite fires the Voyager withdraw action', () => {
+  // Fictional invitee — the repo is public.
+  const vanity = 'jamie-rivera-9x';
   const profileUrl = `https://www.linkedin.com/in/${vanity}/`;
-  // Must mirror withdrawButtonForVanity() exactly.
-  const rowSel =
-    `li:has(a[href*="/in/${vanity}"]) ${SELECTORS.withdrawInviteButton}, ` +
-    `div[class*="invitation-card"]:has(a[href*="/in/${vanity}"]) ${SELECTORS.withdrawInviteButton}`;
-  const SENT = 'https://www.linkedin.com/mynetwork/invitation-manager/sent/';
 
-  it('refuses without an allow token and never navigates', async () => {
+  /** A one-invite sent-invitations body in the normalized dash shape. */
+  function sentInvitesBody(publicId: string, numericId = '7000000000000000001') {
+    return {
+      data: { '*elements': [`urn:li:fsd_invitation:${numericId}`] },
+      included: [
+        {
+          entityUrn: `urn:li:fsd_invitation:${numericId}`,
+          $type: 'com.linkedin.voyager.relationships.invitation.Invitation',
+          sentTime: 1_783_000_000_000,
+          invitee: { '*miniProfile': 'urn:li:fsd_profile:ACoAAJamie' },
+        },
+        {
+          entityUrn: 'urn:li:fsd_profile:ACoAAJamie',
+          publicIdentifier: publicId,
+          firstName: 'Jamie',
+          lastName: 'Rivera',
+        },
+      ],
+    };
+  }
+
+  it('refuses without an allow token and never posts', async () => {
     const page = new FakePage();
     const action = makeAction({ type: 'withdraw_invite' });
     await expect(withdrawInvite(ctx(page, action, null), { profileUrl })).rejects.toBeInstanceOf(
       NotAllowedError,
     );
-    expect(page.gotos).toHaveLength(0);
+    expect(page.voyagerPosts).toHaveLength(0);
   });
 
-  it('returns ok:false for a URL with no /in/ vanity and never navigates', async () => {
+  it('returns ok:false for a URL with no /in/ vanity and never posts', async () => {
     const page = new FakePage();
     const action = makeAction({ type: 'withdraw_invite' });
     const res = await withdrawInvite(ctx(page, action, validToken(action)), {
       profileUrl: 'https://www.linkedin.com/company/acme/',
     });
     expect(res.ok).toBe(false);
-    expect(page.gotos).toHaveLength(0);
+    expect(page.voyagerPosts).toHaveLength(0);
   });
 
-  it('returns ok:false without confirming when no matching row exists', async () => {
-    const page = new FakePage({ counts: { [rowSel]: 0 } });
+  it('returns ok:false without posting when no pending invite matches the vanity', async () => {
+    const page = new FakePage();
+    page.cannedVoyager = { status: 200, body: sentInvitesBody('someone-else-42') };
     const action = makeAction({ type: 'withdraw_invite' });
     const res = await withdrawInvite(ctx(page, action, validToken(action)), { profileUrl });
     expect(res.ok).toBe(false);
-    expect(page.gotos).toContain(SENT);
-    expect(page.clicked(SELECTORS.confirmWithdrawButton)).toBe(false);
+    expect(res.detail).toContain(vanity);
+    expect(page.voyagerPosts).toHaveLength(0);
   });
 
-  it('clicks the targeted row withdraw then the confirm dialog', async () => {
-    const page = new FakePage({ counts: { [rowSel]: 1 } });
+  it('resolves the vanity against the sent list then posts the withdraw', async () => {
+    const page = new FakePage();
+    page.cannedVoyager = { status: 200, body: sentInvitesBody(vanity) };
     const action = makeAction({ type: 'withdraw_invite' });
     const res = await withdrawInvite(ctx(page, action, validToken(action)), { profileUrl });
     expect(res.ok).toBe(true);
     expect(res.detail).toContain(vanity);
-    expect(page.clicked(rowSel)).toBe(true);
-    expect(page.clicked(SELECTORS.confirmWithdrawButton)).toBe(true);
+    expect(page.voyagerPosts).toHaveLength(1);
+    expect(page.voyagerPosts[0]!.path).toContain('7000000000000000001');
+    expect(page.voyagerPosts[0]!.path).toContain('action=withdraw');
+  });
+
+  it('posts directly when given an invitationUrn, without reading the list', async () => {
+    const page = new FakePage();
+    const action = makeAction({ type: 'withdraw_invite' });
+    const res = await withdrawInvite(ctx(page, action, validToken(action)), {
+      profileUrl,
+      invitationUrn: 'urn:li:invitation:7000000000000000002',
+    });
+    expect(res.ok).toBe(true);
+    expect(page.voyagerPosts[0]!.path).toContain('7000000000000000002');
+    // No sent-list read was needed.
+    expect(page.gotos).toHaveLength(0);
+  });
+
+  it('returns ok:false on a non-2xx withdraw status', async () => {
+    const page = new FakePage();
+    page.cannedVoyagerPost = { status: 429, body: null };
+    const action = makeAction({ type: 'withdraw_invite' });
+    const res = await withdrawInvite(ctx(page, action, validToken(action)), {
+      profileUrl,
+      invitationUrn: 'urn:li:invitation:7000000000000000003',
+    });
+    expect(res.ok).toBe(false);
+    expect(res.detail).toContain('429');
   });
 });

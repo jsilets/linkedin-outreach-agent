@@ -25,6 +25,8 @@ import type {
 // (this is a Node package), so declare the one browser global it touches as
 // ambient to keep this file typechecking without pulling in all of lib.dom.
 declare const document: { cookie: string };
+// Same story for the render-health probe's frame callback.
+declare function requestAnimationFrame(callback: () => void): number;
 
 // Derive patchright's concrete types from the driver itself so we never import
 // its named types (which vary across versions) and never fall out of sync.
@@ -100,6 +102,56 @@ function adaptPage(page: PwPage): PagePort {
         },
         { path: pathWithQuery, accept: opts?.accept ?? '' },
       ),
+    voyagerPost: (pathWithQuery, body, opts) =>
+      page.evaluate(
+        async ({ path, accept, payload }: { path: string; accept: string; payload: string }) => {
+          const m = document.cookie.match(/JSESSIONID=("?)([^;"]+)\1/);
+          const csrf = m?.[2] ?? '';
+          const headers: Record<string, string> = {
+            'csrf-token': csrf,
+            'x-restli-protocol-version': '2.0.0',
+            'content-type': 'application/json',
+          };
+          if (accept) headers.accept = accept;
+          const resp = await fetch(path, {
+            method: 'POST',
+            credentials: 'include',
+            headers,
+            body: payload,
+          });
+          // An action POST often returns 200 with an empty body; tolerate it.
+          let respBody: unknown = null;
+          try {
+            respBody = await resp.json();
+          } catch {
+            respBody = null;
+          }
+          return { status: resp.status, body: respBody };
+        },
+        { path: pathWithQuery, accept: opts?.accept ?? '', payload: JSON.stringify(body ?? {}) },
+      ),
+    renderHealthy: (timeoutMs) => {
+      const probe = page.evaluate(
+        (ms: number) =>
+          new Promise<boolean>((resolve) => {
+            let frames = 0;
+            const tick = () => {
+              frames += 1;
+              if (frames >= 2) resolve(true);
+              else requestAnimationFrame(tick);
+            };
+            requestAnimationFrame(tick);
+            setTimeout(() => resolve(false), ms);
+          }),
+        timeoutMs,
+      );
+      // A sick renderer can also hang the evaluate itself; race a Node-side
+      // deadline so the probe can never wedge the session open.
+      const deadline = new Promise<boolean>((resolve) =>
+        setTimeout(() => resolve(false), timeoutMs + 2_000),
+      );
+      return Promise.race([probe, deadline]).catch(() => false);
+    },
   };
 }
 

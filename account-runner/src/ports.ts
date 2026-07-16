@@ -84,6 +84,20 @@ export interface PagePort {
     opts?: { accept?: string },
   ): Promise<{ status: number; body: unknown }>;
   /**
+   * Issue an authenticated same-origin POST to the LinkedIn Voyager API from the
+   * page's own fetch context — the write twin of voyagerGet, for action POSTs
+   * like withdraw. Sends the same Csrf-Token + X-Restli-Protocol-Version headers,
+   * content-type application/json, and the JSON `body`. A successful action may
+   * return HTTP 200 with an EMPTY body, so the parsed body is null on non-JSON.
+   * Optional so lightweight test fakes need not implement it; callers must check
+   * for its presence and fall back (or refuse) when it is absent.
+   */
+  voyagerPost?(
+    pathWithQuery: string,
+    body: unknown,
+    opts?: { accept?: string },
+  ): Promise<{ status: number; body: unknown }>;
+  /**
    * Insert text at the focused element's caret (paste-like: one input event, no
    * per-key events, no viewport hit-test). Reaches an editor that renders
    * outside the viewport, where click+type stalls. Optional so lightweight test
@@ -96,6 +110,17 @@ export interface PagePort {
    * insertText.
    */
   pressKey?(key: string): Promise<void>;
+  /**
+   * True when the renderer produces two consecutive animation frames within
+   * timeoutMs. A Chromium launched mid display-wake can come up with a
+   * compositor that never settles; every pointer click then fails Playwright's
+   * "stable" actionability check for the life of the process (observed live
+   * 2026-07-16: three sends failed in a row until the browser was relaunched).
+   * The session layer probes this at launch and relaunches instead of handing
+   * out a sick page. Optional so lightweight test fakes need not implement it;
+   * absence means "assume healthy".
+   */
+  renderHealthy?(timeoutMs: number): Promise<boolean>;
 }
 
 /**

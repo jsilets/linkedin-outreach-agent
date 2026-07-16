@@ -15,7 +15,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { makeRunnerSafetyPort } from '../adapters/safety.js';
 import { StoreBackedWeeklyInviteCounter } from '../adapters/safety-state.js';
 import { InMemoryStore } from '../store/in-memory-store.js';
-import { AccountRunnerExecutor } from './account-runner-executor.js';
+import { AccountRunnerExecutor, isRendererStall } from './account-runner-executor.js';
 import type { SessionProvider } from './session-provider.js';
 
 const ACCT = 'acct-1';
@@ -81,6 +81,11 @@ class StubPage implements PagePort {
   async voyagerGet() {
     return { status: 200, body: {} };
   }
+  // Withdraw drives a same-origin POST; the executor's release path only depends
+  // on it returning 2xx, so a canned 200 with an empty body is enough here.
+  async voyagerPost() {
+    return { status: 200, body: null };
+  }
 }
 
 /** SessionProvider that hands back one recording fake Page, no browser. The
@@ -89,8 +94,9 @@ class StubPage implements PagePort {
 class StubSessionProvider implements SessionProvider {
   readonly page: StubPage;
   readonly requested: string[] = [];
-  constructor(locatorCount = 1) {
-    this.page = new StubPage(locatorCount);
+  readonly recycled: string[] = [];
+  constructor(locatorCount = 1, page?: StubPage) {
+    this.page = page ?? new StubPage(locatorCount);
   }
   async pageFor(accountId: string): Promise<PagePort> {
     this.requested.push(accountId);
@@ -98,6 +104,9 @@ class StubSessionProvider implements SessionProvider {
   }
   profileUrlFor(_target: Target): string {
     return PROFILE;
+  }
+  async recycle(accountId: string): Promise<void> {
+    this.recycled.push(accountId);
   }
 }
 
@@ -231,6 +240,140 @@ describe('AccountRunnerExecutor real path', () => {
     expect(stored?.executedAt).toBeInstanceOf(Date);
     const events = await store.event.listByAccount(ACCT);
     expect(events.some((e) => e.kind === 'action_failed')).toBe(true);
+  });
+
+  it('recycles the browser session when the drive throws a Playwright timeout', async () => {
+    // A wedged renderer fails every pointer click with "Timeout Nms exceeded"
+    // for the life of the browser (observed live 2026-07-16: three sends in a
+    // row from one Chromium launched mid display-wake). The executor must drop
+    // the cached session so the NEXT action gets a fresh browser, instead of
+    // every action that day inheriting the same dead instance.
+    class StallPage extends StubPage {
+      override locator(selector: string): LocatorPort {
+        const loc = super.locator(selector);
+        return {
+          ...loc,
+          async click() {
+            throw new Error('locator.click: Timeout 30000ms exceeded.');
+          },
+          first() {
+            return this;
+          },
+          nth() {
+            return this;
+          },
+        };
+      }
+    }
+    const stallSession = new StubSessionProvider(1, new StallPage());
+    const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
+      weeklyInvites: new StoreBackedWeeklyInviteCounter(),
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
+    const stallExecutor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session: stallSession,
+      sleep: noSleep,
+      rng: () => 0.5,
+    });
+
+    // message() reaches its first pointer click at the typeahead card — the
+    // same flow the live failures died in.
+    await expect(stallExecutor.execute(actRequest('message', 'hello'))).rejects.toThrow(
+      /Timeout 30000ms exceeded/,
+    );
+
+    expect(stallSession.recycled).toEqual([ACCT]);
+    const events = await store.event.listByAccount(ACCT);
+    const failed = events.find((e) => e.kind === 'action_failed');
+    expect(failed?.payload).toMatchObject({ sessionRecycled: true });
+  });
+
+  it('does NOT recycle the session on a policy refusal (ok:false)', async () => {
+    // A refusal ("no Connect control", "no typeahead card matched") is the page
+    // behaving correctly; relaunching the browser for it would churn the session
+    // for nothing.
+    const refuseSession = new StubSessionProvider(0);
+    const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
+      weeklyInvites: new StoreBackedWeeklyInviteCounter(),
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
+    const refuseExecutor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session: refuseSession,
+      sleep: noSleep,
+      rng: () => 0.5,
+    });
+
+    const action = await refuseExecutor.execute(actRequest('connect'));
+
+    expect(action.result).toBe('failed');
+    expect(refuseSession.recycled).toEqual([]);
+  });
+
+  it('classifies only Playwright timeout phrasing as a renderer stall', () => {
+    expect(isRendererStall('locator.click: Timeout 30000ms exceeded.\nCall log:')).toBe(true);
+    expect(isRendererStall('page.goto: Timeout 30000ms exceeded.')).toBe(true);
+    expect(isRendererStall('no 1st-degree typeahead card matched "Jane"; refusing')).toBe(false);
+    expect(isRendererStall('needs recipient email; refusing to send')).toBe(false);
+  });
+
+  it('releases a parked awaiting_connection cursor when its invite is withdrawn', async () => {
+    // Enroll the target and park it awaiting acceptance (where a sent connect
+    // leaves it). Its /in/ vanity (janedoe) must appear in the sent-invitations
+    // read so withdrawInvite resolves the urn and fires the withdraw POST.
+    const prog = await store.sequence.enrollTarget(CAMP, TGT, ACCT);
+    await store.sequence.advanceTargetProgress(prog.id, { state: 'awaiting_connection' });
+
+    class InvitePage extends StubPage {
+      override async voyagerGet() {
+        return {
+          status: 200,
+          body: {
+            elements: [
+              {
+                entityUrn: 'urn:li:invitation:999',
+                sentTime: Date.parse('2026-06-01T00:00:00Z'),
+                invitee: { miniProfile: { publicIdentifier: 'janedoe', firstName: 'Jane' } },
+              },
+            ],
+          },
+        };
+      }
+    }
+    const inviteSession = new StubSessionProvider();
+    (inviteSession as { page: StubPage }).page = new InvitePage();
+    const gate = new DefaultSafetyGate({
+      allowMissingCounters: true,
+      weeklyInvites: new StoreBackedWeeklyInviteCounter(),
+      config: NO_ACTIVE_HOURS_CONFIG,
+    });
+    const inviteExecutor = new AccountRunnerExecutor({
+      store,
+      runnerSafety: makeRunnerSafetyPort(gate),
+      session: inviteSession,
+      sleep: noSleep,
+      rng: () => 0.5,
+    });
+
+    const action = await inviteExecutor.execute(actRequest('withdraw_invite'));
+
+    expect(action.result).toBe('success');
+    // The parked cursor is released to terminal so a ~3-week re-invite lockout
+    // never re-enqueues it: stage 'lost', cursor 'skipped'.
+    const movedTarget = await store.target.findById(TGT);
+    expect(movedTarget?.stage).toBe('lost');
+    const movedProg = await store.sequence.getTargetProgressByTarget(TGT);
+    expect(movedProg?.state).toBe('skipped');
+    // The audit event records that the withdrawal released a cursor.
+    const events = await store.event.listByAccount(ACCT);
+    const executed = events.find((e) => e.kind === 'action_executed');
+    const payload = executed?.payload as { releasedCursor?: boolean } | undefined;
+    expect(payload?.releasedCursor).toBe(true);
   });
 
   it('leaves no orphan pending row when the mint-time re-check defers, and rethrows', async () => {

@@ -69,6 +69,14 @@ export interface AccountRunnerExecutorDeps {
   rng?: () => number;
 }
 
+/** Playwright's timeout phrasing ("locator.click: Timeout 30000ms exceeded.",
+ * "page.goto: Timeout 30000ms exceeded.") — the errors a wedged renderer
+ * produces. Deliberate substring match: the action functions never craft this
+ * wording in their own ok:false refusals, so a policy refusal never recycles. */
+export function isRendererStall(detail: string): boolean {
+  return /\bTimeout \d+ms exceeded\b/.test(detail);
+}
+
 export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort {
   private readonly store: RuntimeStore;
   private readonly runnerSafety: RunnerSafetyPort;
@@ -208,6 +216,16 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       const failedAt = this.now();
       this.pacer?.record(accountId, failedAt);
       await this.store.action.setResult(action.id, 'failed', failedAt);
+      // A Playwright timeout out of the drive is the sick-renderer signature (a
+      // Chromium launched mid display-wake never passes the click stability
+      // check again). The session cache is process-lifetime, so recycle it here
+      // or every later action inherits the same dead browser. A false positive
+      // (a genuinely slow page) just costs one fresh, resumed launch.
+      const detail = err instanceof Error ? err.message : String(err);
+      const recycled = isRendererStall(detail);
+      if (recycled) {
+        await this.session.recycle?.(accountId).catch(() => {});
+      }
       await this.store.event.append({
         accountId,
         kind: 'action_failed',
@@ -216,7 +234,8 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
           type,
           targetId,
           campaignId,
-          detail: err instanceof Error ? err.message : String(err),
+          detail,
+          ...(recycled ? { sessionRecycled: true } : {}),
         },
       });
       throw err;
@@ -258,11 +277,29 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
       // The invite is now pending until the person accepts it.
       this.outstanding?.record(accountId);
     }
+    // A withdrawn invite drains the outstanding pile. If this target was parked
+    // awaiting acceptance, release its cursor to terminal (stage 'lost' / progress
+    // 'skipped') — LinkedIn blocks re-inviting the same person for up to ~3 weeks,
+    // so it must not be re-enqueued — and decrement the outstanding counter, the
+    // same accounting the acceptance tick does. No parked cursor (a manual invite
+    // or an already-accepted one) releases nothing.
+    let withdrawReleasedCursor = false;
+    if (type === 'withdraw_invite') {
+      withdrawReleasedCursor = await this.releaseWithdrawnCursor(targetId);
+      if (withdrawReleasedCursor) this.outstanding?.release(accountId);
+    }
     this.daily?.record(accountId, type, executedAt);
     await this.store.event.append({
       accountId,
       kind: 'action_executed',
-      payload: { actionId: action.id, type, targetId, campaignId, via: 'account_runner' },
+      payload: {
+        actionId: action.id,
+        type,
+        targetId,
+        campaignId,
+        via: 'account_runner',
+        ...(type === 'withdraw_invite' ? { releasedCursor: withdrawReleasedCursor } : {}),
+      },
     });
     return {
       ...action,
@@ -305,5 +342,20 @@ export class AccountRunnerExecutor implements McpExecutorPort, AgentExecutorPort
         throw new Error(`unhandled action type: ${String(never)}`);
       }
     }
+  }
+
+  /** Move a target parked in 'awaiting_connection' out to terminal after its
+   * invite was withdrawn (stage 'lost', cursor 'skipped'), mirroring operator
+   * removal. Returns true when a parked cursor matched, so the caller can release
+   * the outstanding-invite counter only then. */
+  private async releaseWithdrawnCursor(targetId: string): Promise<boolean> {
+    const prog = await this.store.sequence.getTargetProgressByTarget(targetId);
+    if (prog?.state !== 'awaiting_connection') return false;
+    await this.store.target.setStage(targetId, 'lost');
+    await this.store.sequence.advanceTargetProgress(prog.id, {
+      state: 'skipped',
+      nextStepAt: null,
+    });
+    return true;
   }
 }
