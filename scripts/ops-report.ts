@@ -15,19 +15,39 @@
 //
 //   node --env-file-if-exists=.env --import tsx scripts/ops-report.ts --hours 48
 //
-// The failure-kind set and the active-progress-state set are imported from
-// @loa/shared so this script and the runtime never drift on what "a failure" or
-// "an active cursor" means.
+// The failure-kind set, the daily-cap boundary and the invite ceilings are
+// imported from @loa/shared and @loa/safety so this script and the runtime never
+// drift on what "a failure", "today", or "at the ceiling" means. That drift is
+// not hypothetical: this report once counted a rolling 24h while the gate had
+// moved to the local calendar day, so at 5am it called an account 100% throttled
+// on a batch that belonged to yesterday.
 
-import {
-  ACTION_TYPES,
-  ACTIVE_PROGRESS_STATES,
-  type ActionType,
-  isFailureEventKind,
-} from '@loa/shared';
+import { DEFAULT_CONFIG } from '@loa/safety';
+import { ACTION_TYPES, type ActionType, isFailureEventKind, startOfLocalDay } from '@loa/shared';
 import postgres from 'postgres';
 
 const STUCK_THRESHOLD_MINUTES = 30;
+
+// Cursor states the RUNTIME owes an action to, and is therefore late on.
+//
+// Deliberately NOT the shared ACTIVE_PROGRESS_STATES: that set means
+// "removal-eligible" and includes cursors we are not waiting on ourselves.
+// 'awaiting_connection' is waiting on the invitee to accept and 'awaiting_approval'
+// on the operator to approve — neither is the runtime being stuck, and counting
+// them here reported 97 stuck cursors "oldest 5d 16h" for a healthy pipeline
+// whose real oldest was an invite a human simply had not accepted yet. Those two
+// get their own honest rows below. web/server/src/queries.ts draws the same
+// distinction for the same reason (see ACTIVE_LIFECYCLE_STATES).
+const STUCK_PROGRESS_STATES = ['pending', 'in_progress'] as const;
+
+// Cursors parked on someone else. Informational: an age here measures how long
+// we have waited on a human, not how long we have been broken.
+const WAITING_PROGRESS_STATES = [
+  { state: 'awaiting_connection', waitingOn: 'invitee to accept' },
+  { state: 'awaiting_approval', waitingOn: 'operator to approve' },
+] as const;
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface Caps {
   caps?: Partial<Record<ActionType, number>>;
@@ -137,10 +157,13 @@ async function main(): Promise<void> {
     );
 
     // --- 2. Stuck pipeline ---------------------------------------------------
-    // Enrollment cursors in an active state whose due time (or, when null, last
-    // update) is more than 30 minutes in the past: they should have advanced and
-    // did not. coalesce(next_step_at, updated_at) unifies "overdue" and
-    // "null-and-idle" into one reference time. Grouped by campaign.
+    // Enrollment cursors the runtime owes an action to, whose due time (or, when
+    // null, last update) is more than 30 minutes in the past: they should have
+    // advanced and did not. coalesce(next_step_at, updated_at) unifies "overdue"
+    // and "null-and-idle" into one reference time. Grouped by campaign.
+    //
+    // A number here is worth chasing. Cursors waiting on a human are counted
+    // separately below precisely so this one stays worth chasing.
     const stuckRows = await sql<
       { campaign_id: string; goal: string | null; count: number; oldest_ref: Date }[]
     >`
@@ -150,7 +173,7 @@ async function main(): Promise<void> {
              min(coalesce(tp.next_step_at, tp.updated_at)) as oldest_ref
       from target_progress tp
       left join campaigns c on c.id = tp.campaign_id
-      where tp.state::text = any(${sql.array([...ACTIVE_PROGRESS_STATES])})
+      where tp.state::text = any(${sql.array([...STUCK_PROGRESS_STATES])})
         and coalesce(tp.next_step_at, tp.updated_at)
             < now() - (${STUCK_THRESHOLD_MINUTES} * interval '1 minute')
       group by tp.campaign_id, c.goal
@@ -169,7 +192,39 @@ async function main(): Promise<void> {
           String(r.count),
           humanizeAge(now - new Date(r.oldest_ref).getTime()),
         ]),
-        'No stuck cursors: every active cursor is due in the future or recently updated.',
+        'No stuck cursors: every cursor the runtime owes an action to is due in the future or recently updated.',
+      ),
+    );
+
+    // --- 2b. Waiting on a human ----------------------------------------------
+    // Not stuck, and not the runtime's move. Shown because the counts are still
+    // worth knowing (a growing invite pile is what the outstanding ceiling
+    // eventually denies on) and because their absence from the section above is
+    // otherwise indistinguishable from a drained funnel.
+    const waitingRows: string[][] = [];
+    for (const w of WAITING_PROGRESS_STATES) {
+      const [row] = await sql<{ count: number; oldest_ref: Date | null }[]>`
+        select count(*)::int as count,
+               min(coalesce(next_step_at, updated_at)) as oldest_ref
+        from target_progress
+        where state::text = ${w.state}
+      `;
+      if (!row || row.count === 0) continue;
+      waitingRows.push([
+        w.state,
+        w.waitingOn,
+        String(row.count),
+        row.oldest_ref ? humanizeAge(now - new Date(row.oldest_ref).getTime()) : 'n/a',
+      ]);
+    }
+
+    p(`## Waiting on a human (not stuck)`);
+    p();
+    p(
+      table(
+        ['State', 'Waiting on', 'Cursors', 'Oldest'],
+        waitingRows,
+        'No cursors are parked on a human.',
       ),
     );
 
@@ -208,13 +263,18 @@ async function main(): Promise<void> {
     );
 
     // --- 4. Account cap utilization ------------------------------------------
-    // Live successful-action counts over a rolling 24h against limits.caps (the
+    // Live successful-action counts since LOCAL MIDNIGHT against limits.caps (the
     // operator-set daily cap). Deliberately NOT the persisted accounts.budget
     // jsonb: that row is only a creation-time seed the runtime never updates
     // (the real enforcement path is StoreBackedDailyUsage over action rows —
     // see DailyUsageCounter in control-plane/safety), so reading it raw shows a
-    // misleading stale date with all-zero tallies. Rolling 24h matches the
-    // counter's preferred window. Zero-cap actions are omitted for legibility.
+    // misleading stale date with all-zero tallies.
+    //
+    // The boundary is startOfLocalDay, the same helper the gate and the web read
+    // model count against, computed here and passed as a parameter rather than
+    // spelled in SQL: a hardcoded zone would be a THIRD notion of "local" that
+    // drifts the day the host moves. Zero-cap actions are omitted for legibility.
+    const dayStart = startOfLocalDay(new Date(now));
     const accountRows = await sql<
       { id: string; handle: string; state: string; limits: Caps }[]
     >`select id, handle, state, limits from accounts order by handle`;
@@ -222,7 +282,7 @@ async function main(): Promise<void> {
       select account_id, type, count(*)::int as used
       from actions
       where result = 'success'
-        and coalesce(executed_at, scheduled_at) > now() - interval '24 hours'
+        and coalesce(executed_at, scheduled_at) >= ${dayStart}
       group by account_id, type`;
     const usedByAccount = new Map<string, Record<string, number>>();
     for (const r of usedRows) {
@@ -231,7 +291,7 @@ async function main(): Promise<void> {
       usedByAccount.set(r.account_id, entry);
     }
 
-    p(`## Account cap utilization (rolling 24h)`);
+    p(`## Account cap utilization (today, since local midnight)`);
     p();
     const capRows: string[][] = [];
     for (const a of accountRows) {
@@ -251,6 +311,69 @@ async function main(): Promise<void> {
       ]);
     }
     p(table(['Account', 'State', 'Used / cap'], capRows, 'No accounts linked.'));
+
+    // --- 4b. Invite limiters --------------------------------------------------
+    // The daily cap is one of four limiters on an invite, and on its own it
+    // cannot explain a stopped lane: an account can read connect 14/20 (70%) and
+    // still be unable to send a single invite because the rolling weekly ceiling
+    // is full. Settings shows the operator all three; the report showed one, so
+    // the review that reads this file could not see the actual block.
+    //
+    // Both counts mirror their gate counterparts exactly (successes only for the
+    // week — a failed invite LinkedIn never saw burns no ceiling; the pile read
+    // from awaiting_connection cursors). See StoreBackedWeeklyInviteCounter and
+    // StoreBackedOutstandingInvites in runtime/src/adapters/safety-state.ts, and
+    // buildWeeklyInviteCountsQuery / buildOutstandingInviteCountsQuery in
+    // web/server/src/queries.ts. If one window moves they all move together.
+    const weekCutoff = new Date(now - SEVEN_DAYS_MS);
+    const weeklyRows = await sql<{ account_id: string; used: number; oldest: Date | null }[]>`
+      select account_id,
+             count(*)::int as used,
+             min(coalesce(executed_at, scheduled_at)) as oldest
+      from actions
+      where type = 'connect'
+        and result = 'success'
+        and coalesce(executed_at, scheduled_at) > ${weekCutoff}
+      group by account_id`;
+    const outstandingRows = await sql<{ account_id: string; pending: number }[]>`
+      select account_id, count(*)::int as pending
+      from target_progress
+      where state::text = 'awaiting_connection'
+      group by account_id`;
+    const weeklyByAccount = new Map(weeklyRows.map((r) => [r.account_id, r]));
+    const outstandingByAccount = new Map(outstandingRows.map((r) => [r.account_id, r.pending]));
+
+    p(`## Invite limiters (the other three gates on a connect)`);
+    p();
+    p(
+      table(
+        ['Account', 'Weekly (rolling 7d)', 'Next slot frees', 'Outstanding (unaccepted)'],
+        accountRows.map((a) => {
+          const week = weeklyByAccount.get(a.id);
+          const used = week?.used ?? 0;
+          const ceiling = DEFAULT_CONFIG.weeklyInviteCeiling;
+          const pending = outstandingByAccount.get(a.id) ?? 0;
+          const outCeiling = DEFAULT_CONFIG.outstandingInviteCeiling;
+          // The oldest invite in the window is the one that ages out first, so
+          // its stamp + 7d is when the ceiling next yields a slot. Only
+          // meaningful while the ceiling is actually full — otherwise a slot is
+          // already free and the honest answer is "now".
+          const nextSlot =
+            used < ceiling
+              ? 'now (headroom)'
+              : week?.oldest
+                ? new Date(new Date(week.oldest).getTime() + SEVEN_DAYS_MS).toLocaleString()
+                : 'unknown';
+          return [
+            a.handle,
+            `${used}/${ceiling}${used >= ceiling ? ' — FULL, invites denied' : ''}`,
+            nextSlot,
+            `${pending}/${outCeiling}${pending >= outCeiling ? ' — FULL, invites denied' : ''}`,
+          ];
+        }),
+        'No accounts linked.',
+      ),
+    );
 
     // --- 5. Pending-approval age ---------------------------------------------
     // Draft outbound messages still carrying a live ActRequest binding

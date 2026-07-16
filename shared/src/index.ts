@@ -8,4 +8,5 @@ export * from './enums.js';
 export * from './icp.js';
 export * from './interfaces.js';
 export * from './profile.js';
+export * from './time.js';
 export * from './types.js';

@@ -22,25 +22,16 @@ import type {
   RecentActionClock,
   WeeklyInviteCounter,
 } from '@loa/safety';
-import type { Account, ActionType, Signal, SignalKind } from '@loa/shared';
+import {
+  type Account,
+  type ActionType,
+  type Signal,
+  type SignalKind,
+  startOfLocalDay,
+} from '@loa/shared';
 import type { RuntimeStore } from '../store/index.js';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * The local midnight that starts the calendar day `at` falls in.
- *
- * HOST-local, deliberately: it must agree to the millisecond with the web read
- * model's `midnight.setHours(0, 0, 0, 0)` (queries.ts loadGateInputs), which is
- * what the operator is shown. The same host-local basis the working-hours window
- * already uses. A cap the UI and the gate disagree about is worse than either
- * boundary being wrong.
- */
-function startOfLocalDay(at: Date): number {
-  const midnight = new Date(at);
-  midnight.setHours(0, 0, 0, 0);
-  return midnight.getTime();
-}
 
 function emptyDailyUsed(): Record<ActionType, number> {
   return { connect: 0, message: 0, view_profile: 0, follow: 0, withdraw_invite: 0, react: 0 };
@@ -136,7 +127,7 @@ export class StoreBackedDailyUsage implements DailyUsageCounter {
 
   /** Rebuild today's counts from persisted, successfully-executed rows. */
   async rehydrate(store: RuntimeStore, accountIds: string[]): Promise<void> {
-    const dayStart = startOfLocalDay(this.now());
+    const dayStart = startOfLocalDay(this.now()).getTime();
     for (const accountId of accountIds) {
       const rows = await store.action.listByAccount(accountId);
       const byType: Partial<Record<ActionType, number[]>> = {};
@@ -170,7 +161,7 @@ export class StoreBackedDailyUsage implements DailyUsageCounter {
   }
 
   usedToday(accountId: string): Record<ActionType, number> {
-    const dayStart = startOfLocalDay(this.now());
+    const dayStart = startOfLocalDay(this.now()).getTime();
     const out = emptyDailyUsed();
     const byType = this.stamps.get(accountId);
     if (!byType) return out;
