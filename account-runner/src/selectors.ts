@@ -114,6 +114,19 @@ export const SELECTORS = {
     'div[data-test-artdeco-toast-item-type="error"], ' +
     '[role="alert"]:has-text("not sent"), ' +
     '[class*="toast"]:has-text("not sent")',
+  // Recently-withdrawn lockout. LinkedIn refuses to re-send an invite for ~3
+  // weeks after you withdraw one, and does it with a toast and NO invite modal:
+  // "Invitation not sent to <Name>. You can resend an invitation 3 weeks after
+  // withdrawing it." Because our stale sweep withdraws aged invites, the next
+  // connect step to that person hits exactly this. Match the distinctive wording
+  // (never the generic "not sent") so connect() returns a clean terminal failure
+  // and the cursor backs off, instead of hanging on a "Send without a note"
+  // modal that never opens and throwing an opaque error. verify-live.
+  inviteWithdrawnLockoutToast:
+    '[role="alert"]:has-text("resend an invitation"), ' +
+    '[class*="toast"]:has-text("resend an invitation"), ' +
+    '[role="alert"]:has-text("after withdrawing"), ' +
+    '[class*="toast"]:has-text("after withdrawing")',
 
   // --- Messaging ----------------------------------------------------------
   // OR-chains: ARIA/role-first (survives class renames), class fragments last.

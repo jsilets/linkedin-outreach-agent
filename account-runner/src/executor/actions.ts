@@ -225,13 +225,25 @@ async function waitForConnectSignal(
 }
 
 /**
+ * Detail for the recently-withdrawn lockout: LinkedIn blocks re-inviting the
+ * same person for ~3 weeks after a withdrawal. Terminal, not transient — a retry
+ * before the window elapses does nothing but trip the same refusal — so connect
+ * returns ok:false with this and the cursor backs off.
+ */
+const WITHDRAWN_LOCKOUT_DETAIL =
+  'invite refused: recently withdrawn; LinkedIn blocks re-inviting for ~3 weeks; no invite sent';
+
+/**
  * Send a connection invite with NO note. LinkedIn pre-fills a suggested note
  * ("Hi <Name>, it's great to connect…"), so a naive Send would ship that canned
  * text as a connection note. Prefer an explicit "Send without a note" button;
  * if the modal only offers a generic Send over a pre-filled note field, clear
  * the field first so nothing canned goes out either way.
+ *
+ * Returns a refusal detail when the invite could not be sent (the caller turns
+ * it into ok:false), or null when the invite was sent.
  */
-async function sendWithoutNote(ctx: ActionContext): Promise<void> {
+async function sendWithoutNote(ctx: ActionContext): Promise<string | null> {
   // Wait for the "Send without a note" button rather than racing the modal
   // render (an instant presence check can miss it mid-animation). The suggested
   // note is a contenteditable div we simply decline — never typed into here.
@@ -246,10 +258,18 @@ async function sendWithoutNote(ctx: ActionContext): Promise<void> {
     // through, so treat that as success rather than a false failure (the old
     // behavior hard-timed-out here and reported a send that had succeeded as an
     // error).
-    if (await isPresent(ctx, SELECTORS.pendingIndicator)) return;
+    if (await isPresent(ctx, SELECTORS.pendingIndicator)) return null;
+    // A recently-withdrawn lockout also shows no modal — just a toast. The
+    // toast can render after the modal-wait budget, so catch it here too (the
+    // connect() early check is the primary detector) rather than throwing the
+    // opaque "modal never appeared" error and misclassifying it as an outage.
+    if (await isPresent(ctx, SELECTORS.inviteWithdrawnLockoutToast)) {
+      return WITHDRAWN_LOCKOUT_DETAIL;
+    }
     throw new Error('connect: invite modal did not appear and no pending state followed');
   }
   await clickLoc(ctx, loc);
+  return null;
 }
 
 function guard(ctx: ActionContext): void {
@@ -325,6 +345,14 @@ export async function connect(
   if (await isPresent(ctx, SELECTORS.emailRequiredModal)) {
     return { ok: false, detail: 'needs recipient email to connect (email-gated); no invite sent' };
   }
+  // Recently-withdrawn lockout: clicking Connect on someone whose invite we
+  // withdrew in the last ~3 weeks pops an error toast and opens NO modal. Catch
+  // it before either send path (the note path would hang on the "Add a note"
+  // button that never appears, the note-less path on the "Send without a note"
+  // button) so we return a clean terminal failure the cursor backs off on.
+  if (await isPresent(ctx, SELECTORS.inviteWithdrawnLockoutToast)) {
+    return { ok: false, detail: WITHDRAWN_LOCKOUT_DETAIL };
+  }
   if (params.note && params.note.length > 0) {
     await humanClick(ctx, SELECTORS.addNoteButton);
     await humanType(ctx, SELECTORS.noteTextarea, params.note);
@@ -332,7 +360,8 @@ export async function connect(
     await humanClick(ctx, SELECTORS.sendInviteButton);
   } else {
     await gap(ctx);
-    await sendWithoutNote(ctx);
+    const refusal = await sendWithoutNote(ctx);
+    if (refusal) return { ok: false, detail: refusal };
   }
   // LinkedIn may refuse the invite (rate limit / recently-removed connection /
   // transient) with an error toast. Surface that as a failure — a click that

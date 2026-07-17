@@ -122,6 +122,7 @@ describe('executor acts when allowed', () => {
         [SELECTORS.inviteErrorToast]: 0,
         [SELECTORS.pendingIndicator]: 0,
         [SELECTORS.emailRequiredModal]: 0,
+        [SELECTORS.inviteWithdrawnLockoutToast]: 0,
       },
     });
     const action = makeAction();
@@ -144,6 +145,7 @@ describe('executor acts when allowed', () => {
         [SELECTORS.inviteErrorToast]: 0,
         [SELECTORS.pendingIndicator]: 0,
         [SELECTORS.emailRequiredModal]: 0,
+        [SELECTORS.inviteWithdrawnLockoutToast]: 0,
       },
     });
     const action = makeAction();
@@ -164,6 +166,7 @@ describe('executor acts when allowed', () => {
         [SELECTORS.pendingIndicator]: 0,
         [SELECTORS.pendingInMenu]: 0,
         [SELECTORS.emailRequiredModal]: 0,
+        [SELECTORS.inviteWithdrawnLockoutToast]: 0,
       },
     });
     const action = makeAction();
@@ -188,6 +191,7 @@ describe('executor acts when allowed', () => {
         [SELECTORS.inviteErrorToast]: 1,
         [SELECTORS.pendingIndicator]: 0,
         [SELECTORS.emailRequiredModal]: 0,
+        [SELECTORS.inviteWithdrawnLockoutToast]: 0,
       },
     });
     const action = makeAction();
@@ -196,6 +200,36 @@ describe('executor acts when allowed', () => {
     });
     expect(res.ok).toBe(false);
     expect(res.detail).toContain('refused by LinkedIn');
+  });
+
+  it('connect reports a terminal failure on the recently-withdrawn lockout', async () => {
+    // We withdrew an invite to this person recently (the stale sweep does this),
+    // so clicking Connect pops "Invitation not sent … You can resend an
+    // invitation 3 weeks after withdrawing it" with NO modal. connect() must
+    // catch that toast and report ok:false — not hang on a "Send without a note"
+    // modal that never opens and throw the opaque "modal never appeared" error.
+    const page = new FakePage({
+      counts: {
+        [SELECTORS.inviteErrorToast]: 0,
+        [SELECTORS.pendingIndicator]: 0,
+        [SELECTORS.emailRequiredModal]: 0,
+        [SELECTORS.inviteWithdrawnLockoutToast]: 1,
+      },
+    });
+    const action = makeAction();
+    const res = await connect(ctx(page, action, validToken(action)), {
+      profileUrl: 'https://www.linkedin.com/in/rob/',
+    });
+    expect(res.ok).toBe(false);
+    // No noop: it is a genuine refusal, so it records 'failed' (terminal, backs
+    // off) — not 'skipped'. The detail names the ~3-week lockout so ops can tell
+    // it apart from a real outage.
+    expect(res.noop).toBeUndefined();
+    expect(res.detail).toMatch(/withdrawn/i);
+    // Nothing was sent.
+    expect(page.clicked(SELECTORS.sendWithoutNoteButton)).toBe(false);
+    expect(page.clicked(SELECTORS.addNoteButton)).toBe(false);
+    expect(page.clicked(SELECTORS.sendInviteButton)).toBe(false);
   });
 
   it('connect flags email-gated invites instead of hanging or false-success', async () => {
