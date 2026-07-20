@@ -25,6 +25,16 @@ export function isOutboundSend(message: InboxMessage): boolean {
   return message.direction === 'outbound' && message.status === 'sent';
 }
 
+/** When the most recent outbound send actually went out. A sent row's createdAt
+ * is when it was first drafted/queued, so it can be days before it left; the
+ * thread row shows timing.at (the sentAt instant), so the footer has to read the
+ * same instant or it contradicts the "Sent Xd ago" row right above it. */
+export function lastOutboundSentAt(messages: InboxMessage[]): string | null {
+  const last = [...messages].reverse().find(isOutboundSend);
+  if (!last) return null;
+  return last.timing.kind === 'sent' ? last.timing.at : last.createdAt;
+}
+
 export function filterThreads(threads: InboxThread[], filter: InboxFilter): InboxThread[] {
   switch (filter) {
     case 'approval':
@@ -236,7 +246,7 @@ export function InboxView({
   );
   const selected = visible.find((thread) => thread.id === selectedId) ?? visible[0] ?? null;
   const transcript = selected?.messages.filter((message) => !message.pendingMessageId) ?? [];
-  const lastOutboundAt = [...transcript].reverse().find(isOutboundSend)?.createdAt;
+  const lastOutboundAt = lastOutboundSentAt(transcript);
 
   useEffect(() => {
     const focused = focusTargetId

@@ -7,6 +7,7 @@ import {
   composerLocked,
   filterThreads,
   isOutboundSend,
+  lastOutboundSentAt,
   latestMessage,
   runComposerAction,
   threadTimingLabel,
@@ -95,6 +96,37 @@ describe('filterThreads sent', () => {
     expect(isOutboundSend(message({ direction: 'inbound', status: 'sent' }))).toBe(false);
     expect(isOutboundSend(message({ direction: 'outbound', status: 'sent' }))).toBe(true);
     expect(isOutboundSend(message({ direction: 'outbound', status: 'failed' }))).toBe(false);
+  });
+});
+
+describe('lastOutboundSentAt', () => {
+  it('reads the send instant, not the drafted-at createdAt', () => {
+    // A follow-up drafted 4 days ago but not sent until 2 days ago: the footer
+    // must name when it left, matching the "Sent 2d ago" thread row, not when it
+    // was first queued.
+    const drafted = '2026-07-13T00:00:00.000Z';
+    const sent = '2026-07-15T00:00:00.000Z';
+    const messages = [
+      message({ id: 'm1', createdAt: drafted, timing: { kind: 'sent', at: sent } }),
+    ];
+    expect(lastOutboundSentAt(messages)).toBe(sent);
+  });
+
+  it('returns the most recent send when several went out', () => {
+    const messages = [
+      message({ id: 'm1', timing: { kind: 'sent', at: '2026-07-10T00:00:00.000Z' } }),
+      message({ id: 'm2', timing: { kind: 'sent', at: '2026-07-15T00:00:00.000Z' } }),
+    ];
+    expect(lastOutboundSentAt(messages)).toBe('2026-07-15T00:00:00.000Z');
+  });
+
+  it('ignores drafts and inbound replies, and is null with no sends', () => {
+    expect(
+      lastOutboundSentAt([
+        message({ direction: 'inbound', status: 'sent' }),
+        message({ id: 'm2', direction: 'outbound', status: 'draft' }),
+      ]),
+    ).toBeNull();
   });
 });
 
