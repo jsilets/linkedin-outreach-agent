@@ -717,6 +717,18 @@ export class InMemoryStore implements RuntimeStore {
   async listTargetsByCampaign(campaignId: string): Promise<TargetRow[]> {
     return [...this.target.rows.values()].filter((t) => t.campaignId === campaignId);
   }
+  async knownUrns(urns: string[]): Promise<Set<string>> {
+    if (urns.length === 0) return new Set();
+    const want = new Set(urns);
+    const known = new Set<string>();
+    for (const t of this.target.rows.values()) {
+      if (want.has(t.linkedinUrn)) known.add(t.linkedinUrn);
+    }
+    for (const m of this.leadList.members.values()) {
+      if (want.has(m.linkedinUrn)) known.add(m.linkedinUrn);
+    }
+    return known;
+  }
   async close(): Promise<void> {
     // Nothing to release.
   }

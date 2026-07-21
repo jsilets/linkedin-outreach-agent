@@ -258,20 +258,39 @@ export function buildFunnel(
   const messaged = p?.messagedTargets ?? 0;
   const messagesSent = p?.messagesSent ?? 0;
   const replied = p?.replies ?? 0;
+
+  // Exit semantics for removed leads. A lead we pulled after inviting it is
+  // counted through the furthest stage it reached (its invite/accept/message are
+  // real, persisted facts, already in the numerators above), then it leaves the
+  // funnel. So each removed lead is added back to the invited-coverage
+  // denominator — we DID invite it — but dropped from the denominator of every
+  // stage past where it exited, so a lead we deliberately removed is never scored
+  // as a prospect who declined. `eligible` here is the active pool (all skipped
+  // already removed), so we only add the invited-then-removed back on.
+  const rm = p?.removedByStage;
+  const atInvited = rm?.atInvited ?? 0;
+  const atAccepted = rm?.atAccepted ?? 0;
+  const atMessaged = rm?.atMessaged ?? 0;
+  const removedAfterInvite = atInvited + atAccepted + atMessaged + (rm?.atReplied ?? 0);
+  const invitedDenom = eligible + removedAfterInvite;
+  const acceptDenom = Math.max(0, invited - atInvited);
+  const messagedDenom = Math.max(0, accepted - atAccepted);
+  const repliedDenom = Math.max(0, messaged - atMessaged);
+
   return [
     {
       key: 'invited',
       label: 'Invited',
       count: invited,
-      rate: pct(invited, eligible),
-      rateOf: `of ${eligible} lead${eligible === 1 ? '' : 's'}`,
+      rate: pct(invited, invitedDenom),
+      rateOf: `of ${invitedDenom} lead${invitedDenom === 1 ? '' : 's'}`,
       sub: null,
     },
     {
       key: 'accepted',
       label: 'Accepted',
       count: accepted,
-      rate: pct(accepted, invited),
+      rate: pct(accepted, acceptDenom),
       rateOf: 'of invited',
       sub: null,
     },
@@ -279,7 +298,7 @@ export function buildFunnel(
       key: 'messaged',
       label: 'Messaged',
       count: messaged,
-      rate: pct(messaged, accepted),
+      rate: pct(messaged, messagedDenom),
       rateOf: 'of accepted',
       sub: messagesSent > messaged ? `${messagesSent} messages sent` : null,
     },
@@ -287,7 +306,7 @@ export function buildFunnel(
       key: 'replied',
       label: 'Replied',
       count: replied,
-      rate: pct(replied, messaged),
+      rate: pct(replied, repliedDenom),
       rateOf: 'of messaged',
       sub: null,
     },
@@ -311,7 +330,9 @@ export function aggregate(
     messagesSent: 0,
     messagedTargets: 0,
     replies: 0,
+    removedByStage: { atInvited: 0, atAccepted: 0, atMessaged: 0, atReplied: 0 },
   };
+  const rbs = performance.removedByStage!;
   for (const c of campaigns) {
     targetCount += c.targetCount;
     for (const [k, n] of Object.entries(c.byProgressState ?? {})) {
@@ -325,6 +346,12 @@ export function aggregate(
     performance.messagesSent += p.messagesSent ?? 0;
     performance.messagedTargets += p.messagedTargets ?? 0;
     performance.replies += p.replies ?? 0;
+    if (p.removedByStage) {
+      rbs.atInvited += p.removedByStage.atInvited;
+      rbs.atAccepted += p.removedByStage.atAccepted;
+      rbs.atMessaged += p.removedByStage.atMessaged;
+      rbs.atReplied += p.removedByStage.atReplied;
+    }
   }
   return { byProgressState, targetCount, performance };
 }

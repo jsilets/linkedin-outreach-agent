@@ -85,6 +85,20 @@ export interface CampaignPerformance {
   messagedTargets: number;
   /** distinct targets with a persisted inbound LinkedIn message. */
   replies: number;
+  /** Removed (skipped) leads bucketed by the furthest funnel stage they reached
+   * before removal. The funnel uses these for exit semantics: a lead removed
+   * after we invited it stays in the invited-coverage denominator (we did invite
+   * it) but is dropped from the denominator of any stage past where it exited, so
+   * a deliberate removal never reads as a prospect who declined. See buildFunnel. */
+  removedByStage: RemovedByStage;
+}
+
+/** Counts of removed leads by the furthest funnel stage each one reached. */
+export interface RemovedByStage {
+  atInvited: number;
+  atAccepted: number;
+  atMessaged: number;
+  atReplied: number;
 }
 
 function emptyPerformance(): CampaignPerformance {
@@ -95,6 +109,7 @@ function emptyPerformance(): CampaignPerformance {
     messagesSent: 0,
     messagedTargets: 0,
     replies: 0,
+    removedByStage: { atInvited: 0, atAccepted: 0, atMessaged: 0, atReplied: 0 },
   };
 }
 
@@ -131,6 +146,34 @@ export function buildCampaignPerformanceActionsQuery(campaignId?: string) {
     .from(actions)
     .where(and(...conditions))
     .groupBy(actions.campaignId, actions.type);
+}
+
+// Removed (skipped) leads bucketed per campaign by the furthest funnel stage each
+// reached, read from the same persisted signals the funnel numerators use: a
+// successful connect action (invited), an invite_accepted event (accepted), a
+// successful message action (messaged), a persisted inbound message (replied).
+// The buckets are the furthest stage only, so they are mutually exclusive. The
+// funnel needs these to give a removed lead exit semantics (see buildFunnel):
+// count it through the stage it reached, then drop it from later denominators.
+export function buildRemovedByStageQuery(campaignId?: string) {
+  const tid = targetProgress.targetId;
+  const reachedInvited = sql`exists (select 1 from ${actions} ai where ai.target_id = ${tid} and ai.type = 'connect' and ai.result = 'success')`;
+  const reachedAccepted = sql`exists (select 1 from ${events} ea where ea.kind = 'invite_accepted' and ea.payload->>'targetId' = ${tid}::text)`;
+  const reachedMessaged = sql`exists (select 1 from ${actions} am where am.target_id = ${tid} and am.type = 'message' and am.result = 'success')`;
+  const reachedReplied = sql`exists (select 1 from ${messages} mr where mr.target_id = ${tid} and mr.direction = 'inbound')`;
+  const conditions = [eq(targetProgress.state, 'skipped')];
+  if (campaignId) conditions.push(eq(targetProgress.campaignId, campaignId));
+  return db
+    .select({
+      campaignId: targetProgress.campaignId,
+      atInvited: sql<number>`count(*) filter (where ${reachedInvited} and not ${reachedAccepted} and not ${reachedMessaged} and not ${reachedReplied})::int`,
+      atAccepted: sql<number>`count(*) filter (where ${reachedAccepted} and not ${reachedMessaged} and not ${reachedReplied})::int`,
+      atMessaged: sql<number>`count(*) filter (where ${reachedMessaged} and not ${reachedReplied})::int`,
+      atReplied: sql<number>`count(*) filter (where ${reachedReplied})::int`,
+    })
+    .from(targetProgress)
+    .where(and(...conditions))
+    .groupBy(targetProgress.campaignId);
 }
 
 // Campaigns list with per-campaign target counts, a stage histogram, a progress
@@ -234,6 +277,14 @@ export async function listCampaigns(): Promise<CampaignSummary[]> {
     ensurePerf(r.campaignId).invitesAccepted = r.count;
   }
   for (const r of replyRows) ensurePerf(r.campaignId).replies = r.count;
+  for (const r of await buildRemovedByStageQuery()) {
+    ensurePerf(r.campaignId).removedByStage = {
+      atInvited: r.atInvited,
+      atAccepted: r.atAccepted,
+      atMessaged: r.atMessaged,
+      atReplied: r.atReplied,
+    };
+  }
 
   return rows.map((c) => {
     const counts = stageByCampaign.get(c.id) ?? { total: 0, byStage: {} };
@@ -334,6 +385,15 @@ export async function getCampaign(id: string): Promise<CampaignDetail | null> {
     .innerJoin(targets, eq(messages.targetId, targets.id))
     .where(and(eq(targets.campaignId, id), eq(messages.direction, 'inbound')));
   performance.replies = replied?.count ?? 0;
+  const [removed] = await buildRemovedByStageQuery(id);
+  if (removed) {
+    performance.removedByStage = {
+      atInvited: removed.atInvited,
+      atAccepted: removed.atAccepted,
+      atMessaged: removed.atMessaged,
+      atReplied: removed.atReplied,
+    };
+  }
 
   return {
     id: campaign.id,

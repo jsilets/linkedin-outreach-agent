@@ -131,6 +131,67 @@ describe('buildFunnel', () => {
     const stages = buildFunnel(undefined, 10);
     expect(stages.map((s) => s.count)).toEqual([0, 0, 0, 0]);
   });
+
+  it('adds invited-then-removed leads back into the invited denominator', () => {
+    // eligible (40) is the active pool with all skipped already removed. Ten of
+    // those skipped had been invited, so honest coverage is 40 invited of 50, not
+    // 40 of 40. Without this the removed-after-invite would vanish from the
+    // denominator while staying in the numerator — the "94% invited" illusion.
+    const stages = buildFunnel(
+      perf({
+        invitedTargets: 40,
+        removedByStage: { atInvited: 10, atAccepted: 0, atMessaged: 0, atReplied: 0 },
+      }),
+      40,
+    );
+    const invited = stages.find((s) => s.key === 'invited');
+    expect(invited?.rate).toBe(80); // 40 / (40 + 10)
+    expect(invited?.rateOf).toBe('of 50 leads');
+  });
+
+  it('does not let a lead removed at a stage drag the next stage rate (exit)', () => {
+    // 30 invited, 10 of them removed before they could accept. Their non-accept
+    // was our choice, so the accept rate is 20/20 = 100%, not 20/30 = 67%.
+    const stages = buildFunnel(
+      perf({
+        invitedTargets: 30,
+        invitesAccepted: 20,
+        removedByStage: { atInvited: 10, atAccepted: 0, atMessaged: 0, atReplied: 0 },
+      }),
+      20,
+    );
+    expect(stages.find((s) => s.key === 'accepted')?.rate).toBe(100);
+  });
+
+  it('applies exit semantics at the accepted and messaged rungs too', () => {
+    const stages = buildFunnel(
+      perf({
+        invitedTargets: 30,
+        invitesAccepted: 20,
+        messagedTargets: 12,
+        replies: 4,
+        removedByStage: { atInvited: 0, atAccepted: 5, atMessaged: 4, atReplied: 0 },
+      }),
+      30,
+    );
+    const by = Object.fromEntries(stages.map((s) => [s.key, s]));
+    expect(by.messaged?.rate).toBe(80); // 12 / (20 accepted - 5 removed-at-accepted)
+    expect(by.replied?.rate).toBe(50); // 4 / (12 messaged - 4 removed-at-messaged)
+  });
+
+  it('never divides by a negative denominator', () => {
+    const stages = buildFunnel(
+      perf({
+        invitedTargets: 3,
+        invitesAccepted: 1,
+        removedByStage: { atInvited: 5, atAccepted: 0, atMessaged: 0, atReplied: 0 },
+      }),
+      3,
+    );
+    // atInvited (5) exceeds invitedTargets (3) only in impossible data; the rate
+    // must clamp to a null denominator rather than go negative.
+    expect(stages.find((s) => s.key === 'accepted')?.rate).toBeNull();
+  });
 });
 
 describe('aggregate', () => {

@@ -18,6 +18,7 @@ let leadFunnelBucket: typeof import('./queries.js').leadFunnelBucket;
 let buildActivityActionsQuery: typeof import('./queries.js').buildActivityActionsQuery;
 let buildReplyActivityQuery: typeof import('./queries.js').buildReplyActivityQuery;
 let buildCampaignPerformanceActionsQuery: typeof import('./queries.js').buildCampaignPerformanceActionsQuery;
+let buildRemovedByStageQuery: typeof import('./queries.js').buildRemovedByStageQuery;
 let deriveApprovedQueued: typeof import('./queries.js').deriveApprovedQueued;
 let readLeadContext: typeof import('./queries.js').readLeadContext;
 let groupInboxRows: typeof import('./queries.js').groupInboxRows;
@@ -50,6 +51,7 @@ beforeAll(async () => {
     buildActivityActionsQuery,
     buildReplyActivityQuery,
     buildCampaignPerformanceActionsQuery,
+    buildRemovedByStageQuery,
     deriveApprovedQueued,
     readLeadContext,
     groupInboxRows,
@@ -1301,6 +1303,33 @@ describe('buildCampaignPerformanceActionsQuery', () => {
     expect(sql).toContain('"campaign_id" =');
     expect(params).toContain(campaignId);
     expect(params).toContain('success');
+  });
+});
+
+describe('buildRemovedByStageQuery', () => {
+  it('buckets skipped leads by furthest stage over the persisted signals', () => {
+    const { sql, params } = buildRemovedByStageQuery().toSQL();
+    // Only removed (skipped) leads, grouped per campaign.
+    expect(sql).toContain('"target_progress"');
+    expect(params).toContain('skipped');
+    expect(sql).toContain('group by');
+    expect(sql).toContain('"campaign_id"');
+    // Each stage is a filtered count over a correlated existence check on the
+    // same tables the funnel numerators read. The stage literals are inlined in
+    // the SQL text; only the state filter is a bound param.
+    expect(sql).toContain('filter (where');
+    expect(sql).toContain('invite_accepted');
+    expect(sql).toContain('connect');
+    expect(sql).toContain('inbound');
+    // No campaign filter when the id is omitted.
+    expect(sql).not.toContain('"campaign_id" =');
+  });
+
+  it('scopes to one campaign when given', () => {
+    const campaignId = '6970997e-5555-4555-8555-555555555555';
+    const { sql, params } = buildRemovedByStageQuery(campaignId).toSQL();
+    expect(sql).toContain('"campaign_id" =');
+    expect(params).toContain(campaignId);
   });
 });
 

@@ -199,6 +199,10 @@ export interface RuntimeStore {
   leadList: LeadListStorePort;
   /** All targets for a campaign, for funnel metrics. */
   listTargetsByCampaign(campaignId: string): Promise<shared.TargetRow[]>;
+  /** Of the given canonical LinkedIn URNs, which are already known to the system:
+   * a target in any campaign (any stage, including operator-removed) or a member
+   * of any lead list. Used by sourcing to skip already-known people. */
+  knownUrns(urns: string[]): Promise<Set<string>>;
   /** Release any underlying resources (Postgres pool). No-op in memory. */
   close(): Promise<void>;
 }
