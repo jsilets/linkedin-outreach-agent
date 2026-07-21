@@ -37,6 +37,24 @@ export interface CampaignPerformance {
    * reply rate: `replies` counts distinct repliers, so both are populations. */
   messagedTargets: number;
   replies: number;
+  /** Removed (skipped) leads bucketed by the furthest stage they reached before
+   * we pulled them. Exit semantics: a lead removed after we invited it counts
+   * through the stage it reached, then leaves the funnel, so it neither inflates
+   * coverage nor drags the conversion rate of a stage it never got a chance at.
+   * Absent (or all-zero) when nothing was removed after being invited. */
+  removedByStage?: RemovedByStage;
+}
+
+/** Counts of removed leads by the furthest funnel stage each one reached. */
+export interface RemovedByStage {
+  /** Reached invited, removed before accepting. */
+  atInvited: number;
+  /** Accepted, removed before we messaged. */
+  atAccepted: number;
+  /** Messaged, removed before a reply. */
+  atMessaged: number;
+  /** Replied, then removed (terminal; kept only for the invited denominator). */
+  atReplied: number;
 }
 
 export interface CampaignSummary {
