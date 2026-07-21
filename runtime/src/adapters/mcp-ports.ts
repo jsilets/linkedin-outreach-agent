@@ -560,6 +560,12 @@ export class LeadListAdapter implements LeadListPort {
   async removeMembers(listId: string, linkedinUrns: string[]): Promise<{ removed: number }> {
     return this.store.leadList.removeMembers(listId, linkedinUrns);
   }
+
+  async knownUrns(urns: string[]): Promise<Set<string>> {
+    // Spans targets + lead_list_members, so it lives on the store, not the
+    // per-list surface. Lets source-to-list drop people already in the system.
+    return this.store.knownUrns(urns);
+  }
 }
 
 /** Map a search result onto a lead_list_members insert row. Mirrors the

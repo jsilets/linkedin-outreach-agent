@@ -449,6 +449,11 @@ export interface LeadListPort {
   /** Write people into a list, skipping anyone already in it (unique on
    * listId + linkedinUrn). Returns how many were newly inserted vs skipped. */
   insertMembers(listId: string, people: PersonSearchResult[]): Promise<InsertMembersResult>;
+  /** Of the given canonical LinkedIn URNs, which are ALREADY in the system: a
+   * target in any campaign (any stage, including operator-removed) or a member of
+   * any lead list. Sourcing uses this to surface only genuinely-new people.
+   * Returns the subset that is already known. */
+  knownUrns(urns: string[]): Promise<Set<string>>;
   /** Remove members from a list by LinkedIn URN. Returns how many were removed
    * (a urn not in the list is silently skipped). */
   removeMembers(listId: string, linkedinUrns: string[]): Promise<{ removed: number }>;

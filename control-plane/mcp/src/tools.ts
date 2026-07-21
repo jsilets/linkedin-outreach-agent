@@ -676,10 +676,13 @@ const campaignTools: ToolDef[] = [
       'Run a live people search and write the matches into a lead list in one ' +
       'call. Target an existing list with listId, or create one by passing ' +
       'listName. Facets are free-tier Voyager (see source_people); seniority is ' +
-      'approximated via titleKeywords. Idempotent: a person already in the list ' +
-      '(unique on listId + linkedinUrn) is skipped, so re-running is safe. ' +
-      'Returns { listId, found, inserted, duplicates }. Results land in the same ' +
-      'lead_list_members table the web UI reads.',
+      'approximated via titleKeywords. Surfaces only genuinely-new people: anyone ' +
+      'already in the system — a target in any campaign (any stage, including ' +
+      'removed) or a member of any lead list — is dropped before the write and ' +
+      'counted in alreadyKnown. The write itself stays idempotent on ' +
+      '(listId, linkedinUrn), so re-running is safe. Returns { listId, found, ' +
+      'inserted, duplicates, alreadyKnown } where alreadyKnown means "already in ' +
+      'the system". Results land in the same lead_list_members table the web UI reads.',
     privileged: false,
     inputShape: {
       accountId: z.string(),

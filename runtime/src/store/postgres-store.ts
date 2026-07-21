@@ -495,6 +495,21 @@ export class PostgresStore implements RuntimeStore {
     return this.repos.target.listByCampaign(campaignId);
   }
 
+  async knownUrns(urns: string[]): Promise<Set<string>> {
+    if (urns.length === 0) return new Set();
+    const [inTargets, inLists] = await Promise.all([
+      this.db.handle
+        .selectDistinct({ urn: targets.linkedinUrn })
+        .from(targets)
+        .where(inArray(targets.linkedinUrn, urns)),
+      this.db.handle
+        .selectDistinct({ urn: leadListMembers.linkedinUrn })
+        .from(leadListMembers)
+        .where(inArray(leadListMembers.linkedinUrn, urns)),
+    ]);
+    return new Set([...inTargets, ...inLists].map((r) => r.urn));
+  }
+
   async close(): Promise<void> {
     if (this.db instanceof PostgresDb) {
       await this.db.close();

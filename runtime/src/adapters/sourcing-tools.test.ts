@@ -202,11 +202,18 @@ describe('source_to_list tool', () => {
       'source_to_list',
       { accountId: ACCT, listName: 'sourced', query: 'field service operations', limit: 25 },
       ports,
-    )) as { listId: string; found: number; inserted: number; duplicates: number };
+    )) as {
+      listId: string;
+      found: number;
+      inserted: number;
+      duplicates: number;
+      alreadyKnown: number;
+    };
 
     expect(first.found).toBe(2);
     expect(first.inserted).toBe(2);
     expect(first.duplicates).toBe(0);
+    expect(first.alreadyKnown).toBe(0);
 
     // Both landed in the members table under the new list.
     const members = await store.leadList.listMembers(first.listId);
@@ -216,15 +223,18 @@ describe('source_to_list tool', () => {
       'urn:li:fsd_profile:P2',
     ]);
 
-    // Re-running against the SAME list re-finds the same people: all duplicates.
+    // Re-running re-finds the same people: they are now list members, so the
+    // already-known filter drops them before the write (counted in alreadyKnown,
+    // not duplicates), and nothing new is inserted.
     const second = (await run(
       'source_to_list',
       { accountId: ACCT, listId: first.listId, query: 'field service operations', limit: 25 },
       ports,
-    )) as { found: number; inserted: number; duplicates: number };
+    )) as { found: number; inserted: number; duplicates: number; alreadyKnown: number };
     expect(second.found).toBe(2);
     expect(second.inserted).toBe(0);
-    expect(second.duplicates).toBe(2);
+    expect(second.duplicates).toBe(0);
+    expect(second.alreadyKnown).toBe(2);
     expect(await store.leadList.listMembers(first.listId)).toHaveLength(2);
   });
 
