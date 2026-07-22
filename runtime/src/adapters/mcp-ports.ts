@@ -59,6 +59,7 @@ import {
   extractCompany,
   planCampaignTargetRemoval,
   readIcpScore,
+  wasTargetContacted,
 } from '@loa/shared';
 import {
   COMPANY_SOURCE_HEADLINE,
@@ -383,6 +384,7 @@ export class CampaignAdapter implements CampaignPort {
     const stagger = await this.enrollStagger(campaignId, accountId, now);
     const progressIds: string[] = [];
     let skippedRemoved = 0;
+    let skippedCrossCampaign = 0;
     for (const targetId of targetIds) {
       // An operator-removed target must never re-enter the funnel; removal
       // stamps `removed` into the target's external context (see removeTargets).
@@ -391,6 +393,25 @@ export class CampaignAdapter implements CampaignPort {
       if (ec.removed === true) {
         skippedRemoved += 1;
         continue;
+      }
+      // Cross-campaign contact lock, enforced at enroll. A person already being
+      // contacted (invited+) by another campaign must not be enrolled here — one
+      // person belongs to one campaign at a time. The dispatch loop enforces the
+      // same lock as a last resort (it refuses the second SEND), but letting the
+      // cursor exist means it sits held every tick, re-logging
+      // step_held_cross_campaign and reading as "stuck". Refusing up front keeps
+      // the funnel honest. Keys on the canonical person urn so it matches however
+      // the two campaigns sourced the same person; the skip is reported in the
+      // result (mirrors skippedRemoved).
+      if (target) {
+        const others = await this.store.target.listByUrn(canonicalProfileKey(target.linkedinUrn));
+        const contactedElsewhere = others.some(
+          (t) => t.campaignId !== campaignId && wasTargetContacted(t.stage),
+        );
+        if (contactedElsewhere) {
+          skippedCrossCampaign += 1;
+          continue;
+        }
       }
       // Verify the current company off the real profile before this person
       // becomes a live campaign target — unless it is already profile-verified
@@ -419,7 +440,14 @@ export class CampaignAdapter implements CampaignPort {
       );
       progressIds.push(row.id);
     }
-    return { campaignId, accountId, enrolled: progressIds.length, progressIds, skippedRemoved };
+    return {
+      campaignId,
+      accountId,
+      enrolled: progressIds.length,
+      progressIds,
+      skippedRemoved,
+      skippedCrossCampaign,
+    };
   }
 
   /** Slot allocator for a batch enrollment, capped by the account's daily

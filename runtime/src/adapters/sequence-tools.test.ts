@@ -293,6 +293,57 @@ describe('CampaignAdapter enrollment stagger', () => {
     expect(ats[2]).toEqual(dueAfterDelay(now, 86_400, DEFAULT_SCHEDULE));
   });
 
+  it('does not enroll a person already being contacted by another campaign', async () => {
+    await campaign.defineCampaignSteps(CAMP, [{ stepType: 'connect' }]);
+    const urn = 'urn:li:fsd_profile:DUP';
+    // The same person, already invited under a different campaign.
+    await store.target.create({
+      campaignId: 'other-campaign',
+      prospectRef: 'dup',
+      linkedinUrn: urn,
+      stage: 'invited',
+    });
+    const dup = await store.target.create({
+      campaignId: CAMP,
+      prospectRef: 'dup',
+      linkedinUrn: urn,
+      stage: 'sourced',
+    });
+    const fresh = await store.target.create({
+      campaignId: CAMP,
+      prospectRef: 'fresh',
+      linkedinUrn: 'urn:li:fsd_profile:FRESH',
+      stage: 'sourced',
+    });
+
+    const res = await campaign.enrollTargets(CAMP, [dup.id, fresh.id], ACCT);
+    expect(res.skippedCrossCampaign).toBe(1);
+    expect(res.enrolled).toBe(1);
+    expect(res.progressIds).toHaveLength(1);
+  });
+
+  it('still enrolls when the other-campaign copy has not been contacted yet', async () => {
+    await campaign.defineCampaignSteps(CAMP, [{ stepType: 'connect' }]);
+    const urn = 'urn:li:fsd_profile:SRC';
+    // A pre-contact stage in another campaign is not a lock — only invited+ is.
+    await store.target.create({
+      campaignId: 'other-campaign',
+      prospectRef: 'src',
+      linkedinUrn: urn,
+      stage: 'sourced',
+    });
+    const t = await store.target.create({
+      campaignId: CAMP,
+      prospectRef: 'src',
+      linkedinUrn: urn,
+      stage: 'sourced',
+    });
+
+    const res = await campaign.enrollTargets(CAMP, [t.id], ACCT);
+    expect(res.skippedCrossCampaign).toBe(0);
+    expect(res.enrolled).toBe(1);
+  });
+
   it('enrolls all-null when the first enabled step is a delay', async () => {
     await campaign.defineCampaignSteps(CAMP, [
       { stepType: 'delay', delaySeconds: 86_400 },
