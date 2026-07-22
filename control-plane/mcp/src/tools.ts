@@ -721,9 +721,11 @@ const campaignTools: ToolDef[] = [
       'one by passing goal (+ optional messageStrategy/owner). Pass accountId to ' +
       'also enroll the added targets under that sender (otherwise they land at ' +
       'stage sourced for you to enroll later). The fit score rides onto each ' +
-      'target. Returns { campaignId, eligible, skippedBelowScore, ' +
-      'alreadyInCampaign, added, enrolled }. Run score_list (or score_leads) ' +
-      'first so scores are fresh.',
+      'target. A person already being contacted (invited+) by another campaign ' +
+      'is not enrolled into a second — one person, one campaign — and is counted ' +
+      'in skippedCrossCampaign. Returns { campaignId, eligible, skippedBelowScore, ' +
+      'alreadyInCampaign, added, enrolled, skippedCrossCampaign }. Run score_list ' +
+      '(or score_leads) first so scores are fresh.',
     privileged: false,
     inputShape: {
       listId: z.string(),
@@ -787,6 +789,7 @@ const campaignTools: ToolDef[] = [
       const alreadyInCampaign = eligible.length - targets.length;
 
       let enrolled = 0;
+      let skippedCrossCampaign = 0;
       if (a.accountId && targets.length > 0) {
         const res = await p.campaign.enrollTargets(
           campaignId,
@@ -794,6 +797,7 @@ const campaignTools: ToolDef[] = [
           a.accountId,
         );
         enrolled = res.enrolled;
+        skippedCrossCampaign = res.skippedCrossCampaign;
       }
       return {
         campaignId,
@@ -802,6 +806,7 @@ const campaignTools: ToolDef[] = [
         alreadyInCampaign,
         added: targets.length,
         enrolled,
+        skippedCrossCampaign,
       };
     },
   },
