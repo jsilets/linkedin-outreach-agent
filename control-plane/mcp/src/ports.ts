@@ -306,6 +306,10 @@ export interface EnrollResult {
   /** Targets skipped because an operator removed them from the campaign;
    *  removal is permanent, so enrollment never resurrects them. */
   skippedRemoved: number;
+  /** Targets skipped because the same person is already being contacted
+   *  (invited+) by another campaign; one person belongs to one campaign at a
+   *  time, so they are never enrolled into a second. */
+  skippedCrossCampaign: number;
 }
 
 /** Outcome of removing targets from a campaign. */
