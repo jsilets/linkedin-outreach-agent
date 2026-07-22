@@ -87,6 +87,33 @@ describe('companyFromTarget', () => {
       companyFromTarget(target({ externalContext: { currentCompany: '  ' } })),
     ).toBeUndefined();
   });
+  it('refuses a headline-guessed company (former employer risk)', () => {
+    // "COO @ aetherEV, ex. Tesla" parses to "Tesla" — a former employer. Stamped
+    // companySource:'headline', so we never address the person at Tesla.
+    expect(
+      companyFromTarget(
+        target({ externalContext: { currentCompany: 'Tesla', companySource: 'headline' } }),
+      ),
+    ).toBeUndefined();
+  });
+  it('prints a profile-verified company', () => {
+    expect(
+      companyFromTarget(
+        target({ externalContext: { currentCompany: 'aetherEV', companySource: 'profile' } }),
+      ),
+    ).toBe('aetherEV');
+  });
+});
+
+describe('personalizeBody — headline-guessed {Company}', () => {
+  it('drops the clause rather than print the guessed (wrong) company', () => {
+    const guessed = target({
+      externalContext: { name: 'Steven', currentCompany: 'Tesla', companySource: 'headline' },
+    });
+    expect(personalizeBody('Hey {First}, love your work at {Company}.', guessed)).toBe(
+      'Hey Steven, love your work.',
+    );
+  });
 });
 
 describe('personalizeBody — {Company}', () => {

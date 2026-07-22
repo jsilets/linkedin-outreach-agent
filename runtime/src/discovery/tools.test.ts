@@ -5,8 +5,9 @@
 
 import type { Ports } from '@loa/mcp';
 import { AGENT_CONTEXT, TOOLS_BY_NAME } from '@loa/mcp';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { InMemoryStore } from '../store/in-memory-store.js';
+import type { CompanyEnricher, EnrichedCompany } from './enrich.js';
 import { DiscoveryAdapter } from './index.js';
 
 function run(tool: string, args: Record<string, unknown>, ports: Ports) {
@@ -120,6 +121,97 @@ describe('list scoring tools', () => {
     // The pre-existing key survives alongside the new score fields.
     expect((p1.externalContext as { enrichment: string }).enrichment).toBe('kept');
     expect((p1.externalContext as { score: number }).score).toBe(88);
+  });
+
+  it('score_list verifies the company off the profile before it decides fit', async () => {
+    // ICP that rejects Tesla and rewards a director title. P1's STORED company is
+    // "Tesla" (a headline guess); the profile says they are actually a director at
+    // aetherEV. Enrichment must flip the decision from off-ICP to on-ICP.
+    const icpNeg = {
+      name: 'Ops leaders, not Tesla',
+      query: { keywords: 'field operations' },
+      attributes: [
+        { field: 'company', match: ['tesla'], weight: 3, negative: true },
+        { field: 'title', match: ['director'], weight: 2 },
+      ],
+    };
+    const enriched: EnrichedCompany = {
+      currentCompany: 'aetherEV',
+      currentTitle: 'Director of Field Operations',
+      companySource: 'profile',
+    };
+    const enrich = vi.fn(async (): Promise<EnrichedCompany | null> => enriched);
+    const enricher: CompanyEnricher = { enrich };
+    const store = new InMemoryStore();
+    const ports = { discovery: new DiscoveryAdapter(store, { enricher }) } as unknown as Ports;
+    const list = await store.leadList.createList({ name: 'sourced' });
+    await store.leadList.insertMembers([
+      {
+        listId: list.id,
+        linkedinUrn: 'urn:li:P1',
+        name: 'P1',
+        headline: 'Director of Field Operations',
+        currentCompany: 'Tesla',
+      },
+    ]);
+
+    const res = (await run('score_list', { listId: list.id, icp: icpNeg }, ports)) as {
+      scored: number;
+      offIcp: number;
+      enriched: number;
+    };
+    expect(enrich).toHaveBeenCalledWith('urn:li:P1');
+    expect(res.enriched).toBe(1);
+    // Scored against aetherEV, not Tesla, so the person is on-ICP.
+    expect(res.offIcp).toBe(0);
+    const [p1] = await store.leadList.listMembers(list.id);
+    const ec = p1!.externalContext as Record<string, unknown>;
+    expect(ec.companySource).toBe('profile');
+    expect(ec.currentCompany).toBe('aetherEV');
+    expect(ec.currentTitle).toBe('Director of Field Operations');
+    expect(ec.score as number).toBeGreaterThanOrEqual(50);
+
+    // A second run does NOT re-fetch: the member is already profile-verified.
+    await run('score_list', { listId: list.id, icp: icpNeg, overwrite: true }, ports);
+    expect(enrich).toHaveBeenCalledTimes(1);
+  });
+
+  it('score_list keeps the enrichment even when it skips another scorer', async () => {
+    const enrich = vi.fn(
+      async (): Promise<EnrichedCompany | null> => ({
+        currentCompany: 'aetherEV',
+        currentTitle: 'COO',
+        companySource: 'profile',
+      }),
+    );
+    const store = new InMemoryStore();
+    const ports = {
+      discovery: new DiscoveryAdapter(store, { enricher: { enrich } }),
+    } as unknown as Ports;
+    const list = await store.leadList.createList({ name: 'sourced' });
+    await store.leadList.insertMembers([
+      {
+        listId: list.id,
+        linkedinUrn: 'urn:li:P1',
+        name: 'P1',
+        headline: 'Director',
+        externalContext: { score: 90, scoreModel: 'harness' },
+      },
+    ]);
+
+    const res = (await run('score_list', { listId: list.id, icp: ICP }, ports)) as {
+      scored: number;
+      skippedOtherScorer: number;
+      enriched: number;
+    };
+    expect(res.skippedOtherScorer).toBe(1);
+    expect(res.enriched).toBe(1);
+    const [p1] = await store.leadList.listMembers(list.id);
+    const ec = p1!.externalContext as Record<string, unknown>;
+    // Harness score untouched, but the verified company was still persisted.
+    expect(ec.scoreModel).toBe('harness');
+    expect(ec.companySource).toBe('profile');
+    expect(ec.currentCompany).toBe('aetherEV');
   });
 
   it('score_list skips a member already scored by another scorer unless overwrite', async () => {

@@ -66,7 +66,7 @@ import {
 } from './adapters/safety-state.js';
 import { SchedulerService } from './adapters/scheduler.js';
 import { loadConfig, type RuntimeConfig } from './config.js';
-import { DiscoveryAdapter } from './discovery/index.js';
+import { DiscoveryAdapter, ProfileCompanyEnricher } from './discovery/index.js';
 import { AcceptanceTick } from './dispatch/acceptance-tick.js';
 import { type DispatchTick, makeDispatchTick, type SendTimeReplyCheck } from './dispatch/index.js';
 import { ReplyTick } from './dispatch/reply-tick.js';
@@ -249,7 +249,6 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
       })
     : undefined;
   const admin = new AccountAdminAdapter(store, gate, orchestrator, pause, invitationSweeper);
-  const campaign = new CampaignAdapter(orchestrator, store, gate);
   const safety = makeMcpSafetyPort(gate, store);
   // Observe: reads run open (no gating). With a real session the observe port is
   // LiveObserve for everything: searchPeople, listRecentConnections, getProfile,
@@ -275,7 +274,18 @@ export function compose(config: RuntimeConfig = loadConfig(), deps: ComposeDeps 
   // are offline: they read stored member fields and write scores into
   // lead_list_members.external_context (visible in the UI, carried onto campaign
   // targets). No live search, so no flag — always wired.
-  const discovery = new DiscoveryAdapter(store);
+  // Company enrichment: verify a lead's current employer off the real profile
+  // before scoring decides anything (score_list). Only wired with a real session
+  // — it makes a live get_profile — so dev/smoke stay fully offline. Single-op
+  // runtime: any authenticated sender can read a public profile, so resolve the
+  // first/only account. Gets skipped (null) when no account is seeded yet.
+  const enricher = sessionProvider
+    ? new ProfileCompanyEnricher(observe, async () => (await store.account.all())[0]?.id)
+    : undefined;
+  const discovery = new DiscoveryAdapter(store, enricher ? { enricher } : {});
+  // Same enricher backs enroll: a target that skipped list scoring gets its
+  // company verified off the profile before it becomes a live campaign target.
+  const campaign = new CampaignAdapter(orchestrator, store, gate, enricher);
   const ports: Ports = {
     observe,
     executor,

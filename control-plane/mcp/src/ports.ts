@@ -404,6 +404,12 @@ export interface ListMember {
   degree: string | null;
   location: string | null;
   currentCompany: string | null;
+  /** Current job title, when verified off the real profile (enrichment). */
+  currentTitle?: string | null;
+  /** Provenance of currentCompany: 'profile' (read off the real profile) or
+   *  'headline' (guessed from the search headline). Null/absent for legacy rows
+   *  written before enrichment existed. Gates the "{Company}" message merge. */
+  companySource?: string | null;
   /** 0..100 ICP fit score, or null when unscored. */
   score: number | null;
   /** Short justification lines for the score. */
@@ -534,6 +540,9 @@ export interface ScoreListResult {
   /** How many members were skipped because they carry a score from a different
    *  scorer (e.g. a harness score) and overwrite was false. */
   skippedOtherScorer: number;
+  /** How many members had their current company verified off the real profile in
+   *  this run (a live get_profile). Absent when no enricher is wired (offline). */
+  enriched?: number;
 }
 
 /**

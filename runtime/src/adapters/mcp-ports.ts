@@ -60,6 +60,11 @@ import {
   planCampaignTargetRemoval,
   readIcpScore,
 } from '@loa/shared';
+import {
+  COMPANY_SOURCE_HEADLINE,
+  COMPANY_SOURCE_PROFILE,
+  type CompanyEnricher,
+} from '../discovery/enrich.js';
 import { advanceAfterStep } from '../dispatch/advance.js';
 import { StaggerAllocator } from '../dispatch/stagger.js';
 import type { StaleInvitationSweeper } from '../executor/withdraw-invitations.js';
@@ -214,6 +219,11 @@ export class CampaignAdapter implements CampaignPort {
     private readonly services: OrchestratorServices,
     private readonly store: RuntimeStore,
     private readonly gate: DefaultSafetyGate,
+    /** Optional live enrichment. When wired (real session), a target whose
+     * company is not yet profile-verified gets it verified off the real profile
+     * at enroll time — so no one enters a campaign on a headline guess, even via
+     * a direct enroll that skipped list scoring. Undefined in dev/smoke. */
+    private readonly enricher?: CompanyEnricher,
   ) {}
 
   /**
@@ -252,13 +262,19 @@ export class CampaignAdapter implements CampaignPort {
           if (v !== undefined) externalContext[k] = v as Json;
         }
         // Auto-classify company from the headline when the source didn't carry
-        // one (free-tier search has no company field; it's in the headline).
+        // one (free-tier search has no company field; it's in the headline). This
+        // is a GUESS — stamp it so a "{Company}" merge won't trust it (a headline
+        // like "COO @ X, ex. Tesla" mis-reads the former employer as current).
         if (!externalContext.currentCompany && typeof externalContext.headline === 'string') {
           const c = extractCompany(externalContext.headline);
-          if (c) externalContext.currentCompany = c;
+          if (c) {
+            externalContext.currentCompany = c;
+            externalContext.companySource = COMPANY_SOURCE_HEADLINE;
+          }
         }
-        // A passthrough blob (e.g. an ICP score envelope) merges last, so the
-        // score carried from a list survives onto the enrolled target.
+        // A passthrough blob (e.g. an ICP score envelope, or a profile-verified
+        // company) merges last, so a real company from an enriched list overrides
+        // the headline guess above.
         if (passthrough && typeof passthrough === 'object' && !Array.isArray(passthrough)) {
           Object.assign(externalContext, passthrough);
         }
@@ -375,6 +391,20 @@ export class CampaignAdapter implements CampaignPort {
       if (ec.removed === true) {
         skippedRemoved += 1;
         continue;
+      }
+      // Verify the current company off the real profile before this person
+      // becomes a live campaign target — unless it is already profile-verified
+      // (the common enroll_from_list path carries it, so this is a cheap skip).
+      // A failed read leaves the stored value; enrollment never blocks on it.
+      if (this.enricher && target && ec.companySource !== COMPANY_SOURCE_PROFILE) {
+        const got = await this.enricher.enrich(target.linkedinUrn, accountId);
+        if (got) {
+          await this.services.campaigns.attachExternalContext(targetId, {
+            companySource: got.companySource,
+            ...(got.currentCompany ? { currentCompany: got.currentCompany } : {}),
+            ...(got.currentTitle ? { currentTitle: got.currentTitle } : {}),
+          });
+        }
       }
       // Day 0 keeps nextStepAt null (due now, today's budget); later days land
       // on the working-window start, skipping days off. An idempotent
@@ -533,17 +563,29 @@ export class LeadListAdapter implements LeadListPort {
       id: list.id,
       name: list.name,
       description: list.description,
-      members: members.map((m) => ({
-        id: m.id,
-        linkedinUrn: m.linkedinUrn,
-        name: m.name,
-        headline: m.headline,
-        profileUrl: m.profileUrl,
-        degree: m.degree,
-        location: m.location,
-        currentCompany: m.currentCompany,
-        ...readIcpScore(m.externalContext),
-      })),
+      members: members.map((m) => {
+        const ec = (m.externalContext ?? {}) as Record<string, unknown>;
+        const companySource = typeof ec.companySource === 'string' ? ec.companySource : null;
+        // A profile-verified company overrides the stored column (a headline
+        // guess); everything else falls back to the column.
+        const currentCompany =
+          companySource === COMPANY_SOURCE_PROFILE && typeof ec.currentCompany === 'string'
+            ? ec.currentCompany
+            : m.currentCompany;
+        return {
+          id: m.id,
+          linkedinUrn: m.linkedinUrn,
+          name: m.name,
+          headline: m.headline,
+          profileUrl: m.profileUrl,
+          degree: m.degree,
+          location: m.location,
+          currentCompany,
+          currentTitle: typeof ec.currentTitle === 'string' ? ec.currentTitle : null,
+          companySource,
+          ...readIcpScore(m.externalContext),
+        };
+      }),
     };
   }
 

@@ -5,7 +5,8 @@
 
 import { DefaultSafetyGate } from '@loa/safety';
 import { DEFAULT_SCHEDULE } from '@loa/shared';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CompanyEnricher, EnrichedCompany } from '../discovery/enrich.js';
 import { dueAfterDelay } from '../dispatch/advance.js';
 import { InMemoryStore } from '../store/in-memory-store.js';
 import { CampaignAdapter } from './mcp-ports.js';
@@ -125,6 +126,67 @@ describe('CampaignAdapter sequence surface', () => {
     const rows = await store.sequence.listTargetProgress(CAMP);
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.state === 'in_progress' && r.accountId === ACCT)).toBe(true);
+  });
+});
+
+describe('CampaignAdapter enroll-time company enrichment', () => {
+  it('verifies an unverified company off the profile, skips an already-verified one', async () => {
+    const store = new InMemoryStore();
+    // A target that skipped list scoring (company is a headline guess) and one
+    // that was already profile-verified upstream.
+    const guessed = await store.target.create({
+      campaignId: CAMP,
+      prospectRef: 'guessed',
+      linkedinUrn: 'urn:li:person:GUESS',
+      externalContext: { currentCompany: 'Tesla', companySource: 'headline' },
+    });
+    const verified = await store.target.create({
+      campaignId: CAMP,
+      prospectRef: 'verified',
+      linkedinUrn: 'urn:li:person:VERIF',
+      externalContext: { currentCompany: 'aetherEV', companySource: 'profile' },
+    });
+
+    const attached: Array<{ id: string; context: unknown }> = [];
+    const services = {
+      campaigns: {
+        async attachExternalContext(id: string, context: unknown) {
+          attached.push({ id, context });
+          return store.target.mergeExternalContext(id, context as Record<string, never>);
+        },
+      },
+    } as unknown as OrchestratorServices;
+
+    const enrich = vi.fn(
+      async (): Promise<EnrichedCompany | null> => ({
+        currentCompany: 'RealCorp',
+        currentTitle: 'VP Ops',
+        companySource: 'profile',
+      }),
+    );
+    const enricher: CompanyEnricher = { enrich };
+    const campaign = new CampaignAdapter(
+      services,
+      store,
+      new DefaultSafetyGate({ allowMissingCounters: true }),
+      enricher,
+    );
+
+    await campaign.enrollTargets(CAMP, [guessed.id, verified.id], ACCT);
+
+    // Only the unverified target was fetched, and with the enrolling sender.
+    expect(enrich).toHaveBeenCalledTimes(1);
+    expect(enrich).toHaveBeenCalledWith('urn:li:person:GUESS', ACCT);
+    expect(attached).toHaveLength(1);
+    expect(attached[0]!.id).toBe(guessed.id);
+    expect(attached[0]!.context).toEqual({
+      companySource: 'profile',
+      currentCompany: 'RealCorp',
+      currentTitle: 'VP Ops',
+    });
+    // The verified target keeps its company untouched.
+    const after = await store.target.findById(verified.id);
+    expect((after!.externalContext as Record<string, unknown>).currentCompany).toBe('aetherEV');
   });
 });
 
