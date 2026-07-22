@@ -1497,9 +1497,11 @@ export interface ActivityItem {
   name: string | null;
   profileUrl: string | null;
   campaignId: string | null;
-  /** Why a failed action failed (from the matching action_failed event), for a
-   * hover tooltip on the result chip. Null when the action did not fail. */
-  failureDetail: string | null;
+  /** Why an action failed or was skipped, for a hover tooltip on the result chip.
+   * A failure reason lives in the matching action_failed event; a skip reason
+   * ("already pending; no invite sent") lives on the action row itself. Null when
+   * the action neither failed nor was skipped. */
+  resultDetail: string | null;
 }
 
 // Reverse-chron outbound action rows for the activity feed, newest first, with
@@ -1519,17 +1521,18 @@ export function buildActivityActionsQuery(opts: { campaignId?: string; limit: nu
       campaignId: actions.campaignId,
       name: sql<string | null>`${targets.externalContext}->>'name'`,
       profileUrl: sql<string | null>`${targets.externalContext}->>'profileUrl'`,
-      // The reason string the executor recorded when this action failed. It lives
-      // in the action_failed event payload (keyed by actionId), not on the action
-      // row, so correlate the latest such event here. Null for non-failed actions.
-      failureDetail: sql<string | null>`(
+      // The reason the executor recorded for a non-clean result: a failure reason
+      // lives in the action_failed event (keyed by actionId), a skip reason lives
+      // on the action row's own detail column. Prefer the failure event, fall back
+      // to the row detail. Null for clean successes.
+      resultDetail: sql<string | null>`coalesce((
         select ${events.payload}->>'detail'
         from ${events}
         where ${events.kind} like 'action_failed%'
           and ${events.payload}->>'actionId' = ${actions.id}::text
         order by ${events.ts} desc
         limit 1
-      )`,
+      ), ${actions.detail})`,
     })
     .from(actions)
     .innerJoin(targets, eq(actions.targetId, targets.id))
@@ -1616,7 +1619,7 @@ export async function getActivity(opts: {
       name: r.name,
       profileUrl: r.profileUrl,
       campaignId: r.campaignId,
-      failureDetail: r.failureDetail,
+      resultDetail: r.resultDetail,
     })),
     ...acceptRows.map((r) => ({
       actionId: r.id,
@@ -1628,7 +1631,7 @@ export async function getActivity(opts: {
       name: r.name,
       profileUrl: r.profileUrl ?? null,
       campaignId: r.campaignId,
-      failureDetail: null,
+      resultDetail: null,
     })),
     ...replyRows.map((r) => ({
       actionId: r.id,
@@ -1640,7 +1643,7 @@ export async function getActivity(opts: {
       name: r.name,
       profileUrl: r.profileUrl,
       campaignId: r.campaignId,
-      failureDetail: null,
+      resultDetail: null,
     })),
   ];
 

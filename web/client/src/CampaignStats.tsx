@@ -23,7 +23,7 @@ export function StageFunnel({
   return (
     <div className="stage-funnel">
       {stages.map((s) => {
-        const share = eligible > 0 ? Math.min(100, (s.count / eligible) * 100) : 0;
+        const share = s.share;
         return (
           <div className="fs-row" key={s.key}>
             <span className="fs-label">{s.label}</span>

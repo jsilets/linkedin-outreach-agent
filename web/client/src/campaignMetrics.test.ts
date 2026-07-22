@@ -179,6 +179,26 @@ describe('buildFunnel', () => {
     expect(by.replied?.rate).toBe(50); // 4 / (12 messaged - 4 removed-at-messaged)
   });
 
+  it('bar share divides by the same denominator as the invited percentage', () => {
+    // The bug: the bar width divided by the active pool (149) while the % divided
+    // by the full committed cohort (188), so a 79% invited stage rendered a
+    // ~99%-full bar. Share and rate must now agree.
+    const stages = buildFunnel(
+      perf({
+        invitedTargets: 148,
+        removedByStage: { atInvited: 24, atAccepted: 9, atMessaged: 6, atReplied: 0 },
+      }),
+      149,
+    );
+    const invited = stages.find((s) => s.key === 'invited');
+    expect(Math.round(invited?.share ?? 0)).toBe(invited?.rate); // 148/188 ≈ 79
+    expect(invited?.share).toBeLessThan(85); // not the old 148/149 = 99
+    // Downstream stages are shares of the same top population, so the funnel
+    // only narrows.
+    const shares = stages.map((s) => s.share);
+    for (let i = 1; i < shares.length; i++) expect(shares[i]).toBeLessThanOrEqual(shares[i - 1]!);
+  });
+
   it('never divides by a negative denominator', () => {
     const stages = buildFunnel(
       perf({
