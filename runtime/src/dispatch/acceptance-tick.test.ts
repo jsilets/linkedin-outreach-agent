@@ -227,4 +227,49 @@ describe('AcceptanceTick: name refresh on acceptance', () => {
     const target = await store.target.findById(TGT);
     expect((target!.externalContext as { name?: string }).name).toBe('Joe D.');
   });
+
+  // Enrichment can leave an initial-only given name ("R Shafaei") that
+  // isTruncatedName does not flag — but the composer typeahead still cannot match
+  // it to the 1st-degree card "Rouh Shafaei", so the send is stuck until the name
+  // is filled in. Acceptance is where the full name becomes knowable.
+  it('fills in an initial-only given name the connection expands', async () => {
+    const store = new InMemoryStore();
+    await seedNamed(store, 'R Shafaei, P.Eng.');
+    const refreshed: Array<{ from: string | null; to: string }> = [];
+    const tick = new AcceptanceTick({
+      connections: new StaticConnectionsReader([
+        { entityUrn: 'urn:li:person:p1', name: 'Rouh Shafaei' },
+      ]),
+      sequence: store.sequence,
+      targets: store.target,
+      onNameRefreshed: (e) => refreshed.push({ from: e.from, to: e.to }),
+    });
+
+    await tick.runTick(new Date('2026-07-06T12:00:00Z'));
+
+    const target = await store.target.findById(TGT);
+    expect((target!.externalContext as { name?: string }).name).toBe('Rouh Shafaei');
+    expect(refreshed).toEqual([{ from: 'R Shafaei, P.Eng.', to: 'Rouh Shafaei' }]);
+  });
+
+  it('does not rewrite an initial-only name into a different person', async () => {
+    const store = new InMemoryStore();
+    await seedNamed(store, 'R Shafaei');
+    const refreshed: string[] = [];
+    // Surname matches but the initial does not ("R" -> "Bob"): a different person.
+    const tick = new AcceptanceTick({
+      connections: new StaticConnectionsReader([
+        { entityUrn: 'urn:li:person:p1', name: 'Bob Shafaei' },
+      ]),
+      sequence: store.sequence,
+      targets: store.target,
+      onNameRefreshed: (e) => refreshed.push(e.to),
+    });
+
+    await tick.runTick(new Date('2026-07-06T12:00:00Z'));
+
+    const target = await store.target.findById(TGT);
+    expect((target!.externalContext as { name?: string }).name).toBe('R Shafaei');
+    expect(refreshed).toEqual([]);
+  });
 });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { canonicalProfileKey } from './profile.js';
+import {
+  canonicalProfileKey,
+  expandsInitialFirstName,
+  firstNameIsInitial,
+  isTruncatedName,
+} from './profile.js';
 
 describe('canonicalProfileKey', () => {
   it('unwraps a search-result entityUrn to the bare fsd_profile urn', () => {
@@ -37,5 +42,53 @@ describe('canonicalProfileKey', () => {
     expect(canonicalProfileKey('https://www.linkedin.com/in/dana-lopez/')).toBe(
       'https://www.linkedin.com/in/dana-lopez/',
     );
+  });
+});
+
+describe('isTruncatedName', () => {
+  it('flags a trailing surname stub', () => {
+    expect(isTruncatedName('R S.')).toBe(true);
+    expect(isTruncatedName('Joe D.')).toBe(true);
+  });
+
+  it('leaves a real name, a credential suffix, and an initial without a period alone', () => {
+    expect(isTruncatedName('Priya Raman')).toBe(false);
+    expect(isTruncatedName('Priya Raman, P.Eng.')).toBe(false);
+    expect(isTruncatedName('Malcolm X')).toBe(false);
+    expect(isTruncatedName('R Shafaei, P.Eng.')).toBe(false);
+    expect(isTruncatedName(null)).toBe(false);
+  });
+});
+
+describe('firstNameIsInitial', () => {
+  it('flags a bare-initial given name, with or without a period or suffix', () => {
+    expect(firstNameIsInitial('R Shafaei')).toBe(true);
+    expect(firstNameIsInitial('R Shafaei, P.Eng.')).toBe(true);
+    expect(firstNameIsInitial('J. Smith')).toBe(true);
+  });
+
+  it('leaves a real given name and a lone token alone', () => {
+    expect(firstNameIsInitial('Rouh Shafaei')).toBe(false);
+    expect(firstNameIsInitial('Priya Raman, P.Eng.')).toBe(false);
+    expect(firstNameIsInitial('Cher')).toBe(false);
+    expect(firstNameIsInitial('R S.')).toBe(true); // also an initial given name
+    expect(firstNameIsInitial('')).toBe(false);
+  });
+});
+
+describe('expandsInitialFirstName', () => {
+  it('accepts a same-surname expansion of the stored initial', () => {
+    expect(expandsInitialFirstName('R Shafaei, P.Eng.', 'Rouh Shafaei')).toBe(true);
+    expect(expandsInitialFirstName('J. Smith', 'Jordan Smith')).toBe(true);
+  });
+
+  it('rejects a different surname or a non-matching initial', () => {
+    expect(expandsInitialFirstName('R Shafaei', 'Rita Alvarez')).toBe(false);
+    expect(expandsInitialFirstName('R Shafaei', 'Bob Shafaei')).toBe(false);
+  });
+
+  it('rejects when either side is not a two-token given+surname name', () => {
+    expect(expandsInitialFirstName('Rouh Shafaei', 'Rouhullah Shafaei')).toBe(false); // stored not an initial
+    expect(expandsInitialFirstName('R Shafaei', 'Rouh')).toBe(false); // full has no surname
   });
 });

@@ -46,7 +46,7 @@ export interface CampaignPerformance {
 }
 
 /** Counts of removed leads by the furthest funnel stage each one reached. */
-export interface RemovedByStage {
+interface RemovedByStage {
   /** Reached invited, removed before accepting. */
   atInvited: number;
   /** Accepted, removed before we messaged. */
