@@ -25,7 +25,12 @@
 
 import type { TargetRepoPort } from '@loa/orchestrator';
 import type { AccountSchedule, ActionType, db as shared } from '@loa/shared';
-import { DEFAULT_SCHEDULE, isTruncatedName } from '@loa/shared';
+import {
+  DEFAULT_SCHEDULE,
+  expandsInitialFirstName,
+  firstNameIsInitial,
+  isTruncatedName,
+} from '@loa/shared';
 import type { AcceptedConnection, ConnectionsReaderPort } from '../adapters/observe-live.js';
 import type { SequenceStorePort } from '../store/index.js';
 import { advanceAfterStep } from './advance.js';
@@ -170,10 +175,17 @@ export class AcceptanceTick {
    * carries, returning the name the lead should now be known by (or null when
    * there is nothing better to say).
    *
-   * Only a truncated or missing name is overwritten. A name that already reads
-   * like a real name is left exactly as sourced — the connections payload is a
-   * better source for a stub, not a licence to churn every lead's name on the
-   * tick that accepts it.
+   * Only a stub or missing name is overwritten. Two stub shapes qualify, under
+   * different safety rules:
+   *   - a LinkedIn trailing surname stub ("R S."): the accepted 1st-degree name
+   *     is strictly better, so adopt it (unless it too is a stub).
+   *   - an initial-only given name enrichment left behind ("R Shafaei"): adopt
+   *     the accepted name only when it provably expands it (same surname,
+   *     matching initial), never as a licence to rewrite the lead into a
+   *     different person.
+   * A name that already reads like a real, full name is left exactly as sourced
+   * — the connections payload is a better source for a stub, not a licence to
+   * churn every lead's name on the tick that accepts it.
    */
   private async refreshTruncatedName(
     target: shared.TargetRow,
@@ -183,8 +195,14 @@ export class AcceptanceTick {
     const stored = leadName(target);
     const full = accepted.name?.trim();
     if (!full || full === stored) return stored;
-    if (stored && !isTruncatedName(stored)) return stored;
     if (isTruncatedName(full)) return stored; // no better than what we hold
+    if (stored && !isTruncatedName(stored)) {
+      // A stored name that already reads real is left alone, except the one case
+      // where its given name is a bare initial the accepted name provably fills in.
+      if (!firstNameIsInitial(stored) || !expandsInitialFirstName(stored, full)) {
+        return stored;
+      }
+    }
     await this.targets.mergeExternalContext(target.id, { name: full });
     this.onNameRefreshed?.({ targetId: target.id, accountId, from: stored, to: full });
     return full;

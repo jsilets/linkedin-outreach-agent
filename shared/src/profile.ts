@@ -48,3 +48,55 @@ export function isTruncatedName(name: string | null | undefined): boolean {
   if (!n) return false;
   return /\s[A-Za-z]\.$/.test(n);
 }
+
+/** Drop a trailing credential suffix ("Rouh Shafaei, P.Eng." -> "Rouh Shafaei")
+ * and split into whitespace tokens. LinkedIn's typeahead and result cards use
+ * the plain name, so the suffix is noise for any name comparison. */
+function nameTokens(name: string): string[] {
+  const plain = (name.split(',')[0] ?? name).trim();
+  return plain ? plain.split(/\s+/) : [];
+}
+
+/**
+ * Whether a display name's GIVEN name is a bare initial ("R Shafaei",
+ * "J. Smith") rather than a real first name.
+ *
+ * This is a truncation LinkedIn does not emit itself, so isTruncatedName (which
+ * matches the trailing "R S." surname stub) misses it — but enrichment produces
+ * it: a lead sourced at 2nd-degree carries the surname-truncated stub ("R S."),
+ * and a later profile/list read can recover the surname while leaving the given
+ * name an initial ("R Shafaei"). Like the trailing stub it cannot address the
+ * composer typeahead — "R Shafaei" never matches the 1st-degree card
+ * "Rouh Shafaei", and the only word-boundary match is a different person whose
+ * middle initial happens to line up. Kept separate from isTruncatedName because
+ * the two shapes are refreshed under different safety rules (see
+ * expandsInitialFirstName).
+ */
+export function firstNameIsInitial(name: string | null | undefined): boolean {
+  const n = name?.trim();
+  if (!n) return false;
+  const first = nameTokens(n)[0] ?? '';
+  const bare = first.replace(/\.$/, '');
+  return bare.length === 1 && /[A-Za-z]/.test(bare);
+}
+
+/**
+ * Whether `full` is a safe expansion of a stored initial-only given name: the
+ * surnames match and the stored initial begins the fuller given name
+ * ("R Shafaei" -> "Rouh Shafaei"). Case- and credential-suffix-insensitive.
+ *
+ * This is the guard on the acceptance-time refresh: it fills in a missing given
+ * name from the authoritative 1st-degree connection, but never rewrites a lead
+ * into a different person — "R Shafaei" -> "Rita Alvarez" (surname differs) and
+ * "R Shafaei" -> "Bob Shafaei" (initial differs) are both rejected.
+ */
+export function expandsInitialFirstName(stored: string, full: string): boolean {
+  const s = nameTokens(stored);
+  const f = nameTokens(full);
+  if (s.length < 2 || f.length < 2) return false;
+  const storedInitial = s[0]!.replace(/\.$/, '');
+  if (storedInitial.length !== 1) return false;
+  if (s[s.length - 1]!.toLowerCase() !== f[f.length - 1]!.toLowerCase()) return false;
+  const fullFirst = f[0]!;
+  return fullFirst.length >= 2 && fullFirst.toLowerCase().startsWith(storedInitial.toLowerCase());
+}
