@@ -246,12 +246,13 @@ function ActivityFeed({ items }: { items: ActivityItem[] }) {
             ? statusVar('replied')
             : actionResultVar(a.result);
         const label = isAccept ? 'Accepted' : isReply ? 'Replied' : actionResultLabel(a.result);
-        // A failed row carries the executor's reason (e.g. "needs recipient email
-        // to connect"); surface it in a real hover popover so "why" is legible on
-        // hover instead of buried in the events table (a bare title attribute only
-        // gave a help cursor with no visible text). The dotted underline signals
-        // there's more to read; the popover renders on hover/focus.
-        const reason = a.failureDetail;
+        // A failed or skipped row carries the executor's reason (e.g. "needs
+        // recipient email to connect", "already pending; no invite sent"); surface
+        // it in a real hover popover so "why" is legible on hover instead of buried
+        // in the events table (a bare title attribute only gave a help cursor with
+        // no visible text). The dotted underline signals there's more to read; the
+        // popover renders on hover/focus.
+        const reason = a.resultDetail;
         if (isAccept || isReply || !reason) {
           return (
             <span className="chip" style={{ ['--c' as string]: color }}>

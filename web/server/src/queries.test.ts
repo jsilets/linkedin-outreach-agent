@@ -1169,13 +1169,16 @@ describe('buildActivityActionsQuery', () => {
     expect(params).toContain(10);
   });
 
-  it('correlates the failure reason from the matching action_failed event', () => {
+  it('surfaces the failure reason from the event and the skip reason from the row', () => {
     const { sql } = buildActivityActionsQuery({ limit: 50 }).toSQL();
-    // A scalar subquery pulls detail from the action_failed event keyed by actionId.
+    // A scalar subquery pulls detail from the action_failed event keyed by actionId,
+    // and coalesces to the action row's own detail (where skip reasons live).
     expect(sql).toContain('"events"');
     expect(sql).toContain("->>'detail'");
     expect(sql).toContain("->>'actionId'");
     expect(sql).toContain('action_failed%');
+    expect(sql).toContain('coalesce(');
+    expect(sql).toContain('"detail"');
   });
 });
 

@@ -196,7 +196,9 @@ export interface ActivityItem {
   profileUrl: string | null;
   /** For a failed action, the reason from the action_failed event (e.g. "email-gated"),
    * shown as a hover tooltip on the result chip. Null for successful/inbound rows. */
-  failureDetail: string | null;
+  /** Why an action failed or was skipped, for the result-chip tooltip. Null for
+   * clean successes. */
+  resultDetail: string | null;
 }
 
 export interface BulkApproveResult {

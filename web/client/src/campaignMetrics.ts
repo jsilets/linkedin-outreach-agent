@@ -236,6 +236,10 @@ export interface FunnelStage {
   rateOf: string;
   /** Extra context line (e.g. "39 messages sent" under messaged). */
   sub: string | null;
+  /** Bar width, 0..100: this stage's people as a share of the same top-of-funnel
+   * population the invited rate divides by, so the bar and the invited % agree and
+   * the drop-off across stages reads as one shrinking shape. */
+  share: number;
 }
 
 function pct(num: number, denom: number): number | null {
@@ -277,6 +281,13 @@ export function buildFunnel(
   const messagedDenom = Math.max(0, accepted - atAccepted);
   const repliedDenom = Math.max(0, messaged - atMessaged);
 
+  // Bars are a share of the SAME top-of-funnel population the invited rate uses,
+  // so the invited bar width matches its own percentage and the stages read as
+  // one shrinking shape. Dividing by the plain active pool here is what made a
+  // 79% invited stage render as a full bar.
+  const share = (n: number): number =>
+    invitedDenom > 0 ? Math.min(100, (n / invitedDenom) * 100) : 0;
+
   return [
     {
       key: 'invited',
@@ -285,6 +296,7 @@ export function buildFunnel(
       rate: pct(invited, invitedDenom),
       rateOf: `of ${invitedDenom} lead${invitedDenom === 1 ? '' : 's'}`,
       sub: null,
+      share: share(invited),
     },
     {
       key: 'accepted',
@@ -293,6 +305,7 @@ export function buildFunnel(
       rate: pct(accepted, acceptDenom),
       rateOf: 'of invited',
       sub: null,
+      share: share(accepted),
     },
     {
       key: 'messaged',
@@ -301,6 +314,7 @@ export function buildFunnel(
       rate: pct(messaged, messagedDenom),
       rateOf: 'of accepted',
       sub: messagesSent > messaged ? `${messagesSent} messages sent` : null,
+      share: share(messaged),
     },
     {
       key: 'replied',
@@ -309,6 +323,7 @@ export function buildFunnel(
       rate: pct(replied, repliedDenom),
       rateOf: 'of messaged',
       sub: null,
+      share: share(replied),
     },
   ];
 }
