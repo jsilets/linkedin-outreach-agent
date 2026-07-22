@@ -134,10 +134,19 @@ export function memberIdFromTarget(target: Target): string | undefined {
   return person?.[1] ?? undefined;
 }
 
-/** The target's current company (externalContext.currentCompany), or undefined
- * when none was captured/classified. Exported for unit tests. */
+/** The target's current company for a "{Company}" merge, or undefined when we do
+ * not have a company we trust to print. A company stamped companySource:'headline'
+ * is a guess parsed from the search headline (a former employer often reads as
+ * current); we refuse to print it and let the clause drop rather than address the
+ * person at the wrong company. Anything else — a profile-verified company, an
+ * operator-supplied one, or a legacy unmarked one — is printed. Exported for unit
+ * tests. */
 export function companyFromTarget(target: Target): string | undefined {
-  const ext = target.externalContext as { currentCompany?: unknown } | null | undefined;
+  const ext = target.externalContext as
+    | { currentCompany?: unknown; companySource?: unknown }
+    | null
+    | undefined;
+  if (ext?.companySource === 'headline') return undefined;
   const company = typeof ext?.currentCompany === 'string' ? ext.currentCompany.trim() : '';
   return company || undefined;
 }

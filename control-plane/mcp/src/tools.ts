@@ -772,6 +772,11 @@ const campaignTools: ToolDef[] = [
             ...(m.score !== null ? { score: m.score } : {}),
             ...(m.scoreReasons ? { scoreReasons: m.scoreReasons } : {}),
             ...(m.icp ? { icp: m.icp } : {}),
+            // Carry the company provenance (and title) so the target keeps a
+            // profile-verified company — and a "{Company}" merge only trusts it
+            // when it came off the real profile, not a headline guess.
+            ...(m.companySource ? { companySource: m.companySource } : {}),
+            ...(m.currentTitle ? { currentTitle: m.currentTitle } : {}),
           },
         };
       });
@@ -849,8 +854,11 @@ const campaignTools: ToolDef[] = [
       'without re-fetching. Then remove_from_list the off-ICP ones. A member ' +
       'already scored by another scorer (e.g. a score_leads/harness score) is left ' +
       'untouched and reported in skippedOtherScorer, since a harness score is ' +
-      'higher-quality; pass overwrite=true to re-score it anyway. Returns ' +
-      '{ listId, scored, offIcp, topScore, skippedOtherScorer }.',
+      'higher-quality; pass overwrite=true to re-score it anyway. Before scoring, ' +
+      "each member's current company is verified off their real profile (one live " +
+      'get_profile), so an ICP decision never rests on a headline guess; members ' +
+      'already profile-verified are not re-fetched (cheap re-runs). Returns ' +
+      '{ listId, scored, offIcp, topScore, skippedOtherScorer, enriched }.',
     privileged: false,
     inputShape: {
       listId: z.string(),
